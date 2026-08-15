@@ -96,6 +96,34 @@ python pcap_replay.py capture.pcap --udp --dst-port 8087 --target 192.168.1.50 -
 | `--precise` | pacing haute précision (spin ; ~µs, occupe un cœur) |
 | `--loop` | rejeu en boucle |
 | `--rebase-time` | décaler les horodatages **CoT** (time/start/stale) vers le présent |
+| `--route SEL=CIBLES` | **routage multi-flux** (voir ci-dessous) — répétable |
+| `--drop-unmatched` | en mode routage : ignorer les flux non routés |
+
+### Routage multi-flux (`--route`)
+
+Rejoue **tout le pcap d'un coup** (vidéo + CoT + GMTI…), avec son **timing global
+préservé** (multiplex réaliste), en envoyant **chaque flux à sa/ses propre(s)
+destination(s)**. Syntaxe répétable :
+
+```
+--route PROTO/PORT = IP[:PORT][,IP[:PORT]...]
+```
+
+- `PROTO` = `udp` ou `tcp` ; `PORT` = numéro ou `*` (tout ce protocole) ;
+- chaque cible `IP[:PORT]` : **`:PORT` absent = port d'origine conservé**, présent = port réécrit ;
+- plusieurs cibles séparées par `,` = **fan-out** (le flux part vers chacune → « ajouter un client ») ;
+- les flux non routés vont vers `--target` (destination par défaut) ou sont ignorés (`--drop-unmatched`).
+
+```bash
+# Rejeu de toute la capture DEV : vidéo vers 2 clients (dont un sur un autre port),
+# GMTI et CoT vers GeoEvent, tout le reste ignoré.
+python pcap_replay.py 20260812_CaptureALL_CR2.pcap \
+  --route udp/9876=192.168.1.60,192.168.1.61:6000 \
+  --route udp/6789=192.168.1.60 \
+  --route udp/5454=192.168.1.50 \
+  --route udp/1237=192.168.1.50 \
+  --drop-unmatched --speed 1.0
+```
 
 ---
 

@@ -370,6 +370,121 @@ def _replay_once(path, args, proto):
 
 
 # --------------------------------------------------------------------------
+# Routage multi-flux : rejouer TOUT le pcap, chaque flux vers sa/ses destination(s)
+# --------------------------------------------------------------------------
+
+def parse_routes(route_args):
+    """`--route proto/port=IP[:port][,IP[:port]...]` -> table de routage.
+
+    Clé (PROTO, port) ou (PROTO, '*') -> liste de (ip, port|None).
+    port=None sur une cible => port d'origine conservé. Plusieurs cibles = fan-out.
+    """
+    table = {}
+    for spec in route_args:
+        if "=" not in spec:
+            raise ValueError("route invalide (attendu proto/port=IP[:port]) : %r" % spec)
+        sel, tgts = spec.split("=", 1)
+        proto, _, port = sel.strip().partition("/")
+        proto = proto.upper()
+        if proto not in ("UDP", "TCP"):
+            raise ValueError("proto de route invalide (udp|tcp) : %r" % spec)
+        port = port.strip()
+        key = (proto, "*" if port in ("", "*") else int(port))
+        targets = []
+        for t in tgts.split(","):
+            t = t.strip()
+            if not t:
+                continue
+            ip, sep, p = t.partition(":")
+            targets.append((ip, int(p) if sep and p else None))
+        if not targets:
+            raise ValueError("aucune cible pour la route : %r" % spec)
+        table.setdefault(key, []).extend(targets)
+    return table
+
+
+def targets_for(table, proto, dport, default_target, default_port):
+    """Cibles pour un paquet (proto, dport) : routes exactes + wildcard, sinon défaut."""
+    tg = list(table.get((proto, dport), []))
+    tg += table.get((proto, "*"), [])
+    if not tg and default_target:
+        tg = [(default_target, default_port)]
+    return tg
+
+
+def do_routed_replay(path, args, table):
+    default_target = None if args.drop_unmatched else args.target
+    print("Rejeu ROUTÉ (tout le pcap, timing global) :")
+    for (proto, port), tgts in table.items():
+        dests = ", ".join(ip + (":" + str(p) if p else " (port d'origine)") for ip, p in tgts)
+        print("  %-4s port %-7s -> %s" % (proto, port, dests))
+    if default_target:
+        print("  (flux non routés -> défaut %s)" % default_target)
+    elif args.drop_unmatched:
+        print("  (flux non routés -> ignorés)")
+
+    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    tcp_conns = {}
+
+    def tcp_send(ip, port, data):
+        key = (ip, port)
+        s = tcp_conns.get(key)
+        if s is None:
+            s = socket.create_connection((ip, port), timeout=5)
+            tcp_conns[key] = s
+            print(f"  connecté TCP {ip}:{port}")
+        s.sendall(data)
+
+    passes = 0
+    try:
+        while True:
+            passes += 1
+            rebaser = TimeRebaser() if args.rebase_time else None
+            sent = t0_cap = t0_wall = None
+            sent = 0
+            for ts, lt, frame in iter_frames(path):
+                r = parse(lt, frame)
+                if not r:
+                    continue
+                proto, src, sport, dst, dport, pl = r
+                if not pl:
+                    continue
+                tgts = targets_for(table, proto, dport, default_target, args.target_port)
+                if not tgts:
+                    continue
+                if rebaser is not None:
+                    pl = rebaser.rebase(pl)
+                # Cadence sur l'horloge GLOBALE de capture (multiplex préservé).
+                if args.speed and args.speed > 0:
+                    if t0_cap is None:
+                        t0_cap, t0_wall = ts, time.perf_counter()
+                    wait_until(t0_wall + (ts - t0_cap) / args.speed, args.precise)
+                for ip, port in tgts:
+                    tport = port or dport
+                    if proto == "UDP":
+                        udp_sock.sendto(pl, (ip, tport))
+                    else:
+                        tcp_send(ip, tport, pl)
+                sent += 1
+                if sent % 5000 == 0:
+                    print(f"  {sent} messages routés...")
+            print(f"  {sent} messages rejoués (passe {passes}).")
+            if not args.loop:
+                break
+            print("  -- boucle, on recommence --")
+    except KeyboardInterrupt:
+        print("\n  (arrêt manuel)")
+    finally:
+        udp_sock.close()
+        for s in tcp_conns.values():
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
+# --------------------------------------------------------------------------
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Rejeu de captures pcap/pcapng (banc de test)")
@@ -380,8 +495,15 @@ def main(argv=None):
     ap.add_argument("--dst-port", type=int, help="filtrer sur le port destination")
     ap.add_argument("--src-port", type=int, help="filtrer sur le port source")
     ap.add_argument("--src", help="filtrer sur l'IP source")
-    ap.add_argument("--target", help="IP cible du rejeu")
+    ap.add_argument("--target", help="IP cible du rejeu (ou destination par défaut des flux non routés)")
     ap.add_argument("--target-port", type=int, help="port cible (defaut : port d'origine)")
+    ap.add_argument("--route", action="append", metavar="PROTO/PORT=IP[:PORT][,IP[:PORT]...]",
+                    help="ROUTAGE MULTI-FLUX : rejoue TOUT le pcap, chaque flux vers sa/ses "
+                         "destination(s). Répétable. Ex : --route udp/9876=10.0.0.60,10.0.0.61:6000 "
+                         "(vidéo -> 2 clients, dont un sur un autre port). :port absent = port "
+                         "d'origine conservé ; port '*' = tout ce proto. Timing global préservé.")
+    ap.add_argument("--drop-unmatched", action="store_true",
+                    help="en mode --route : ignorer les flux non routés (sinon -> --target si fourni)")
     ap.add_argument("--speed", type=float, default=1.0,
                     help="1.0 = temps reel, >1 accelere, 0 = aussi vite que possible")
     ap.add_argument("--precise", action="store_true",
@@ -395,8 +517,16 @@ def main(argv=None):
 
     if args.list:
         return do_list(args.file)
+    if args.route:
+        try:
+            table = parse_routes(args.route)
+        except ValueError as e:
+            ap.error(str(e))
+        if not args.target and not args.drop_unmatched:
+            print("Note : pas de --target ; les flux non routés seront ignorés.", file=sys.stderr)
+        return do_routed_replay(args.file, args, table)
     if not (args.udp or args.tcp):
-        ap.error("precisez --list, ou --udp / --tcp pour rejouer")
+        ap.error("precisez --list, ou --udp / --tcp pour rejouer (ou --route pour le routage multi-flux)")
     if not args.target:
         ap.error("--target <IP> requis pour le rejeu")
     if args.udp and args.tcp:
