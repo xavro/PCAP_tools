@@ -118,6 +118,84 @@ def attr(el, name):
     return v if v not in (None, "") else None
 
 
+def _fnum(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def scan_cot(pcap, filter_type=None, descriptions=None):
+    """Parse un pcap et renvoie les CoT EN MÉMOIRE (réutilisable GUI/tests).
+
+    Retour : {total, kept, malformed, types(Counter), type_example,
+              rows(uid->dict dernière valeur), tracks(uid->[(time,lat,lon)]),
+              events(list raw xml)}. Aucune écriture de fichier.
+    """
+    descriptions = descriptions or {}
+    events, by_uid, rows = [], {}, {}
+    tracks = collections.defaultdict(list)
+    types = collections.Counter()
+    type_example = {}
+    total = kept = malformed = 0
+
+    for ts, lt, frame in iter_frames(pcap):
+        r = parse(lt, frame)
+        if not r:
+            continue
+        proto, src, sport, dst, dport, pl = r
+        if classify(pl) != "CoT-XML":
+            continue
+        text = pl.decode("utf-8", "replace")
+        for raw in EVENT_RE.findall(text):
+            total += 1
+            try:
+                el = ET.fromstring(raw)
+            except ET.ParseError:
+                malformed += 1
+                continue
+            cot_type = el.get("type", "") or ""
+            if filter_type and filter_type not in cot_type:
+                continue
+            kept += 1
+            uid = el.get("uid", "") or ""
+            events.append(raw)
+            by_uid[uid] = raw
+            types[cot_type] += 1
+            type_example.setdefault(cot_type, uid)
+
+            point = el.find("point")
+            det = el.find("detail")
+            duid = det.find("uid") if det is not None else None
+            contact = det.find("contact") if det is not None else None
+            track = det.find("track") if det is not None else None
+            lat = attr(point, "lat") if point is not None else None
+            lon = attr(point, "lon") if point is not None else None
+            rows[uid] = {
+                "uid": uid, "type": cot_type,
+                "affiliation": affiliation(cot_type), "dimension": dimension(cot_type),
+                "sidc_algo": sidc_algo(cot_type),
+                "type_description": describe(cot_type, descriptions),
+                "track_number": (attr(duid, "tadilj") or attr(duid, "tadila")) if duid is not None else None,
+                "callsign": attr(contact, "callsign") if contact is not None else None,
+                "how": attr(el, "how"), "src": src,
+                "lat": lat, "lon": lon,
+                "hae": attr(point, "hae") if point is not None else None,
+                "ce": attr(point, "ce") if point is not None else None,
+                "le": attr(point, "le") if point is not None else None,
+                "course": attr(track, "course") if track is not None else None,
+                "speed": attr(track, "speed") if track is not None else None,
+                "time": attr(el, "time"),
+            }
+            fla, flo = _fnum(lat), _fnum(lon)
+            if fla is not None and flo is not None and not (fla == 0.0 and flo == 0.0):
+                tracks[uid].append((attr(el, "time"), fla, flo))
+
+    return {"total": total, "kept": kept, "malformed": malformed,
+            "types": types, "type_example": type_example, "rows": rows,
+            "tracks": dict(tracks), "events": events, "by_uid": by_uid}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Extraction CoT d'un pcap -> XML + CSV exploitables")
     ap.add_argument("pcap", help="fichier .pcap ou .pcapng")
@@ -134,63 +212,10 @@ def main() -> int:
     prefix = args.out_prefix or os.path.splitext(args.pcap)[0]
     descriptions = load_cot_descriptions(args.cot_types)
 
-    events: list[str] = []          # XML brut de chaque <event> retenu
-    by_uid: dict[str, str] = {}      # dédup : dernier event par uid
-    rows: dict[str, dict] = {}       # une ligne piste par uid (dernière vue)
-    types = collections.Counter()    # compte par type
-    type_example: dict[str, str] = {}
-    total = kept = malformed = 0
-
-    for ts, lt, frame in iter_frames(args.pcap):
-        r = parse(lt, frame)
-        if not r:
-            continue
-        proto, src, sport, dst, dport, pl = r
-        if classify(pl) != "CoT-XML":
-            continue
-        text = pl.decode("utf-8", "replace")
-        for raw in EVENT_RE.findall(text):
-            total += 1
-            try:
-                el = ET.fromstring(raw)
-            except ET.ParseError:
-                malformed += 1
-                continue
-            cot_type = el.get("type", "") or ""
-            if args.filter_type and args.filter_type not in cot_type:
-                continue
-            kept += 1
-            uid = el.get("uid", "") or ""
-            events.append(raw)
-            by_uid[uid] = raw
-            types[cot_type] += 1
-            type_example.setdefault(cot_type, uid)
-
-            point = el.find("point")
-            det = el.find("detail")
-            duid = det.find("uid") if det is not None else None
-            contact = det.find("contact") if det is not None else None
-            track = det.find("track") if det is not None else None
-            rows[uid] = {
-                "uid": uid,
-                "type": cot_type,
-                "affiliation": affiliation(cot_type),
-                "dimension": dimension(cot_type),
-                "sidc_algo": sidc_algo(cot_type),
-                "type_description": describe(cot_type, descriptions),
-                "track_number": (attr(duid, "tadilj") or attr(duid, "tadila")) if duid is not None else None,
-                "callsign": attr(contact, "callsign") if contact is not None else None,
-                "how": attr(el, "how"),
-                "src": src,
-                "lat": attr(point, "lat") if point is not None else None,
-                "lon": attr(point, "lon") if point is not None else None,
-                "hae": attr(point, "hae") if point is not None else None,
-                "ce": attr(point, "ce") if point is not None else None,
-                "le": attr(point, "le") if point is not None else None,
-                "course": attr(track, "course") if track is not None else None,
-                "speed": attr(track, "speed") if track is not None else None,
-                "time": attr(el, "time"),
-            }
+    res = scan_cot(args.pcap, args.filter_type, descriptions)
+    total, kept, malformed = res["total"], res["kept"], res["malformed"]
+    events, by_uid, rows = res["events"], res["by_uid"], res["rows"]
+    types, type_example = res["types"], res["type_example"]
 
     if kept == 0:
         print("Aucun message CoT retenu (filtre trop restrictif ?).", file=sys.stderr)

@@ -13,6 +13,7 @@ L'onglet Rejeu ne dépend de rien (stdlib). L'onglet GMTI charge le tracker
 (numpy + scipy) EN LAZY : s'ils manquent, seul cet onglet est indisponible.
 """
 import importlib
+import math
 import os
 import queue
 import sys
@@ -30,6 +31,15 @@ try:
     import gmti_pcap_to_csv  # noqa: E402
 except Exception:
     gmti_pcap_to_csv = None
+try:
+    import cot_extract       # noqa: E402
+except Exception:
+    cot_extract = None
+
+# Couleurs par affiliation CoT (MIL-STD-2525 : ami=bleu, hostile=rouge, neutre=vert…).
+AFFIL_COLORS = {"FRIEND": "#00c8ff", "ASSUMED_FRIEND": "#00c8ff", "JOKER": "#00c8ff",
+                "HOSTILE": "#ff5252", "SUSPECT": "#ff5252", "FAKER": "#ff5252",
+                "NEUTRAL": "#7cff6b", "UNKNOWN": "#ffd54f", "PENDING": "#ffd54f", "": "#8a8f98"}
 
 SPEEDS = [("×1 (temps réel)", 1.0), ("×2", 2.0), ("×5", 5.0), ("×10", 10.0), ("max", 0.0)]
 SCAN_LIMIT_DEFAULT = 300000
@@ -121,11 +131,8 @@ class TrackCanvas(tk.Canvas):
             self.fit()
         self.redraw()
 
-    def fit(self):
-        pts = [(p[0], p[1]) for p in self.raw]
-        for tr in self.tracks:
-            pts += tr["pts"]
-        pts += self.zone + self.porteur
+    def _fit_to(self, pts):
+        """Cadre la vue sur un ensemble de points (x,y). Partagé (TrackCanvas/CotCanvas)."""
         if not pts:
             self.scale, self.cx, self.cy = 1.0, 0.0, 0.0
             return
@@ -138,6 +145,13 @@ class TrackCanvas(tk.Canvas):
         W = max(self.winfo_width(), 50)
         H = max(self.winfo_height(), 50)
         self.scale = min(W / (w * 1.15), H / (h * 1.15))
+
+    def fit(self):
+        pts = [(p[0], p[1]) for p in self.raw]
+        for tr in self.tracks:
+            pts += tr["pts"]
+        pts += self.zone + self.porteur
+        self._fit_to(pts)
 
     def w2s(self, x, y):
         W = self.winfo_width()
@@ -238,6 +252,64 @@ class TrackCanvas(tk.Canvas):
         self.redraw()
 
 
+# ── Canvas CoT : points colorés par affiliation + trace par uid ─────────────
+
+class CotCanvas(TrackCanvas):
+    """Réutilise le pan/zoom/échelle de TrackCanvas ; dessine des points CoT
+    (couleur = affiliation) et une trace par uid."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.points = []       # (x, y, affiliation, uid)
+        self.uid_tracks = []   # [[(x,y),...], ...]
+        self.show_tracks = True
+
+    def set_cot(self, points, uid_tracks, fit=True):
+        self.points = points or []
+        self.uid_tracks = uid_tracks or []
+        if fit:
+            self.fit()
+        self.redraw()
+
+    def fit(self):
+        pts = [(p[0], p[1]) for p in self.points]
+        for tr in self.uid_tracks:
+            pts += tr
+        self._fit_to(pts)
+
+    def redraw(self):
+        self.delete("all")
+        if not self.points:
+            self.create_text(self.winfo_width() / 2, self.winfo_height() / 2,
+                             text="(analyser le CoT du pcap)", fill="#5a6675",
+                             font=("Segoe UI", 11))
+            return
+        if self.show_tracks:
+            for tr in self.uid_tracks:
+                if len(tr) >= 2:
+                    flat = []
+                    for x, y in tr:
+                        sx, sy = self.w2s(x, y)
+                        flat += [sx, sy]
+                    self.create_line(*flat, fill="#3a4048", width=1)
+        for x, y, affil, uid in self.points:
+            sx, sy = self.w2s(x, y)
+            col = AFFIL_COLORS.get(affil, AFFIL_COLORS[""])
+            self.create_oval(sx - 3, sy - 3, sx + 3, sy + 3, fill=col, outline="#101418")
+        self._draw_scalebar()
+        self._legend()
+
+    def _legend(self):
+        items = [("Ami", "#00c8ff"), ("Hostile", "#ff5252"),
+                 ("Neutre", "#7cff6b"), ("Inconnu", "#ffd54f")]
+        x, y = 12, 14
+        for label, col in items:
+            self.create_oval(x, y - 4, x + 8, y + 4, fill=col, outline="")
+            self.create_text(x + 14, y, text=label, anchor="w", fill="#c2c8ce",
+                             font=("Consolas", 8))
+            x += 78
+
+
 # ── Ligne de flux (onglet Rejeu) ────────────────────────────────────────────
 
 class FlowRow:
@@ -282,6 +354,7 @@ class Console(tk.Tk):
         self.q = queue.Queue()
         self.gmti_csv = None
         self.sink = None            # Sink de l'extracteur (overlays/inventaire), si dispo
+        self._cot_rows = {}         # dernières valeurs CoT par uid (field=value)
         self.path_var = tk.StringVar()
         self.limit_var = tk.StringVar(value=str(SCAN_LIMIT_DEFAULT))
         self._build_ui()
@@ -301,12 +374,15 @@ class Console(tk.Tk):
         self.tab_replay = ttk.Frame(nb)
         self.tab_gmti = ttk.Frame(nb)
         self.tab_inv = ttk.Frame(nb)
+        self.tab_cot = ttk.Frame(nb)
         nb.add(self.tab_replay, text="  Rejeu  ")
         nb.add(self.tab_gmti, text="  GMTI → Pistes  ")
         nb.add(self.tab_inv, text="  Inventaire 4607  ")
+        nb.add(self.tab_cot, text="  CoT  ")
         self._build_replay_tab(self.tab_replay)
         self._build_gmti_tab(self.tab_gmti)
         self._build_inventaire_tab(self.tab_inv)
+        self._build_cot_tab(self.tab_cot)
 
         self.status_var = tk.StringVar(value="Prêt.")
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2),
@@ -408,6 +484,105 @@ class Console(tk.Tk):
             self.q.put(("inventaire", ex.rapport(sink)))
         except Exception as e:
             self.q.put(("inventaire", "Inventaire échoué : %s" % e))
+
+    # ── Onglet CoT ───────────────────────────────────────────────────────
+    def _build_cot_tab(self, parent):
+        bar = ttk.Frame(parent, padding=(0, 6))
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Analyser CoT", command=self._analyze_cot).pack(side="left")
+        ttk.Label(bar, text="filtre type :").pack(side="left", padx=(10, 2))
+        self.cot_filter = tk.StringVar()
+        ttk.Entry(bar, textvariable=self.cot_filter, width=12).pack(side="left")
+        self.cot_tracks_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="trace par uid", variable=self.cot_tracks_var,
+                        command=self._cot_toggle_tracks).pack(side="left", padx=8)
+        ttk.Button(bar, text="Ajuster la vue", command=self._cot_fit).pack(side="left")
+
+        self.cot_status = tk.StringVar(value="Analyser le CoT d'un pcap (events, affiliations, positions).")
+        ttk.Label(parent, textvariable=self.cot_status, padding=(0, 2),
+                  font=("Consolas", 9)).pack(anchor="w")
+
+        pan = ttk.Panedwindow(parent, orient="horizontal")
+        pan.pack(fill="both", expand=True)
+        left = ttk.Frame(pan)
+        cols = ("uid", "type", "aff", "callsign")
+        self.cot_tree = ttk.Treeview(left, columns=cols, show="headings", height=12)
+        for c, w in (("uid", 130), ("type", 110), ("aff", 70), ("callsign", 90)):
+            self.cot_tree.heading(c, text=c)
+            self.cot_tree.column(c, width=w, stretch=False)
+        sb = ttk.Scrollbar(left, orient="vertical", command=self.cot_tree.yview)
+        self.cot_tree.configure(yscrollcommand=sb.set)
+        self.cot_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.cot_tree.bind("<<TreeviewSelect>>", self._cot_select)
+        right = ttk.Frame(pan)
+        self.cot_canvas = CotCanvas(right)
+        self.cot_canvas.pack(fill="both", expand=True)
+        pan.add(left, weight=0)
+        pan.add(right, weight=1)
+
+        self.cot_detail = scrolledtext.ScrolledText(parent, height=8, font=("Consolas", 9))
+        self.cot_detail.pack(fill="both", expand=False, pady=(4, 0))
+
+    def _analyze_cot(self):
+        if cot_extract is None:
+            messagebox.showerror("CoT", "cot_extract indisponible."); return
+        path = self._valid_path()
+        if not path:
+            return
+        self.cot_status.set("Analyse CoT en cours…")
+        flt = self.cot_filter.get().strip() or None
+        threading.Thread(target=self._cot_worker, args=(path, flt), daemon=True).start()
+
+    def _cot_worker(self, path, flt):
+        try:
+            res = cot_extract.scan_cot(path, flt)
+        except Exception as e:
+            self.q.put(("cot_status", "Analyse CoT échouée : %s" % e)); return
+        rows = res["rows"]
+        # Repère ENU depuis la 1re position valide.
+        lat0 = lon0 = None
+        for r in rows.values():
+            la, lo = cot_extract._fnum(r["lat"]), cot_extract._fnum(r["lon"])
+            if la is not None and lo is not None and not (la == 0 and lo == 0):
+                lat0, lon0 = la, lo; break
+        points, uid_tracks = [], []
+        if lat0 is not None:
+            kx = 111320.0 * math.cos(math.radians(lat0)); ky = 110540.0
+            to_xy = lambda la, lo: ((lo - lon0) * kx, (la - lat0) * ky)
+            for uid, r in rows.items():
+                la, lo = cot_extract._fnum(r["lat"]), cot_extract._fnum(r["lon"])
+                if la is None or lo is None or (la == 0 and lo == 0):
+                    continue
+                x, y = to_xy(la, lo)
+                points.append((x, y, r["affiliation"], uid))
+            for uid, tr in res["tracks"].items():
+                if len(tr) >= 2:
+                    uid_tracks.append([to_xy(la, lo) for (_t, la, lo) in tr])
+        self.q.put(("cot", res, points, uid_tracks))
+
+    def _cot_select(self, _e):
+        sel = self.cot_tree.selection()
+        if not sel or not self._cot_rows:
+            return
+        uid = self.cot_tree.item(sel[0], "values")[0]
+        row = self._cot_rows.get(uid)
+        if not row:
+            return
+        self.cot_detail.delete("1.0", "end")
+        for k in ("uid", "type", "type_description", "affiliation", "dimension",
+                  "sidc_algo", "callsign", "how", "lat", "lon", "hae", "ce", "le",
+                  "course", "speed", "time", "src", "track_number"):
+            v = row.get(k)
+            if v not in (None, ""):
+                self.cot_detail.insert("end", "%-18s = %s\n" % (k, v))
+
+    def _cot_toggle_tracks(self):
+        self.cot_canvas.show_tracks = self.cot_tracks_var.get()
+        self.cot_canvas.redraw()
+
+    def _cot_fit(self):
+        self.cot_canvas.fit(); self.cot_canvas.redraw()
 
     def _browse(self):
         p = filedialog.askopenfilename(filetypes=[("Captures", "*.pcap *.pcapng *.cap"), ("Tous", "*.*")])
@@ -576,6 +751,24 @@ class Console(tk.Tk):
         except Exception as e:
             self.q.put(("track_err", "Tracker échoué : %s" % e))
 
+    def _populate_cot(self, res, points, uid_tracks):
+        self._cot_rows = res["rows"]
+        self.cot_tree.delete(*self.cot_tree.get_children())
+        for uid, r in sorted(res["rows"].items()):
+            self.cot_tree.insert("", "end", values=(uid, r["type"], r["affiliation"], r.get("callsign") or ""))
+        self.cot_canvas.show_tracks = self.cot_tracks_var.get()
+        self.cot_canvas.set_cot(points, uid_tracks, fit=True)
+        # Inventaire des types dans le panneau détail (avant sélection).
+        self.cot_detail.delete("1.0", "end")
+        self.cot_detail.insert("end", "INVENTAIRE CoT — %d events, %d types, %d objets (malformés %d)\n\n"
+                               % (res["kept"], len(res["types"]), len(res["rows"]), res["malformed"]))
+        self.cot_detail.insert("end", "%-24s %6s  %-14s %s\n" % ("type", "count", "affiliation", "dim"))
+        for t, n in res["types"].most_common():
+            self.cot_detail.insert("end", "%-24s %6d  %-14s %s\n"
+                                   % (t, n, cot_extract.affiliation(t), cot_extract.dimension(t)))
+        self.cot_status.set("CoT : %d events, %d types, %d objets positionnés."
+                            % (res["kept"], len(res["types"]), len(points)))
+
     def _overlays(self, res):
         """Construit (raw_coloré, zone_job, trajet_porteur) depuis le Sink de
         l'extracteur, projetés dans le repère ENU du run. Sans Sink : raw brut."""
@@ -640,6 +833,10 @@ class Console(tk.Tk):
                     self.track_btn.config(state="normal")
                 elif kind == "inventaire":
                     self.inv_text.delete("1.0", "end"); self.inv_text.insert("end", msg[1])
+                elif kind == "cot_status":
+                    self.cot_status.set(msg[1])
+                elif kind == "cot":
+                    self._populate_cot(msg[1], msg[2], msg[3])
                 elif kind == "track_err":
                     self.gmti_status.set(msg[1]); self.track_btn.config(state="normal")
                     messagebox.showerror("Tracker", msg[1])

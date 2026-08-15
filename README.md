@@ -58,6 +58,14 @@ plages min/méd/max, **classifications**, **Job Definition** (radar mode,
 incertitudes nominales, bounding area), positions porteur. Outil de validation
 pré-prod. Lit le **pcap classique** (pcapng → `editcap -F pcap`).
 
+**Onglet « CoT »** — parse tout le CoT XML du pcap (`cot_extract`) et affiche :
+un **tableau des objets** (uid / type / affiliation / callsign), l'**inventaire
+par type** (compte + affiliation + dimension), le **field=value** d'un objet
+sélectionné, et un **canvas de points** (repère ENU) colorés par **affiliation**
+(ami=bleu, hostile=rouge, neutre=vert, inconnu=jaune — MIL-STD-2525) avec une
+**trace par uid**. Filtre par sous-chaîne de type ; affiliation dérivée du 2ᵉ
+caractère du type (port exact de `CotSidc.java`).
+
 > Le tracker (v7) et l'extracteur vivent dans `prototype_tracker_gmti_v7/`.
 > numpy/scipy sont chargés **en lazy** → l'onglet Rejeu marche sans eux. Rejeu,
 > décodage, tracker et inventaire tournent dans un thread (UI réactive via file).
