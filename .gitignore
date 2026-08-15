@@ -12,11 +12,11 @@
 *.docx
 *.events.xml
 
-# Sorties générées par les outils (plots/tracks/figures)
+# Sorties générées par les outils (plots/tracks/figures) — résultats d'analyse
 plots*.csv
-tracks_out.csv
-tracker_result.png
+tracks_out*.csv
 *_out.csv
+tracker_result.png
 
 # Python
 __pycache__/
