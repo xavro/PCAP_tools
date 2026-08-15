@@ -1,0 +1,32 @@
+# PCAP_tools — ne versionner QUE les scripts, jamais les données ni les artefacts.
+
+# Captures & données (peuvent peser plusieurs Go — hors dépôt)
+*.pcap
+*.pcapng
+*.cap
+*.jsonl
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.docx
+*.events.xml
+
+# Sorties générées par les outils (plots/tracks/figures)
+plots*.csv
+tracks_out.csv
+tracker_result.png
+*_out.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
