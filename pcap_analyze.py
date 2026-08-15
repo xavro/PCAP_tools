@@ -199,9 +199,18 @@ _PROTO_ALIASES = {
 # Analyse
 # --------------------------------------------------------------------------
 
-def analyze(path, show_flows, proto_filter, limit=0, top_n=25, show_all=False):
-    flows = collections.OrderedDict()      # (proto,src,sport,dst,dport) -> stats
-    ports = collections.OrderedDict()      # (proto,dport) -> stats agrégées
+APP = ("GMTI", "CoT", "SITAC", "Link16", "MPEG", "KLV", "JSON")
+
+
+def scan(path, limit=0):
+    """Agrège la capture SANS rien imprimer — réutilisable (GUI, tests…).
+
+    Retourne un dict : flows/ports (stats par flux et par port destination),
+    npkt, tmin/tmax, truncated. Chaque entrée `ports[(proto,dport)]` porte
+    pkts/bytes/cls(Counter)/dsts(set) ; `dominant` = protocole majoritaire.
+    """
+    flows = collections.OrderedDict()
+    ports = collections.OrderedDict()
     npkt = 0
     tmin = tmax = None
     truncated = False
@@ -227,6 +236,24 @@ def analyze(path, show_flows, proto_filter, limit=0, top_n=25, show_all=False):
             st["bytes"] += len(pl)
             st["cls"][cls] += 1
             st["dsts"].add(dst)
+    return {"flows": flows, "ports": ports, "npkt": npkt,
+            "tmin": tmin, "tmax": tmax, "truncated": truncated}
+
+
+def port_rows(ports):
+    """Liste triée par volume : (proto, dport, dominant, pkts, bytes, dsts[list]). Pour la GUI."""
+    out = []
+    for (proto, dport) in sorted(ports, key=lambda k: -ports[k]["bytes"]):
+        st = ports[(proto, dport)]
+        out.append((proto, dport, st["cls"].most_common(1)[0][0],
+                    st["pkts"], st["bytes"], sorted(st["dsts"])))
+    return out
+
+
+def analyze(path, show_flows, proto_filter, limit=0, top_n=25, show_all=False):
+    res = scan(path, limit)
+    flows, ports = res["flows"], res["ports"]
+    npkt, tmin, tmax, truncated = res["npkt"], res["tmin"], res["tmax"], res["truncated"]
 
     span = ("%.1f s" % (tmax - tmin)) if (tmin is not None and tmax and tmax > tmin) else "n/a"
     print("=== %s ===" % path)
@@ -235,7 +262,6 @@ def analyze(path, show_flows, proto_filter, limit=0, top_n=25, show_all=False):
           % (npkt, lim, len(flows), len(ports), span))
 
     want = _PROTO_ALIASES.get(proto_filter.lower()) if proto_filter else None
-    APP = ("GMTI", "CoT", "SITAC", "Link16", "MPEG", "KLV", "JSON")
 
     # ── Protocoles applicatifs identifiés (réponse principale, en tête) ────
     hits = []

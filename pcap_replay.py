@@ -412,16 +412,19 @@ def targets_for(table, proto, dport, default_target, default_port):
     return tg
 
 
-def do_routed_replay(path, args, table):
+def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=print):
+    """Rejeu routé. `should_stop()` -> bool (arrêt propre, pour une GUI),
+    `on_progress(sent, passes)` (statut live), `log(msg)` (sortie). Sans ces
+    callbacks, comportement CLI identique (print, pas d'arrêt externe)."""
     default_target = None if args.drop_unmatched else args.target
-    print("Rejeu ROUTÉ (tout le pcap, timing global) :")
+    log("Rejeu ROUTÉ (tout le pcap, timing global) :")
     for (proto, port), tgts in table.items():
         dests = ", ".join(ip + (":" + str(p) if p else " (port d'origine)") for ip, p in tgts)
-        print("  %-4s port %-7s -> %s" % (proto, port, dests))
+        log("  %-4s port %-7s -> %s" % (proto, port, dests))
     if default_target:
-        print("  (flux non routés -> défaut %s)" % default_target)
+        log("  (flux non routés -> défaut %s)" % default_target)
     elif args.drop_unmatched:
-        print("  (flux non routés -> ignorés)")
+        log("  (flux non routés -> ignorés)")
 
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -433,17 +436,21 @@ def do_routed_replay(path, args, table):
         if s is None:
             s = socket.create_connection((ip, port), timeout=5)
             tcp_conns[key] = s
-            print(f"  connecté TCP {ip}:{port}")
+            log(f"  connecté TCP {ip}:{port}")
         s.sendall(data)
 
+    stopped = False
     passes = 0
     try:
-        while True:
+        while not stopped:
             passes += 1
             rebaser = TimeRebaser() if args.rebase_time else None
-            sent = t0_cap = t0_wall = None
+            t0_cap = t0_wall = None
             sent = 0
             for ts, lt, frame in iter_frames(path):
+                if should_stop is not None and should_stop():
+                    stopped = True
+                    break
                 r = parse(lt, frame)
                 if not r:
                     continue
@@ -467,14 +474,17 @@ def do_routed_replay(path, args, table):
                     else:
                         tcp_send(ip, tport, pl)
                 sent += 1
+                if on_progress is not None:
+                    on_progress(sent, passes)
                 if sent % 5000 == 0:
-                    print(f"  {sent} messages routés...")
-            print(f"  {sent} messages rejoués (passe {passes}).")
+                    log(f"  {sent} messages routés...")
+            log(f"  {sent} messages rejoués (passe {passes}).")
             if not args.loop:
                 break
-            print("  -- boucle, on recommence --")
+            if not stopped:
+                log("  -- boucle, on recommence --")
     except KeyboardInterrupt:
-        print("\n  (arrêt manuel)")
+        log("\n  (arrêt manuel)")
     finally:
         udp_sock.close()
         for s in tcp_conns.values():

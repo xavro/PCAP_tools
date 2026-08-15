@@ -13,7 +13,25 @@ vidéo STANAG 4609, GMTI STANAG 4607.
 capture.pcap ──pcap_analyze.py──► quel port ? quel protocole ?
              ──pcap_replay.py───► rejeu vers GeoEvent (temps réel/accéléré)
              ──gmti_pcap_to_csv.py──► plots.csv ──demo.py/tracker.py──► pistes
+
+pcap_console.py ──► interface graphique (analyse + routage + rejeu, en cliquant)
 ```
+
+## `pcap_console.py` — console graphique (Tkinter, zéro install)
+
+Interface desktop pour piloter le rejeu **sans taper les lignes `--route`** :
+charger un pcap → analyse automatique → **cocher les flux à rejouer**, saisir la
+cible `IP[:port]`, **« + client »** pour un fan-out → **Start / Stop**, vitesse,
+boucle, statut live. Bouton bonus **« Exporter GMTI → CSV »**.
+
+```bash
+python pcap_console.py
+```
+
+Tkinter est fourni avec Python (aucune dépendance). Le rejeu tourne dans un
+thread (Start/Stop réactif) ; l'analyse et le rejeu réutilisent `pcap_analyze`
+et `pcap_replay` — la GUI n'est qu'un pilote. Pour les gros `.pcap`, le champ
+*limit* borne l'analyse (empreinte rapide).
 
 ## Dépendances
 
