@@ -48,7 +48,10 @@ AFFIL_COLORS = {"FRIEND": "#00c8ff", "ASSUMED_FRIEND": "#00c8ff", "JOKER": "#00c
 SPEEDS = [("×1 (temps réel)", 1.0), ("×2", 2.0), ("×5", 5.0), ("×10", 10.0), ("max", 0.0)]
 SCAN_LIMIT_DEFAULT = 300000
 PROFILE_NAMES = ["defaut", "maritime", "routier", "routier_zone", "convoi", "personnel", "aerien"]
-TRACKER_DIR = "prototype_tracker_gmti_v7"       # source du tracker + de l'extracteur
+# Dossier du tracker + extracteur : on prend automatiquement la version
+# `prototype_tracker_gmti_v<N>` la PLUS ÉLEVÉE contenant track_run.py — une v8
+# déposée à côté est ainsi utilisée sans modifier ce code.
+TRACKER_PREFIX = "prototype_tracker_gmti_v"
 # Au-delà, l'extracteur (lecture intégrale en mémoire) est évité au profit du
 # décodage en streaming de gmti_pcap_to_csv.
 EXTRACT_MAX_BYTES = 700 * 1024 * 1024
@@ -77,7 +80,22 @@ def is_app_proto(dominant):
 
 
 def _tracker_dir():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), TRACKER_DIR)
+    """Dossier du tracker : la version v<N> la plus élevée ayant track_run.py."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    best, best_n = None, -1
+    try:
+        for name in os.listdir(base):
+            if not name.startswith(TRACKER_PREFIX):
+                continue
+            suffix = name[len(TRACKER_PREFIX):]
+            if (suffix.isdigit() and os.path.isdir(os.path.join(base, name))
+                    and os.path.isfile(os.path.join(base, name, "track_run.py"))):
+                n = int(suffix)
+                if n > best_n:
+                    best_n, best = n, name
+    except OSError:
+        pass
+    return os.path.join(base, best) if best else os.path.join(base, TRACKER_PREFIX + "7")
 
 
 def load_track_run():

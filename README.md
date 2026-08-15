@@ -40,7 +40,7 @@ GUI ne fait qu'appeler `pcap_analyze` et `pcap_replay`.
    auto-détection du port) sinon.
 2. Choisir un **profil** (maritime / routier / **routier_zone** / convoi /
    personnel / aérien) et **Lancer le tracker**
-   (`prototype_tracker_gmti_v7/track_run.py`).
+   (`track_run.py` de la dernière version `prototype_tracker_gmti_v*`).
 3. **Plots et pistes** sur un **canvas natif** (repère local ENU, mètres) :
    glisser = pan, molette = zoom, échelle en bas. Overlays quand le décodeur
    complet est utilisé : **zone de job** (bounding area, pointillés), **trajet
@@ -82,9 +82,12 @@ Les trois décodeurs marchent aussi en ligne de commande :
 python video4609.py capture.pcap --limit 200000        # inventaire TS + KLV
 python cot_extract.py capture.pcap                      # events.xml + tracks.csv + types.csv
 python prototype_tracker_gmti_v7/stanag4607_extract.py capture.pcap --rapport r.txt --csv plots.csv
+# (adapter le numéro de version au dernier prototype_tracker_gmti_v*)
 ```
 
-> Le tracker (v7) et l'extracteur vivent dans `prototype_tracker_gmti_v7/`.
+> Le tracker et l'extracteur `stanag4607_extract` vivent dans le dossier
+> `prototype_tracker_gmti_v<N>` : la console prend **automatiquement la version
+> la plus élevée** contenant `track_run.py` (déposer une v8 à côté suffit).
 > numpy/scipy sont chargés **en lazy** → l'onglet Rejeu marche sans eux. Rejeu,
 > décodage, tracker et inventaire tournent dans un thread (UI réactive via file).
 
