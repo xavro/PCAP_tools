@@ -19,6 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from tracker import Tracker, Plot, Params, LocalFrame, covariance_from_4607, rts_smooth
+from track_run import PROFILES, apply_profile   # source unique des profils de tuning
 
 
 # ----------------------------------------------------------------------
@@ -143,36 +144,11 @@ def run(source, png="tracker_result.png", csv_out="tracks_out.csv"):
     print(f"-> {png}  |  -> {csv_out}")
 
 
-PROFILES = {
-    # vehicules terrestres generiques (valeurs de depart)
-    "defaut":   {},
-    # navires : lents, rectilignes, bruit >> deplacement inter-dwell
-    "maritime": dict(Q_ACCEL=0.05, V_INIT_STD=4.0, CONFIRM_M=4, CONFIRM_N=6,
-                     DELETE_MISSES=12, GATE_CHI2=7.0, GATE_MAX_M=250.0),
-    # vehicules sur axes : rapides, freinages/virages, arrets sous MDV
-    "routier":  dict(Q_ACCEL=2.0, V_INIT_STD=12.0, CONFIRM_M=3, CONFIRM_N=5,
-                     DELETE_MISSES=8, GATE_CHI2=9.21, GATE_MAX_M=300.0),
-    # cibles rapprochees se deplacant ensemble (convois, colonnes)
-    "convoi":   dict(Q_ACCEL=0.5, V_INIT_STD=10.0, CONFIRM_M=4, CONFIRM_N=6,
-                     DELETE_MISSES=6, GATE_CHI2=5.0, GATE_MAX_M=150.0),
-    # pietons / cibles tres lentes (classification 9), proches du MDV
-    "personnel": dict(Q_ACCEL=0.3, V_INIT_STD=2.0, CONFIRM_M=3, CONFIRM_N=6,
-                      DELETE_MISSES=15, GATE_CHI2=7.0, GATE_MAX_M=120.0),
-    # voilures tournantes / cibles aeriennes lentes (classifications 3-4)
-    "aerien":   dict(Q_ACCEL=4.0, V_INIT_STD=40.0, CONFIRM_M=3, CONFIRM_N=5,
-                     DELETE_MISSES=4, GATE_CHI2=9.21, GATE_MAX_M=800.0),
-}
-
-def apply_profile(name):
-    import tracker as _t
-    for k, v in PROFILES[name].items():
-        setattr(_t.Params, k, v)
-    print(f"Profil applique : {name} {PROFILES[name] or '(defauts)'}")
-
 if __name__ == "__main__":
     args = sys.argv[1:]
     profil = args.pop() if (args and args[-1] in PROFILES) else "defaut"
     apply_profile(profil)
+    print(f"Profil applique : {profil} {PROFILES[profil] or '(defauts)'}")
     if args:
         run(csv_dwells(args[0]))
     else:

@@ -19,19 +19,37 @@ pcap_console.py ──► interface graphique (analyse + routage + rejeu, en cli
 
 ## `pcap_console.py` — console graphique (Tkinter, zéro install)
 
-Interface desktop pour piloter le rejeu **sans taper les lignes `--route`** :
-charger un pcap → analyse automatique → **cocher les flux à rejouer**, saisir la
-cible `IP[:port]`, **« + client »** pour un fan-out → **Start / Stop**, vitesse,
-boucle, statut live. Bouton bonus **« Exporter GMTI → CSV »**.
+Application desktop à **deux onglets**. Tkinter est fourni avec Python : l'onglet
+*Rejeu* ne dépend de rien. L'onglet *GMTI → Pistes* charge le tracker
+(numpy + scipy) **en lazy** — s'ils manquent, seul cet onglet est indisponible.
 
 ```bash
 python pcap_console.py
 ```
 
-Tkinter est fourni avec Python (aucune dépendance). Le rejeu tourne dans un
-thread (Start/Stop réactif) ; l'analyse et le rejeu réutilisent `pcap_analyze`
-et `pcap_replay` — la GUI n'est qu'un pilote. Pour les gros `.pcap`, le champ
-*limit* borne l'analyse (empreinte rapide).
+**Onglet « Rejeu »** — piloter le rejeu **sans taper les lignes `--route`** :
+analyse automatique → **cocher les flux**, saisir la cible `IP[:port]`,
+**« + client »** (fan-out) → **Start / Stop**, vitesse, boucle, statut live. La
+GUI ne fait qu'appeler `pcap_analyze` et `pcap_replay`.
+
+**Onglet « GMTI → Pistes »** — la chaîne d'exploitation, tout en cliquant :
+
+1. **Décoder GMTI** (auto-détection du port) → plots MTI (via `gmti_pcap_to_csv`).
+2. Choisir un **profil** (maritime / routier / convoi / personnel / aérien) et
+   **Lancer le tracker** (`prototype_tracker_gmti_v5/track_run.py`).
+3. Les **plots et pistes** s'affichent sur un **canvas natif** (repère local ENU,
+   mètres) : glisser = pan, molette = zoom, échelle en bas. Cases *plots bruts* /
+   *lissage RTS*.
+
+C'est une **boucle de tuning** : on décode **une fois**, puis on relance le
+tracker par profil en un clic (~0,03 s) pour comparer le nombre de pistes et la
+fragmentation — la « méthode de tuning sur données réelles » du tracker, en
+interactif. Pour les captures très denses (dizaines de milliers de plots), le
+run est plus long ; borner avec le champ *limit*.
+
+> `track_run.py` (noyau sans matplotlib) est la source unique des profils —
+> `demo.py` s'en sert aussi. Le rejeu comme le tracker tournent dans un thread
+> (UI réactive, mise à jour via une file thread-safe).
 
 ## Dépendances
 
