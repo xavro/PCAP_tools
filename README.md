@@ -66,6 +66,24 @@ sélectionné, et un **canvas de points** (repère ENU) colorés par **affiliati
 **trace par uid**. Filtre par sous-chaîne de type ; affiliation dérivée du 2ᵉ
 caractère du type (port exact de `CotSidc.java`).
 
+**Onglet « Vidéo 4609 »** — inspecte le flux vidéo STANAG 4609 (`video4609.py`) :
+réassemble le **MPEG-TS** (TS brut ou RTP), inventorie les **PID** (PAT/PMT),
+identifie **codecs** (H.264/HEVC/MPEG-2) et **erreurs de continuité**, et surtout
+**décode les métadonnées KLV MISB ST 0601 en champ=valeur** (horodatage, position
+et attitude porteur, cap/FOV/az-el capteur, portée oblique, centre image…).
+Bouton **« Extraire .ts + ouvrir »** : écrit le flux réassemblé et l'ouvre dans le
+**lecteur système** (VLC/ffplay) — pas de décodeur embarqué (contrainte air-gap).
+
+## `video4609.py` / `stanag4607_extract.py` / `cot_extract.py` en CLI
+
+Les trois décodeurs marchent aussi en ligne de commande :
+
+```bash
+python video4609.py capture.pcap --limit 200000        # inventaire TS + KLV
+python cot_extract.py capture.pcap                      # events.xml + tracks.csv + types.csv
+python prototype_tracker_gmti_v7/stanag4607_extract.py capture.pcap --rapport r.txt --csv plots.csv
+```
+
 > Le tracker (v7) et l'extracteur vivent dans `prototype_tracker_gmti_v7/`.
 > numpy/scipy sont chargés **en lazy** → l'onglet Rejeu marche sans eux. Rejeu,
 > décodage, tracker et inventaire tournent dans un thread (UI réactive via file).

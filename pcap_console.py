@@ -35,6 +35,10 @@ try:
     import cot_extract       # noqa: E402
 except Exception:
     cot_extract = None
+try:
+    import video4609         # noqa: E402
+except Exception:
+    video4609 = None
 
 # Couleurs par affiliation CoT (MIL-STD-2525 : ami=bleu, hostile=rouge, neutre=vert…).
 AFFIL_COLORS = {"FRIEND": "#00c8ff", "ASSUMED_FRIEND": "#00c8ff", "JOKER": "#00c8ff",
@@ -375,14 +379,17 @@ class Console(tk.Tk):
         self.tab_gmti = ttk.Frame(nb)
         self.tab_inv = ttk.Frame(nb)
         self.tab_cot = ttk.Frame(nb)
+        self.tab_video = ttk.Frame(nb)
         nb.add(self.tab_replay, text="  Rejeu  ")
         nb.add(self.tab_gmti, text="  GMTI → Pistes  ")
         nb.add(self.tab_inv, text="  Inventaire 4607  ")
         nb.add(self.tab_cot, text="  CoT  ")
+        nb.add(self.tab_video, text="  Vidéo 4609  ")
         self._build_replay_tab(self.tab_replay)
         self._build_gmti_tab(self.tab_gmti)
         self._build_inventaire_tab(self.tab_inv)
         self._build_cot_tab(self.tab_cot)
+        self._build_video_tab(self.tab_video)
 
         self.status_var = tk.StringVar(value="Prêt.")
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2),
@@ -484,6 +491,67 @@ class Console(tk.Tk):
             self.q.put(("inventaire", ex.rapport(sink)))
         except Exception as e:
             self.q.put(("inventaire", "Inventaire échoué : %s" % e))
+
+    # ── Onglet Vidéo 4609 ────────────────────────────────────────────────
+    def _build_video_tab(self, parent):
+        bar = ttk.Frame(parent, padding=(0, 6))
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Analyser vidéo 4609", command=self._analyze_video).pack(side="left")
+        ttk.Label(bar, text="port :").pack(side="left", padx=(10, 2))
+        self.video_port = tk.StringVar()
+        ttk.Combobox(bar, textvariable=self.video_port, width=8, values=[]).pack(side="left")
+        self.video_port_cb = bar.winfo_children()[-1]
+        ttk.Button(bar, text="Extraire .ts + ouvrir", command=self._extract_video).pack(side="left", padx=8)
+        self.video_status = tk.StringVar(value="Analyser la vidéo 4609 (MPEG-TS + KLV MISB 0601). "
+                                         "La lecture ouvre le .ts dans le lecteur système.")
+        ttk.Label(parent, textvariable=self.video_status, padding=(0, 2), font=("Consolas", 9)).pack(anchor="w")
+        self.video_text = scrolledtext.ScrolledText(parent, font=("Consolas", 9), wrap="none")
+        self.video_text.pack(fill="both", expand=True)
+
+    def _analyze_video(self):
+        if video4609 is None:
+            messagebox.showerror("Vidéo", "video4609 indisponible."); return
+        path = self._valid_path()
+        if not path:
+            return
+        self.video_status.set("Analyse vidéo en cours…")
+        self.video_text.delete("1.0", "end"); self.video_text.insert("end", "Analyse en cours…\n")
+        threading.Thread(target=self._video_worker, args=(path, self._limit()), daemon=True).start()
+
+    def _video_worker(self, path, limit):
+        try:
+            infos = video4609.inspect(path, None, limit)
+            self.q.put(("video", infos, video4609._report(infos)))
+        except Exception as e:
+            self.q.put(("video_status", "Analyse vidéo échouée : %s" % e))
+
+    def _extract_video(self):
+        if video4609 is None:
+            return
+        path = self._valid_path()
+        if not path:
+            return
+        try:
+            dport = int(self.video_port.get())
+        except ValueError:
+            messagebox.showwarning("Vidéo", "Analyse d'abord, puis choisis un port de flux vidéo."); return
+        out = filedialog.asksaveasfilename(defaultextension=".ts", initialfile="flux_%d.ts" % dport,
+                                           filetypes=[("MPEG-TS", "*.ts")])
+        if not out:
+            return
+        self.video_status.set("Extraction du flux %d…" % dport)
+        threading.Thread(target=self._extract_worker, args=(path, dport, out, self._limit()), daemon=True).start()
+
+    def _extract_worker(self, path, dport, out, limit):
+        try:
+            n = video4609.extract_ts(path, dport, out, None, limit)
+            self.q.put(("video_status", "TS écrit : %s (%.1f Mo) — ouverture…" % (out, n / 1e6)))
+            try:
+                os.startfile(out)   # lecteur système (Windows)
+            except AttributeError:
+                self.q.put(("video_status", "TS écrit : %s — ouvre-le dans VLC/ffplay." % out))
+        except Exception as e:
+            self.q.put(("video_status", "Extraction échouée : %s" % e))
 
     # ── Onglet CoT ───────────────────────────────────────────────────────
     def _build_cot_tab(self, parent):
@@ -837,6 +905,17 @@ class Console(tk.Tk):
                     self.cot_status.set(msg[1])
                 elif kind == "cot":
                     self._populate_cot(msg[1], msg[2], msg[3])
+                elif kind == "video_status":
+                    self.video_status.set(msg[1])
+                elif kind == "video":
+                    infos, report = msg[1], msg[2]
+                    self.video_text.delete("1.0", "end"); self.video_text.insert("end", report)
+                    ports = [str(i["dport"]) for i in infos]
+                    self.video_port_cb.configure(values=ports)
+                    if ports and not self.video_port.get():
+                        self.video_port.set(ports[0])
+                    nk = sum(1 for i in infos if i.get("klv"))
+                    self.video_status.set("Vidéo : %d flux TS, %d avec KLV décodé." % (len(infos), nk))
                 elif kind == "track_err":
                     self.gmti_status.set(msg[1]); self.track_btn.config(state="normal")
                     messagebox.showerror("Tracker", msg[1])
