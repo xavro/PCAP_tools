@@ -34,22 +34,33 @@ GUI ne fait qu'appeler `pcap_analyze` et `pcap_replay`.
 
 **Onglet « GMTI → Pistes »** — la chaîne d'exploitation, tout en cliquant :
 
-1. **Décoder GMTI** (auto-détection du port) → plots MTI (via `gmti_pcap_to_csv`).
-2. Choisir un **profil** (maritime / routier / convoi / personnel / aérien) et
-   **Lancer le tracker** (`prototype_tracker_gmti_v5/track_run.py`).
-3. Les **plots et pistes** s'affichent sur un **canvas natif** (repère local ENU,
-   mètres) : glisser = pan, molette = zoom, échelle en bas. Cases *plots bruts* /
-   *lissage RTS*.
+1. **Décoder GMTI** → plots MTI. Décodeur **complet** (`stanag4607_extract`,
+   hauteur + zone job + porteur + classification) sur pcap classique de taille
+   raisonnable ; **repli streaming** (`gmti_pcap_to_csv`, pcapng / gros fichiers,
+   auto-détection du port) sinon.
+2. Choisir un **profil** (maritime / routier / **routier_zone** / convoi /
+   personnel / aérien) et **Lancer le tracker**
+   (`prototype_tracker_gmti_v7/track_run.py`).
+3. **Plots et pistes** sur un **canvas natif** (repère local ENU, mètres) :
+   glisser = pan, molette = zoom, échelle en bas. Overlays quand le décodeur
+   complet est utilisé : **zone de job** (bounding area, pointillés), **trajet
+   porteur** (Platform Location), **plots colorés par classification**. Cases
+   *plots bruts* / *lissage RTS*.
 
 C'est une **boucle de tuning** : on décode **une fois**, puis on relance le
-tracker par profil en un clic (~0,03 s) pour comparer le nombre de pistes et la
-fragmentation — la « méthode de tuning sur données réelles » du tracker, en
-interactif. Pour les captures très denses (dizaines de milliers de plots), le
-run est plus long ; borner avec le champ *limit*.
+tracker par profil en un clic (~0,03 s) pour comparer nombre de pistes et
+fragmentation. `routier_zone` (vie de piste en secondes, gate croissant) est le
+profil des scans grande zone où une cible n'est pas vue à chaque dwell.
 
-> `track_run.py` (noyau sans matplotlib) est la source unique des profils —
-> `demo.py` s'en sert aussi. Le rejeu comme le tracker tournent dans un thread
-> (UI réactive, mise à jour via une file thread-safe).
+**Onglet « Inventaire 4607 »** — *ce que le vecteur émet réellement* : lance
+`stanag4607_extract` et affiche segments reçus, **présence de chaque champ (%)**,
+plages min/méd/max, **classifications**, **Job Definition** (radar mode,
+incertitudes nominales, bounding area), positions porteur. Outil de validation
+pré-prod. Lit le **pcap classique** (pcapng → `editcap -F pcap`).
+
+> Le tracker (v7) et l'extracteur vivent dans `prototype_tracker_gmti_v7/`.
+> numpy/scipy sont chargés **en lazy** → l'onglet Rejeu marche sans eux. Rejeu,
+> décodage, tracker et inventaire tournent dans un thread (UI réactive via file).
 
 ## Dépendances
 

@@ -33,9 +33,17 @@ except Exception:
 
 SPEEDS = [("×1 (temps réel)", 1.0), ("×2", 2.0), ("×5", 5.0), ("×10", 10.0), ("max", 0.0)]
 SCAN_LIMIT_DEFAULT = 300000
-PROFILE_NAMES = ["defaut", "maritime", "routier", "convoi", "personnel", "aerien"]
+PROFILE_NAMES = ["defaut", "maritime", "routier", "routier_zone", "convoi", "personnel", "aerien"]
+TRACKER_DIR = "prototype_tracker_gmti_v7"       # source du tracker + de l'extracteur
+# Au-delà, l'extracteur (lecture intégrale en mémoire) est évité au profit du
+# décodage en streaming de gmti_pcap_to_csv.
+EXTRACT_MAX_BYTES = 700 * 1024 * 1024
 PALETTE = ["#ffc107", "#00c8ff", "#7cff6b", "#ff6ec7", "#ff8a3d", "#b388ff",
            "#4dd0e1", "#f06292", "#aed581", "#ff5252"]
+# Couleurs de plots par classification STANAG (target classification).
+CLASS_COLORS = {6: "#00c8ff", 9: "#ff6ec7", 10: "#ffc107", 1: "#ff8a3d",
+                2: "#ff8a3d", 3: "#7cff6b", 4: "#7cff6b"}
+CLASS_DEFAULT = "#59636f"
 
 
 # ── Logique pure (testable sans Tk) ─────────────────────────────────────────
@@ -54,12 +62,32 @@ def is_app_proto(dominant):
     return dominant.startswith(pcap_analyze.APP)
 
 
+def _tracker_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), TRACKER_DIR)
+
+
 def load_track_run():
-    """Import LAZY du noyau tracker (numpy+scipy). Lève ImportError si absent."""
-    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prototype_tracker_gmti_v5")
+    """Import LAZY du noyau tracker v7 (numpy+scipy). Lève ImportError si absent."""
+    d = _tracker_dir()
     if d not in sys.path:
         sys.path.insert(0, d)
     return importlib.import_module("track_run")
+
+
+def load_extract():
+    """Import LAZY de l'extracteur 4607 complet (pur Python)."""
+    d = _tracker_dir()
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    return importlib.import_module("stanag4607_extract")
+
+
+def _is_pcapng(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x0a\x0d\x0d\x0a"
+    except OSError:
+        return False
 
 
 # ── Canvas natif : plots + pistes, pan (glisser) / zoom (molette) ────────────
@@ -67,8 +95,10 @@ def load_track_run():
 class TrackCanvas(tk.Canvas):
     def __init__(self, parent):
         super().__init__(parent, bg="#0e1216", highlightthickness=0)
-        self.raw = []
+        self.raw = []            # (x,y) ou (x,y,classif)
         self.tracks = []
+        self.zone = []           # bounding area du job [(x,y),...]
+        self.porteur = []        # trajet Platform Location [(x,y),...]
         self.show_raw = True
         self.show_smooth = False
         self.scale = 1.0
@@ -82,17 +112,20 @@ class TrackCanvas(tk.Canvas):
         self.bind("<Button-4>", self._wheel)            # X11 molette haut
         self.bind("<Button-5>", self._wheel)            # X11 molette bas
 
-    def set_data(self, raw, tracks, fit=True):
+    def set_data(self, raw, tracks, zone=None, porteur=None, fit=True):
         self.raw = raw or []
         self.tracks = tracks or []
+        self.zone = zone or []
+        self.porteur = porteur or []
         if fit:
             self.fit()
         self.redraw()
 
     def fit(self):
-        pts = list(self.raw)
+        pts = [(p[0], p[1]) for p in self.raw]
         for tr in self.tracks:
             pts += tr["pts"]
+        pts += self.zone + self.porteur
         if not pts:
             self.scale, self.cx, self.cy = 1.0, 0.0, 0.0
             return
@@ -125,10 +158,25 @@ class TrackCanvas(tk.Canvas):
                              text="(décoder le GMTI puis lancer le tracker)",
                              fill="#5a6675", font=("Segoe UI", 11))
             return
-        if self.show_raw:
-            for x, y in self.raw:
+        # Zone de job (bounding area) : polygone tireté.
+        if len(self.zone) >= 3:
+            flat = []
+            for x, y in self.zone + [self.zone[0]]:
                 sx, sy = self.w2s(x, y)
-                self.create_rectangle(sx, sy, sx + 1, sy + 1, outline="#59636f")
+                flat += [sx, sy]
+            self.create_line(*flat, fill="#3d6e8c", width=1, dash=(5, 4))
+        # Trajet porteur (Platform Location).
+        if len(self.porteur) >= 2:
+            flat = []
+            for x, y in self.porteur:
+                sx, sy = self.w2s(x, y)
+                flat += [sx, sy]
+            self.create_line(*flat, fill="#8a8f98", width=1, dash=(2, 3))
+        if self.show_raw:
+            for p in self.raw:
+                sx, sy = self.w2s(p[0], p[1])
+                col = CLASS_COLORS.get(p[2], CLASS_DEFAULT) if len(p) > 2 else "#59636f"
+                self.create_rectangle(sx, sy, sx + 1, sy + 1, outline=col)
         for i, tr in enumerate(self.tracks):
             col = PALETTE[i % len(PALETTE)]
             pts = tr["smooth"] if (self.show_smooth and tr.get("smooth")) else tr["pts"]
@@ -233,6 +281,7 @@ class Console(tk.Tk):
         self.stop_event = threading.Event()
         self.q = queue.Queue()
         self.gmti_csv = None
+        self.sink = None            # Sink de l'extracteur (overlays/inventaire), si dispo
         self.path_var = tk.StringVar()
         self.limit_var = tk.StringVar(value=str(SCAN_LIMIT_DEFAULT))
         self._build_ui()
@@ -251,10 +300,13 @@ class Console(tk.Tk):
         nb.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         self.tab_replay = ttk.Frame(nb)
         self.tab_gmti = ttk.Frame(nb)
+        self.tab_inv = ttk.Frame(nb)
         nb.add(self.tab_replay, text="  Rejeu  ")
         nb.add(self.tab_gmti, text="  GMTI → Pistes  ")
+        nb.add(self.tab_inv, text="  Inventaire 4607  ")
         self._build_replay_tab(self.tab_replay)
         self._build_gmti_tab(self.tab_gmti)
+        self._build_inventaire_tab(self.tab_inv)
 
         self.status_var = tk.StringVar(value="Prêt.")
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2),
@@ -323,11 +375,46 @@ class Console(tk.Tk):
         self.track_canvas.pack(fill="both", expand=True)
 
     # ── Actions communes ─────────────────────────────────────────────────
+    # ── Onglet Inventaire 4607 ───────────────────────────────────────────
+    def _build_inventaire_tab(self, parent):
+        bar = ttk.Frame(parent, padding=(0, 6))
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Analyser (inventaire 4607)", command=self._inventaire).pack(side="left")
+        ttk.Label(bar, text="Ce que le vecteur émet : segments, présence des champs, "
+                  "plages, classifications, job def, porteur.", padding=(8, 0)).pack(side="left")
+        self.inv_text = scrolledtext.ScrolledText(parent, font=("Consolas", 9), wrap="none")
+        self.inv_text.pack(fill="both", expand=True)
+
+    def _inventaire(self):
+        path = self._valid_path()
+        if not path:
+            return
+        if _is_pcapng(path):
+            messagebox.showinfo("Inventaire", "L'inventaire complet lit le pcap CLASSIQUE.\n"
+                                "Convertis le pcapng :  editcap -F pcap in.pcapng out.pcap")
+            return
+        if os.path.getsize(path) > EXTRACT_MAX_BYTES and not messagebox.askyesno(
+                "Inventaire", "Fichier volumineux : l'inventaire lit tout en mémoire. Continuer ?"):
+            return
+        self.inv_text.delete("1.0", "end")
+        self.inv_text.insert("end", "Analyse en cours…\n")
+        threading.Thread(target=self._inventaire_worker, args=(path,), daemon=True).start()
+
+    def _inventaire_worker(self, path):
+        try:
+            ex = load_extract()
+            sink = ex.extract(path)
+            self.sink = sink
+            self.q.put(("inventaire", ex.rapport(sink)))
+        except Exception as e:
+            self.q.put(("inventaire", "Inventaire échoué : %s" % e))
+
     def _browse(self):
         p = filedialog.askopenfilename(filetypes=[("Captures", "*.pcap *.pcapng *.cap"), ("Tous", "*.*")])
         if p:
             self.path_var.set(p)
             self.gmti_csv = None
+            self.sink = None
 
     def _limit(self):
         try:
@@ -427,15 +514,34 @@ class Console(tk.Tk):
         threading.Thread(target=self._decode_worker, args=(path, out, self._limit()), daemon=True).start()
 
     def _decode_worker(self, path, out, limit):
+        # 1) Décodeur complet (pcap classique, taille raisonnable) -> Sink riche
+        #    (overlays zone/porteur + classification + hauteur).
+        if not _is_pcapng(path) and os.path.getsize(path) <= EXTRACT_MAX_BYTES:
+            try:
+                ex = load_extract()
+                sink = ex.extract(path)
+                if sink.plots:
+                    ex.write_csv(sink, out)
+                    self.sink = sink
+                    self.gmti_csv = out
+                    self.q.put(("gmti_status", "GMTI décodé (extracteur complet) : %d plots, "
+                                "%d dwells. Profil + Lancer le tracker." % (len(sink.plots), sink.dwell_count)))
+                    return
+            except Exception:
+                pass   # repli ci-dessous
+        # 2) Repli STREAMING (pcapng / gros fichier / extracteur KO) — sans overlays.
+        self.sink = None
+        if gmti_pcap_to_csv is None:
+            self.q.put(("gmti_status", "Aucun décodeur GMTI disponible.")); return
         try:
             rc = gmti_pcap_to_csv.export(path, out, None, limit)
             if rc != 0:
                 self.q.put(("gmti_status", "Aucun flux GMTI détecté dans ce pcap.")); return
-            n = 0
             with open(out, encoding="utf-8") as f:
                 n = max(0, sum(1 for _ in f) - 1)
             self.gmti_csv = out
-            self.q.put(("gmti_status", "GMTI décodé : %d plots. Choisis un profil et lance le tracker." % n))
+            self.q.put(("gmti_status", "GMTI décodé (streaming) : %d plots. "
+                        "(overlays zone/porteur indisponibles en repli)" % n))
         except Exception as e:
             self.q.put(("gmti_status", "Décodage GMTI échoué : %s" % e))
 
@@ -470,6 +576,26 @@ class Console(tk.Tk):
         except Exception as e:
             self.q.put(("track_err", "Tracker échoué : %s" % e))
 
+    def _overlays(self, res):
+        """Construit (raw_coloré, zone_job, trajet_porteur) depuis le Sink de
+        l'extracteur, projetés dans le repère ENU du run. Sans Sink : raw brut."""
+        frame = res.get("frame")
+        if self.sink is None or frame is None:
+            return res["raw"], [], []
+        raw = []
+        for d, t, (la, lo) in self.sink.plots:
+            x, y = frame.to_xy(la, lo)
+            c = t.get("classification")
+            raw.append((x, y, int(c)) if c is not None else (x, y))
+        zone = []
+        for j in self.sink.jobdefs:
+            ba = j.get("bounding_area") or []
+            if len(ba) >= 3 and any(abs(a) + abs(b) > 1e-6 for a, b in ba):
+                zone = [frame.to_xy(la, lo) for la, lo in ba]
+                break
+        porteur = [frame.to_xy(la, lo) for (la, lo) in self.sink.platlocs]
+        return raw, zone, porteur
+
     def _toggle_view(self):
         self.track_canvas.show_raw = self.raw_var.get()
         self.track_canvas.show_smooth = self.smooth_var.get()
@@ -500,12 +626,20 @@ class Console(tk.Tk):
                     self.gmti_status.set(msg[1])
                 elif kind == "tracked":
                     res, profile = msg[1], msg[2]
+                    raw, zone, porteur = self._overlays(res)
                     self.track_canvas.show_raw = self.raw_var.get()
                     self.track_canvas.show_smooth = self.smooth_var.get()
-                    self.track_canvas.set_data(res["raw"], res["tracks"], fit=True)
-                    self.gmti_status.set("Profil %s : %d pistes retenues, %d ébauches rejetées (%d plots)."
-                                        % (profile, res["n_kept"], res["n_rejected"], len(res["raw"])))
+                    self.track_canvas.set_data(raw, res["tracks"], zone=zone, porteur=porteur, fit=True)
+                    extra = ""
+                    if zone:
+                        extra += " · zone job"
+                    if porteur:
+                        extra += " · porteur %d pos" % len(porteur)
+                    self.gmti_status.set("Profil %s : %d pistes, %d rejetées (%d plots)%s."
+                                        % (profile, res["n_kept"], res["n_rejected"], len(res["raw"]), extra))
                     self.track_btn.config(state="normal")
+                elif kind == "inventaire":
+                    self.inv_text.delete("1.0", "end"); self.inv_text.insert("end", msg[1])
                 elif kind == "track_err":
                     self.gmti_status.set(msg[1]); self.track_btn.config(state="normal")
                     messagebox.showerror("Tracker", msg[1])
