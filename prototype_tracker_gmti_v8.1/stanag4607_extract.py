@@ -24,9 +24,14 @@ receiver GeoEvent sur le meme pcap avant d'exploiter les valeurs converties.
 """
 import csv
 import json
+import os
 import struct
 import sys
 from collections import Counter, defaultdict
+
+# Lecteur pcap/pcapng COMMUN (au niveau racine de la suite d'outils).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pcap_frames import iter_frames, parse  # noqa: E402
 
 # ---------------------------------------------------------------- conversions
 def sa32(r): return r * (90.0 / 2**31)
@@ -399,45 +404,25 @@ def write_csv(s, path):
                         t.get("height_m", ""), t.get("sig_height_m", "")])
 
 # ---------------------------------------------------------------- pcap
+# Conservée pour compat (l'API extract() catch ValueError) ; plus levée depuis
+# que le lecteur commun `pcap_frames` gère nativement le pcapng.
 class PcapngError(ValueError):
-    """pcapng non supporté par cet extracteur (convertir en pcap classique)."""
+    """(obsolète) pcapng désormais supporté nativement."""
 
 
 def udp_streams(path, port=None):
-    data = open(path, "rb").read()
-    if data[0:4] == b"\x0a\x0d\x0d\x0a":
-        raise PcapngError("pcapng : convertir avec  editcap -F pcap in.pcapng out.pcap")
-    if data[0:4] in (b"\xa1\xb2\xc3\xd4", b"\xa1\xb2\x3c\x4d"):
-        e = ">"
-    elif data[0:4] in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1"):
-        e = "<"
-    else:
-        raise ValueError("format pcap non reconnu")
-    off, n, streams = 24, len(data), {}
-    while off + 16 <= n:
-        _, _, incl, _ = struct.unpack(e + "IIII", data[off:off + 16])
-        off += 16
-        pkt = data[off:off + incl]
-        off += incl
-        if len(pkt) < 34:
+    """Réassemble les payloads UDP par flux (src,sport,dst,dport). Lecture via le
+    lecteur commun `pcap_frames` (pcap ET pcapng, streaming ; conserve le
+    réassemblage par flux, propre à l'extracteur 4607)."""
+    streams = {}
+    for _ts, lt, frame in iter_frames(path):
+        r = parse(lt, frame)
+        if not r or r[0] != "UDP":
             continue
-        eth = 12
-        etype = int.from_bytes(pkt[eth:eth + 2], "big")
-        if etype == 0x8100:
-            eth += 4
-            etype = int.from_bytes(pkt[eth:eth + 2], "big")
-        if etype != 0x0800:
-            continue
-        ip = eth + 2
-        ihl = (pkt[ip] & 0x0F) * 4
-        if pkt[ip + 9] != 17:
-            continue
-        u = ip + ihl
-        sport, dport, ulen = struct.unpack(">HHH", pkt[u:u + 6])
+        _proto, src, sport, dst, dport, pl = r
         if port and port not in (sport, dport):
             continue
-        key = (pkt[ip + 12:ip + 16], pkt[ip + 16:ip + 20], sport, dport)
-        streams.setdefault(key, bytearray()).extend(pkt[u + 8:u + ulen])
+        streams.setdefault((src, sport, dst, dport), bytearray()).extend(pl)
     return streams
 
 # ---------------------------------------------------------------- API importable
@@ -535,7 +520,7 @@ if __name__ == "__main__":
     except ValueError as ex:            # inclut PcapngError
         sys.exit(str(ex))
     for key, buf in streams.items():
-        tag = f"{'.'.join(map(str, key[0]))}:{key[2]} -> {'.'.join(map(str, key[1]))}:{key[3]}"
+        tag = f"{key[0]}:{key[1]} -> {key[2]}:{key[3]}"
         if buf[:1] == b"\x47":
             print(f"flux {tag} : MPEG-TS/4609 — ignore")
             continue

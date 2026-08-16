@@ -13,7 +13,16 @@ Ferme la boucle d'évaluation d'algorithme SANS passer par GeoEvent :
 
 Décodage PILOTÉ PAR LE MASQUE d'existence (offsets dynamiques), aligné sur le
 parser Java Gmti4607Parser (mêmes tailles de champ). Lit pcap classique (LE/BE,
-µs/ns) et pcapng, en streaming. Bibliothèque standard uniquement.
+µs/ns) et pcapng, en streaming (lecteur commun `pcap_frames`). Bibliothèque
+standard uniquement.
+
+Hypothèses / limites :
+  - Un datagramme UDP peut porter UN ou PLUSIEURS paquets 4607 concaténés
+    (decode_packet_rows les enchaîne). looks_like_4607 valide le 1er paquet.
+  - Les payloads du port GMTI non reconnus 4607 sont COMPTÉS et signalés en fin
+    d'export (rend visible une fragmentation/format inattendu d'un futur vecteur).
+  - La FRAGMENTATION IP n'est pas réassemblée (cf. pcap_frames) : un paquet 4607
+    éclaté sur plusieurs paquets IP ne serait pas reconstitué.
 
 Usage :
   # auto-détection du port GMTI, écrit plots.csv
@@ -29,85 +38,19 @@ from __future__ import annotations
 
 import argparse
 import collections
+import os
 import struct
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pcap_frames import iter_frames, udp_payload  # noqa: E402  (lecteur commun pcap/pcapng)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
-# --------------------------------------------------------------------------
-# Lecture pcap / pcapng (streaming) — aligné sur pcap_replay.py / pcap_analyze.py
-# --------------------------------------------------------------------------
-
-def iter_frames(path):
-    with open(path, "rb") as f:
-        magic = f.read(4)
-        if magic in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4",
-                     b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"):
-            le = magic in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1")
-            nano = magic in (b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d")
-            end = "<" if le else ">"
-            rest = f.read(20)
-            linktype = struct.unpack(end + "I", rest[16:20])[0]
-            tsdiv = 1e9 if nano else 1e6
-            hdr = struct.Struct(end + "IIII")
-            while True:
-                h = f.read(16)
-                if len(h) < 16:
-                    return
-                ts_s, ts_frac, incl, orig = hdr.unpack(h)
-                data = f.read(incl)
-                if len(data) < incl:
-                    return
-                yield (linktype, data)
-        elif magic == b"\x0a\x0d\x0d\x0a":
-            f.seek(0)
-            linktype = 1
-            while True:
-                head = f.read(8)
-                if len(head) < 8:
-                    return
-                btype, blen = struct.unpack("<II", head)
-                body = f.read(blen - 12)
-                f.read(4)
-                if len(body) < blen - 12:
-                    return
-                if btype == 0x00000001:
-                    linktype = struct.unpack("<H", body[0:2])[0]
-                elif btype == 0x00000006:
-                    caplen = struct.unpack("<I", body[12:16])[0]
-                    yield (linktype, body[20:20 + caplen])
-                elif btype == 0x00000003:
-                    yield (linktype, body[4:])
-        else:
-            raise ValueError("format inconnu (magic %s)" % magic.hex())
-
-
-def udp_payload(linktype, frame):
-    """(dport, payload) pour un datagramme UDP IPv4, sinon None."""
-    if linktype != 1 or len(frame) < 34:
-        return None
-    p = 14
-    eth = frame[12:14]
-    if eth == b"\x81\x00":
-        eth = frame[16:18]
-        p = 18
-    if eth != b"\x08\x00":
-        return None
-    ihl = (frame[p] & 0x0f) * 4
-    if frame[p + 9] != 17:
-        return None
-    t = p + ihl
-    if len(frame) < t + 8:
-        return None
-    dport = struct.unpack(">H", frame[t + 2:t + 4])[0]
-    ulen = struct.unpack(">H", frame[t + 4:t + 6])[0]
-    payload = frame[t + 8: t + ulen] if 8 <= ulen <= len(frame) - t else frame[t + 8:]
-    return (dport, payload)
-
-
+# Lecture pcap/pcapng : lecteur commun `pcap_frames` (importé en tête).
 # --------------------------------------------------------------------------
 # Décodage STANAG 4607 — tailles de champ alignées sur Gmti4607Parser (bits 0..47)
 # --------------------------------------------------------------------------
@@ -152,39 +95,54 @@ def _mask_bit(mask8, bit):
 
 
 def looks_like_4607(b):
+    """Valide qu'un payload COMMENCE par un paquet 4607 plausible (en-tête ASCII +
+    1er segment cohérent). N'exige plus `pkt_size == len(payload)` : un datagramme
+    peut porter PLUSIEURS paquets 4607 concaténés (cf. decode_packet_rows)."""
     if len(b) < PKT_HDR + 5:
         return False
     try:
         pkt = _u32(b, 2)
-        if not (PKT_HDR <= pkt <= len(b) and abs(pkt - len(b)) <= 4):
+        if not (PKT_HDR <= pkt <= len(b)):        # le 1er paquet tient dans le payload
             return False
         if not (all(32 <= c < 127 for c in b[0:2]) and all(32 <= c < 127 for c in b[6:8])):
             return False
         size = _u32(b, 33)
-        return 5 <= size <= (min(pkt, len(b)) - PKT_HDR)
+        return 5 <= size <= (pkt - PKT_HDR)
     except Exception:
         return False
 
 
 def decode_packet_rows(b):
-    """Décode un paquet 4607 -> liste de dicts (un par target report)."""
+    """Décode le(s) paquet(s) 4607 d'un payload -> liste de dicts (un par target
+    report). Enchaîne PLUSIEURS paquets 4607 concaténés dans le même datagramme
+    (tant qu'un en-tête plausible suit : 2 caractères ASCII + taille cohérente)."""
     rows = []
-    if len(b) < PKT_HDR + 5:
-        return rows
-    try:
-        pkt_size = _u32(b, 2)
-        limit = min(pkt_size, len(b))
-        idx = PKT_HDR
-        while idx + 5 <= limit:
-            seg_type = _u8(b, idx)
-            seg_size = _u32(b, idx + 1)
-            if seg_size < 5 or idx + seg_size > limit:
-                break
-            if seg_type == SEG_DWELL:
-                rows.extend(_decode_dwell(b, idx))
-            idx += seg_size
-    except Exception:
-        pass
+    n = len(b)
+    off = 0
+    while off + PKT_HDR + 5 <= n:
+        # En-tête plausible du paquet à `off` (version = 2 caractères ASCII).
+        if not (32 <= b[off] < 127 and 32 <= b[off + 1] < 127):
+            break
+        try:
+            pkt_size = _u32(b, off + 2)
+        except Exception:
+            break
+        if pkt_size < PKT_HDR:
+            break
+        limit = min(off + pkt_size, n)
+        idx = off + PKT_HDR
+        try:
+            while idx + 5 <= limit:
+                seg_type = _u8(b, idx)
+                seg_size = _u32(b, idx + 1)
+                if seg_size < 5 or idx + seg_size > limit:
+                    break
+                if seg_type == SEG_DWELL:
+                    rows.extend(_decode_dwell(b, idx))
+                idx += seg_size
+        except Exception:
+            break
+        off += pkt_size                          # paquet 4607 suivant éventuel
     return rows
 
 
@@ -267,7 +225,7 @@ def detect_gmti_port(path, sample=200000):
     ok = collections.Counter()
     tot = collections.Counter()
     n = 0
-    for lt, frame in iter_frames(path):
+    for _ts, lt, frame in iter_frames(path):
         n += 1
         if n > sample:
             break
@@ -310,12 +268,12 @@ def export(path, out_path, port, limit=0):
             return 1
         print("Port GMTI détecté : UDP %d" % port)
 
-    n_pkt = n_rows = 0
+    n_pkt = n_rows = n_rejected = 0
     dwells = set()
     n = 0
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         f.write(";".join(CSV_COLS) + "\n")
-        for lt, frame in iter_frames(path):
+        for _ts, lt, frame in iter_frames(path):
             n += 1
             if limit and n > limit:
                 break
@@ -323,7 +281,10 @@ def export(path, out_path, port, limit=0):
             if not r:
                 continue
             dport, pl = r
-            if dport != port or not looks_like_4607(pl):
+            if dport != port:
+                continue
+            if not looks_like_4607(pl):
+                n_rejected += 1          # payload du port GMTI non reconnu 4607
                 continue
             n_pkt += 1
             for row in decode_packet_rows(pl):
@@ -333,6 +294,10 @@ def export(path, out_path, port, limit=0):
 
     print("%d paquets GMTI décodés (port %d) -> %d plots MTI, %d dwells distincts"
           % (n_pkt, port, n_rows, len(dwells)))
+    if n_rejected:
+        # Rend visible une éventuelle fragmentation/format inattendu du vecteur.
+        print("ATTENTION : %d payload(s) du port %d rejeté(s) (non reconnus 4607)"
+              % (n_rejected, port))
     print("-> %s" % out_path)
     print("Évaluer l'algo : python prototype_tracker_gmti/demo.py %s" % out_path)
     return 0

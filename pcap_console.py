@@ -14,6 +14,7 @@ L'onglet Rejeu ne dépend de rien (stdlib). L'onglet GMTI charge le tracker
 """
 import base64
 import importlib
+import importlib.util
 import math
 import os
 import queue
@@ -142,20 +143,49 @@ def _tracker_dir():
     return os.path.join(base, best) if best else os.path.join(base, TRACKER_PREFIX + "7")
 
 
+def _purge_tracker_paths():
+    """Retire de sys.path tout dossier de version tracker (évite qu'un `import
+    tracker` interne résolve vers une VIEILLE version restée sur le chemin)."""
+    for p in list(sys.path):
+        if os.path.basename(p).startswith(TRACKER_PREFIX):
+            sys.path.remove(p)
+
+
+def _load_module_from(path, modname):
+    """Charge un module par CHEMIN explicite (pas de cache sys.modules périmé) :
+    re-exécute à chaque appel -> une nouvelle version déposée est bien prise."""
+    spec = importlib.util.spec_from_file_location(modname, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[modname] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def load_track_run():
-    """Import LAZY du noyau tracker v7 (numpy+scipy). Lève ImportError si absent."""
+    """Import LAZY du noyau tracker (numpy+scipy) par chemin explicite.
+
+    Charge `tracker.py` AVANT `track_run.py` (qui fait `import tracker`) en
+    l'injectant dans sys.modules — plus sous un nom qualifié par version pour
+    tracer. Purge d'abord sys.path des anciennes versions."""
     d = _tracker_dir()
-    if d not in sys.path:
-        sys.path.insert(0, d)
-    return importlib.import_module("track_run")
+    _purge_tracker_paths()
+    qual = os.path.basename(d).replace(".", "_").replace("-", "_")
+    tracker_mod = _load_module_from(os.path.join(d, "tracker.py"), "tracker")
+    sys.modules["%s_tracker" % qual] = tracker_mod       # nom qualifié (traçabilité)
+    return _load_module_from(os.path.join(d, "track_run.py"), "track_run")
 
 
 def load_extract():
-    """Import LAZY de l'extracteur 4607 complet (pur Python)."""
+    """Import LAZY de l'extracteur 4607 (pur Python) par chemin explicite.
+    (Il fait `from pcap_frames import …` : la racine Tools reste sur sys.path.)"""
     d = _tracker_dir()
-    if d not in sys.path:
-        sys.path.insert(0, d)
-    return importlib.import_module("stanag4607_extract")
+    _purge_tracker_paths()
+    return _load_module_from(os.path.join(d, "stanag4607_extract.py"), "stanag4607_extract")
+
+
+def tracker_version():
+    """Nom de la version de tracker qui sera chargée (ex. 'v8.1')."""
+    return os.path.basename(_tracker_dir())[len("prototype_tracker_gmti_"):]
 
 
 def _is_pcapng(path):
@@ -644,7 +674,7 @@ class Console(tk.Tk):
         for cv in (self.track_canvas, self.cot_canvas, self.fused_canvas):
             cv.request_basemap = self._basemap_for
 
-        self.status_var = tk.StringVar(value="Prêt.")
+        self.status_var = tk.StringVar(value="Prêt.  Tracker : %s" % tracker_version())
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2),
                   font=("Consolas", 9)).pack(anchor="w")
 
