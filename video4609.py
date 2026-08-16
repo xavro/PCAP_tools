@@ -242,6 +242,40 @@ def decode_klv_0601(buf):
     return out
 
 
+def _fnum(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def klv_samples(buf, klv_pid, max_sets=400):
+    """Décode les sets KLV 0601 successifs -> échantillons position capteur +
+    centre image : [(sensor_lat, sensor_lon, fc_lat, fc_lon)] (fc = None si absent)."""
+    if klv_pid is None:
+        return []
+    acc = bytearray()
+    for pkt in _iter_ts(buf):
+        if _pid(pkt) == klv_pid:
+            acc.extend(_payload(pkt))
+    data = bytes(acc)
+    out, start = [], 0
+    while len(out) < max_sets:
+        idx = data.find(MISB_0601_KEY, start)
+        if idx < 0:
+            break
+        start = idx + len(MISB_0601_KEY)
+        rec = decode_klv_0601(data[idx:])
+        if not rec:
+            continue
+        d = {tag: val for tag, _n, val in rec}
+        slat, slon = _fnum(d.get(13)), _fnum(d.get(14))
+        if slat is None or slon is None:
+            continue
+        out.append((slat, slon, _fnum(d.get(23)), _fnum(d.get(24))))
+    return out
+
+
 def klv_from_stream(buf, klv_pid):
     """Concatène le payload du PID KLV et décode le 1er set 0601."""
     if klv_pid is None:
@@ -271,6 +305,16 @@ def inspect(path, port=None, limit=0):
         result.append(info)
     result.sort(key=lambda d: -d["bytes"])
     return result
+
+
+def sensor_samples(path, port=None, limit=0, max_sets=400):
+    """Position capteur + centre image dans le temps, pour le flux KLV principal."""
+    streams = udp_ts_streams(path, port, limit)
+    for (dst, dport), buf in sorted(streams.items(), key=lambda kv: -len(kv[1])):
+        info = analyze_stream(buf)
+        if info["klv_pid"] is not None:
+            return klv_samples(buf, info["klv_pid"], max_sets)
+    return []
 
 
 def extract_ts(path, dport, out_path, port=None, limit=0):

@@ -444,6 +444,101 @@ class CotCanvas(TrackCanvas):
             x += 78
 
 
+# ── Canvas fusionné : GMTI + CoT + empreinte vidéo sur une même carte ───────
+
+class FusedCanvas(TrackCanvas):
+    """Superpose plusieurs couches (repère ENU commun) : pistes GMTI, points CoT
+    (par affiliation), position capteur vidéo + empreinte au sol. Hérite le
+    pan/zoom, le graticule, le fond ArcGIS et la lecture au survol."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.layers = {"gmti_tracks": [], "gmti_raw": [], "cot_points": [],
+                       "cot_tracks": [], "video_sensor": [], "video_footprints": []}
+        self.show_gmti = True
+        self.show_cot = True
+        self.show_video = True
+
+    def set_fused(self, layers, frame, fit=True):
+        self.layers = layers
+        self.geo_frame = frame
+        if fit:
+            self._fit_visible()
+        self.redraw()
+
+    def _fit_visible(self):
+        """Cadre uniquement sur les couches ACTIVÉES (les flux peuvent être dans
+        des zones géographiques différentes)."""
+        L = self.layers
+        pts = []
+        if self.show_gmti:
+            for tr in L["gmti_tracks"]:
+                pts += tr
+            pts += [(p[0], p[1]) for p in L["gmti_raw"]]
+        if self.show_cot:
+            for tr in L["cot_tracks"]:
+                pts += tr
+            pts += [(p[0], p[1]) for p in L["cot_points"]]
+        if self.show_video:
+            pts += L["video_sensor"]
+            for sx, sy, fx, fy in L["video_footprints"]:
+                pts += [(sx, sy), (fx, fy)]
+        self._fit_to(pts)
+
+    def redraw(self):
+        self.delete("all")
+        L = self.layers
+        if not any(L.values()):
+            self.create_text(self.winfo_width() / 2, self.winfo_height() / 2,
+                             text="(fusionner les couches d'un pcap)", fill="#5a6675",
+                             font=("Segoe UI", 11))
+            return
+        self._draw_basemap()
+        self.draw_graticule()
+        # Vidéo : empreinte (capteur -> centre image) + position capteur.
+        if self.show_video:
+            for sx, sy, fx, fy in L["video_footprints"]:
+                a = self.w2s(sx, sy); b = self.w2s(fx, fy)
+                self.create_line(a[0], a[1], b[0], b[1], fill="#8a8f98", width=1)
+            for x, y in L["video_sensor"]:
+                sx, sy = self.w2s(x, y)
+                self.create_rectangle(sx - 3, sy - 3, sx + 3, sy + 3, fill="#b388ff", outline="#101418")
+        # GMTI : plots faibles + pistes ambre.
+        if self.show_gmti:
+            for p in L["gmti_raw"]:
+                sx, sy = self.w2s(p[0], p[1])
+                self.create_rectangle(sx, sy, sx + 1, sy + 1, outline="#59503a")
+            for tr in L["gmti_tracks"]:
+                if len(tr) >= 2:
+                    flat = []
+                    for x, y in tr:
+                        s = self.w2s(x, y); flat += [s[0], s[1]]
+                    self.create_line(*flat, fill="#ffc107", width=2)
+        # CoT : points par affiliation + trace.
+        if self.show_cot:
+            for tr in L["cot_tracks"]:
+                if len(tr) >= 2:
+                    flat = []
+                    for x, y in tr:
+                        s = self.w2s(x, y); flat += [s[0], s[1]]
+                    self.create_line(*flat, fill="#3a4048", width=1)
+            for x, y, affil in L["cot_points"]:
+                sx, sy = self.w2s(x, y)
+                self.create_oval(sx - 3, sy - 3, sx + 3, sy + 3,
+                                 fill=AFFIL_COLORS.get(affil, AFFIL_COLORS[""]), outline="#101418")
+        self._draw_scalebar()
+        self._fused_legend()
+
+    def _fused_legend(self):
+        items = [("Pistes GMTI", "#ffc107"), ("CoT (ami/host/…)", "#00c8ff"),
+                 ("Capteur vidéo", "#b388ff")]
+        x, y = 12, 14
+        for label, col in items:
+            self.create_rectangle(x, y - 4, x + 8, y + 4, fill=col, outline="")
+            self.create_text(x + 12, y, text=label, anchor="w", fill="#c2c8ce", font=("Consolas", 8))
+            x += 130
+
+
 # ── Ligne de flux (onglet Rejeu) ────────────────────────────────────────────
 
 class FlowRow:
@@ -515,21 +610,24 @@ class Console(tk.Tk):
         self.tab_inv = ttk.Frame(nb)
         self.tab_cot = ttk.Frame(nb)
         self.tab_video = ttk.Frame(nb)
+        self.tab_fused = ttk.Frame(nb)
         nb.add(self.tab_overview, text="  Vue d'ensemble  ")
         nb.add(self.tab_replay, text="  Rejeu  ")
         nb.add(self.tab_gmti, text="  GMTI → Pistes  ")
         nb.add(self.tab_inv, text="  Inventaire 4607  ")
         nb.add(self.tab_cot, text="  CoT  ")
         nb.add(self.tab_video, text="  Vidéo 4609  ")
+        nb.add(self.tab_fused, text="  Carte fusionnée  ")
         self._build_overview_tab(self.tab_overview)
         self._build_replay_tab(self.tab_replay)
         self._build_gmti_tab(self.tab_gmti)
         self._build_inventaire_tab(self.tab_inv)
         self._build_cot_tab(self.tab_cot)
         self._build_video_tab(self.tab_video)
+        self._build_fused_tab(self.tab_fused)
 
         # Fond de carte ArcGIS piloté par l'app pour les canvas géo.
-        for cv in (self.track_canvas, self.cot_canvas):
+        for cv in (self.track_canvas, self.cot_canvas, self.fused_canvas):
             cv.request_basemap = self._basemap_for
 
         self.status_var = tk.StringVar(value="Prêt.")
@@ -635,6 +733,111 @@ class Console(tk.Tk):
             self.q.put(("inventaire", ex.rapport(sink)))
         except Exception as e:
             self.q.put(("inventaire", "Inventaire échoué : %s" % e))
+
+    # ── Onglet Carte fusionnée ───────────────────────────────────────────
+    def _build_fused_tab(self, parent):
+        bar = ttk.Frame(parent, padding=(0, 6))
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Fusionner", command=self._fuse).pack(side="left")
+        ttk.Label(bar, text="profil GMTI :").pack(side="left", padx=(10, 2))
+        self.fused_profile = tk.StringVar(value="maritime")
+        ttk.Combobox(bar, textvariable=self.fused_profile, values=PROFILE_NAMES,
+                     width=12, state="readonly").pack(side="left")
+        self.f_gmti = tk.BooleanVar(value=True)
+        self.f_cot = tk.BooleanVar(value=True)
+        self.f_video = tk.BooleanVar(value=True)
+        for txt, var in (("GMTI", self.f_gmti), ("CoT", self.f_cot), ("Vidéo", self.f_video)):
+            ttk.Checkbutton(bar, text=txt, variable=var,
+                            command=self._fused_toggle).pack(side="left", padx=4)
+        ttk.Button(bar, text="Ajuster la vue", command=self._fused_fit).pack(side="left", padx=4)
+        self.fused_bm_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Fond ArcGIS", variable=self.fused_bm_var,
+                        command=lambda: self._toggle_basemap(self.fused_canvas, self.fused_bm_var)).pack(side="left")
+
+        self.fused_status = tk.StringVar(value="Fusionne GMTI + CoT + empreinte vidéo sur une carte.")
+        ttk.Label(parent, textvariable=self.fused_status, padding=(0, 2), font=("Consolas", 9)).pack(anchor="w")
+        self.fused_canvas = FusedCanvas(parent)
+        self.fused_canvas.pack(fill="both", expand=True)
+
+    def _fuse(self):
+        path = self._valid_path()
+        if not path:
+            return
+        self.fused_status.set("Fusion en cours (GMTI + CoT + vidéo)…")
+        threading.Thread(target=self._fuse_worker,
+                         args=(path, self.fused_profile.get(), self._limit()), daemon=True).start()
+
+    def _fuse_worker(self, path, profile, limit):
+        latlon = {"gmti_tracks": [], "gmti_raw": [], "cot_points": [],
+                  "cot_tracks": [], "video_sensor": [], "video_footprints": []}
+        ref = [None]
+        def note(la, lo):
+            if ref[0] is None:
+                ref[0] = (la, lo)
+        parts = []
+        # GMTI
+        try:
+            if gmti_pcap_to_csv is not None:
+                out = os.path.join(tempfile.gettempdir(), "fused_gmti.csv")
+                if gmti_pcap_to_csv.export(path, out, None, limit) == 0:
+                    res = load_track_run().run_tracking(out, profile)
+                    fr = res.get("frame")
+                    if fr:
+                        for t in res["tracks"]:
+                            ll = [fr.to_ll(x, y) for x, y in t["pts"]]
+                            if ll:
+                                note(*ll[0]); latlon["gmti_tracks"].append(ll)
+                        latlon["gmti_raw"] = [fr.to_ll(x, y) for x, y in res["raw"]]
+                        parts.append("GMTI %d pistes" % len(res["tracks"]))
+        except Exception as e:
+            parts.append("GMTI KO (%s)" % type(e).__name__)
+        # CoT
+        try:
+            if cot_extract is not None:
+                r = cot_extract.scan_cot(path)
+                for uid, row in r["rows"].items():
+                    la, lo = cot_extract._fnum(row["lat"]), cot_extract._fnum(row["lon"])
+                    if la is not None and lo is not None and not (la == 0 and lo == 0):
+                        note(la, lo); latlon["cot_points"].append((la, lo, row["affiliation"]))
+                for uid, tr in r["tracks"].items():
+                    if len(tr) >= 2:
+                        latlon["cot_tracks"].append([(la, lo) for (_t, la, lo) in tr])
+                parts.append("CoT %d objets" % len(latlon["cot_points"]))
+        except Exception as e:
+            parts.append("CoT KO (%s)" % type(e).__name__)
+        # Vidéo (KLV : position capteur + empreinte)
+        try:
+            if video4609 is not None:
+                for slat, slon, fclat, fclon in video4609.sensor_samples(path, None, limit):
+                    note(slat, slon); latlon["video_sensor"].append((slat, slon))
+                    if fclat is not None and fclon is not None:
+                        latlon["video_footprints"].append((slat, slon, fclat, fclon))
+                if latlon["video_sensor"]:
+                    parts.append("vidéo %d pos capteur" % len(latlon["video_sensor"]))
+        except Exception as e:
+            parts.append("vidéo KO (%s)" % type(e).__name__)
+
+        if ref[0] is None:
+            self.q.put(("fused_status", "Aucune donnée géolocalisée à fusionner.")); return
+        frame = GeoFrame(*ref[0])
+        L = {"gmti_tracks": [[frame.to_xy(la, lo) for la, lo in tr] for tr in latlon["gmti_tracks"]],
+             "gmti_raw": [frame.to_xy(la, lo) for la, lo in latlon["gmti_raw"]],
+             "cot_points": [(*frame.to_xy(la, lo), aff) for la, lo, aff in latlon["cot_points"]],
+             "cot_tracks": [[frame.to_xy(la, lo) for la, lo in tr] for tr in latlon["cot_tracks"]],
+             "video_sensor": [frame.to_xy(la, lo) for la, lo in latlon["video_sensor"]],
+             "video_footprints": [(*frame.to_xy(sla, slo), *frame.to_xy(fla, flo))
+                                  for sla, slo, fla, flo in latlon["video_footprints"]]}
+        self.q.put(("fused", L, frame, " · ".join(parts) or "rien"))
+
+    def _fused_toggle(self):
+        self.fused_canvas.show_gmti = self.f_gmti.get()
+        self.fused_canvas.show_cot = self.f_cot.get()
+        self.fused_canvas.show_video = self.f_video.get()
+        self.fused_canvas.redraw()
+
+    def _fused_fit(self):
+        self.fused_canvas._fit_visible()
+        self.fused_canvas.redraw()
 
     # ── Onglet Vue d'ensemble ────────────────────────────────────────────
     def _build_overview_tab(self, parent):
@@ -1145,6 +1348,15 @@ class Console(tk.Tk):
                     self._populate_cot(msg[1], msg[2], msg[3], msg[4])
                 elif kind == "ov_status":
                     self.ov_status.set(msg[1])
+                elif kind == "fused_status":
+                    self.fused_status.set(msg[1])
+                elif kind == "fused":
+                    L, frame, summary = msg[1], msg[2], msg[3]
+                    self.fused_canvas.show_gmti = self.f_gmti.get()
+                    self.fused_canvas.show_cot = self.f_cot.get()
+                    self.fused_canvas.show_video = self.f_video.get()
+                    self.fused_canvas.set_fused(L, frame, fit=True)
+                    self.fused_status.set("Fusion : " + summary)
                 elif kind == "overview":
                     self._populate_overview(msg[1], msg[2])
                 elif kind == "video_status":

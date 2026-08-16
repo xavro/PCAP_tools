@@ -88,6 +88,13 @@ sélectionné, et un **canvas de points** (repère ENU) colorés par **affiliati
 **trace par uid**. Filtre par sous-chaîne de type ; affiliation dérivée du 2ᵉ
 caractère du type (port exact de `CotSidc.java`).
 
+**Onglet « Carte fusionnée »** — superpose sur **une seule carte** (repère ENU
+commun + graticule + fond ArcGIS) : les **pistes GMTI** (tracker), les **points
+CoT** (par affiliation), et la **position capteur vidéo + empreinte au sol**
+(KLV MISB 0601, capteur → centre image). Cases par couche (GMTI / CoT / Vidéo) ;
+« Ajuster la vue » cadre sur les couches **visibles** (les flux peuvent être dans
+des zones différentes). Vue tactique fusionnée d'un pcap, sans GeoEvent.
+
 **Onglet « Vidéo 4609 »** — inspecte le flux vidéo STANAG 4609 (`video4609.py`) :
 réassemble le **MPEG-TS** (TS brut ou RTP), inventorie les **PID** (PAT/PMT),
 identifie **codecs** (H.264/HEVC/MPEG-2) et **erreurs de continuité**, et surtout
