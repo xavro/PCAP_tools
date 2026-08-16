@@ -104,10 +104,13 @@ def run_tracking(path, profile="defaut", overrides=None):
     kept = sorted((tr for tr in all_tracks if tr.confirmed_ever), key=lambda tr: -tr.hits)
     tracks = []
     for tr in kept:
+        traj = tr.trajectory()
+        etat = traj[-1][3] if traj else ""      # état à la dernière détection réelle
         tracks.append({
             "id": tr.id,
             "hits": tr.hits,
-            "pts": [(float(x), float(y)) for (_t, x, y, _st, _hit) in tr.trajectory()],
+            "etat": etat,
+            "pts": [(float(x), float(y)) for (_t, x, y, _st, _hit) in traj],
             "smooth": [(float(x), float(y)) for (_t, x, y) in T.rts_smooth(tr)],
             "is_air": bool(getattr(tr, "is_air", False)),
             "is_rotator": bool(getattr(tr, "is_rotator", False)),

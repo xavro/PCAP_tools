@@ -15,6 +15,7 @@ L'onglet Rejeu ne dépend de rien (stdlib). L'onglet GMTI charge le tracker
 import base64
 import importlib
 import importlib.util
+import json
 import math
 import os
 import queue
@@ -65,6 +66,26 @@ TRACKER_PREFIX = "prototype_tracker_gmti_v"
 # Au-delà, l'extracteur (lecture intégrale en mémoire) est évité au profit du
 # décodage en streaming de gmti_pcap_to_csv.
 EXTRACT_MAX_BYTES = 700 * 1024 * 1024
+MAX_DISPLAY_PLOTS = 50000            # plafond de plots dessinés (décimation au-delà)
+
+
+def _csv_time_span(path):
+    """Étendue temporelle (s) du CSV GMTI d'après la colonne 0 dwell_time_ms.
+    Renvoie None si illisible/vide. Lecture streaming, ne charge pas tout."""
+    tmin = tmax = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            next(f, None)                       # en-tête
+            for line in f:
+                c = line.split(";", 1)[0]
+                if not c:
+                    continue
+                v = int(c)
+                tmin = v if tmin is None else min(tmin, v)
+                tmax = v if tmax is None else max(tmax, v)
+    except Exception:
+        return None
+    return (tmax - tmin) / 1000.0 if tmin is not None else None
 PALETTE = ["#ffc107", "#00c8ff", "#7cff6b", "#ff6ec7", "#ff8a3d", "#b388ff",
            "#4dd0e1", "#f06292", "#aed581", "#ff5252"]
 # Couleurs de plots par classification STANAG (target classification).
@@ -212,6 +233,7 @@ class TrackCanvas(tk.Canvas):
         self.cx = 0.0
         self.cy = 0.0
         self._drag = None
+        self._decim_step = 1
         # Fond de carte ArcGIS (raster) : image + emprise + callback de requête.
         self.basemap_enabled = False
         self.basemap_photo = None
@@ -355,7 +377,8 @@ class TrackCanvas(tk.Canvas):
                 flat += [sx, sy]
             self.create_line(*flat, fill="#8a8f98", width=1, dash=(2, 3))
         if self.show_raw:
-            for p in self.raw:
+            step = self._decim(len(self.raw))       # décimation si trop de plots
+            for p in self.raw[::step]:
                 sx, sy = self.w2s(p[0], p[1])
                 col = CLASS_COLORS.get(p[2], CLASS_DEFAULT) if len(p) > 2 else "#59636f"
                 self.create_rectangle(sx, sy, sx + 1, sy + 1, outline=col)
@@ -382,12 +405,19 @@ class TrackCanvas(tk.Canvas):
         # échelle
         self._draw_scalebar()
 
+    def _decim(self, n):
+        """Pas de décimation d'AFFICHAGE des plots pour rester sous ~50 000 items
+        (les pistes ne sont jamais décimées). Renvoie N (1 = pas de décimation)."""
+        step = (n // MAX_DISPLAY_PLOTS) + 1 if n > MAX_DISPLAY_PLOTS else 1
+        self._decim_step = step
+        return step
+
     def _draw_scalebar(self):
         if self.scale <= 0:
             return
         target_px = 90
         world = target_px / self.scale
-        nice = 10 ** int(round(__import__("math").log10(max(world, 1e-6))))
+        nice = 10 ** int(round(math.log10(max(world, 1e-6))))
         for m in (1, 2, 5, 10):
             if nice * m >= world:
                 nice = nice * m
@@ -397,6 +427,8 @@ class TrackCanvas(tk.Canvas):
         x0, y0 = 12, H - 16
         self.create_line(x0, y0, x0 + px, y0, fill="#c2c8ce", width=2)
         lbl = ("%g km" % (nice / 1000)) if nice >= 1000 else ("%g m" % nice)
+        if getattr(self, "_decim_step", 1) > 1:
+            lbl += "  · affichage décimé 1/%d" % self._decim_step
         self.create_text(x0 + px + 6, y0, text=lbl, anchor="w", fill="#c2c8ce",
                          font=("Consolas", 8))
 
@@ -549,7 +581,8 @@ class FusedCanvas(TrackCanvas):
                 self.create_rectangle(sx - 3, sy - 3, sx + 3, sy + 3, fill="#b388ff", outline="#101418")
         # GMTI : plots faibles + pistes ambre.
         if self.show_gmti:
-            for p in L["gmti_raw"]:
+            step = self._decim(len(L["gmti_raw"]))
+            for p in L["gmti_raw"][::step]:
                 sx, sy = self.w2s(p[0], p[1])
                 self.create_rectangle(sx, sy, sx + 1, sy + 1, outline="#59503a")
             for tr in L["gmti_tracks"]:
@@ -627,6 +660,7 @@ class Console(tk.Tk):
         self.q = queue.Queue()
         self.gmti_csv = None
         self.sink = None            # Sink de l'extracteur (overlays/inventaire), si dispo
+        self.fused_export = None     # dernière fusion en WGS84 (export GeoJSON)
         self._cot_rows = {}         # dernières valeurs CoT par uid (field=value)
         self._bm_failed = False     # fond de carte : n'alerter qu'une fois
         self.basemap_cfg = (arcgis_basemap.load_config(os.path.dirname(os.path.abspath(__file__)))
@@ -758,10 +792,6 @@ class Console(tk.Tk):
         path = self._valid_path()
         if not path:
             return
-        if _is_pcapng(path):
-            messagebox.showinfo("Inventaire", "L'inventaire complet lit le pcap CLASSIQUE.\n"
-                                "Convertis le pcapng :  editcap -F pcap in.pcapng out.pcap")
-            return
         if os.path.getsize(path) > EXTRACT_MAX_BYTES and not messagebox.askyesno(
                 "Inventaire", "Fichier volumineux : l'inventaire lit tout en mémoire. Continuer ?"):
             return
@@ -773,10 +803,9 @@ class Console(tk.Tk):
         try:
             ex = load_extract()
             sink = ex.extract(path)
-            self.sink = sink
-            self.q.put(("inventaire", ex.rapport(sink)))
+            self.q.put(("inventaire", ex.rapport(sink), sink))   # sink via queue
         except Exception as e:
-            self.q.put(("inventaire", "Inventaire échoué : %s" % e))
+            self.q.put(("inventaire", "Inventaire échoué : %s" % e, None))
 
     # ── Onglet Carte fusionnée ───────────────────────────────────────────
     def _build_fused_tab(self, parent):
@@ -797,6 +826,9 @@ class Console(tk.Tk):
         self.fused_bm_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(bar, text="Fond ArcGIS", variable=self.fused_bm_var,
                         command=lambda: self._toggle_basemap(self.fused_canvas, self.fused_bm_var)).pack(side="left")
+        self.fused_export_btn = ttk.Button(bar, text="Exporter GeoJSON",
+                                           command=self._fused_export, state="disabled")
+        self.fused_export_btn.pack(side="left", padx=4)
 
         self.fused_status = tk.StringVar(value="Fusionne GMTI + CoT + empreinte vidéo sur une carte.")
         ttk.Label(parent, textvariable=self.fused_status, padding=(0, 2), font=("Consolas", 9)).pack(anchor="w")
@@ -814,16 +846,22 @@ class Console(tk.Tk):
     def _fuse_worker(self, path, profile, limit):
         latlon = {"gmti_tracks": [], "gmti_raw": [], "cot_points": [],
                   "cot_tracks": [], "video_sensor": [], "video_footprints": []}
+        export = {"gmti": [], "cot": []}    # WGS84 (lon,lat) + propriétés, pour GeoJSON
         ref = [None]
         def note(la, lo):
             if ref[0] is None:
                 ref[0] = (la, lo)
         parts = []
+        # P3.1 : la limite --limit borne GMTI et vidéo (lecture partielle du pcap)
+        # mais PAS CoT (scan_cot lit tout) → périmètres temporels potentiellement
+        # différents ; on l'annonce et on affiche la fenêtre temps GMTI décodée.
+        gmti_span = None
         # GMTI
         try:
             if gmti_pcap_to_csv is not None:
                 out = os.path.join(tempfile.gettempdir(), "fused_gmti.csv")
                 if gmti_pcap_to_csv.export(path, out, None, limit) == 0:
+                    gmti_span = _csv_time_span(out)
                     res = load_track_run().run_tracking(out, profile)
                     fr = res.get("frame")
                     if fr:
@@ -831,8 +869,17 @@ class Console(tk.Tk):
                             ll = [fr.to_ll(x, y) for x, y in t["pts"]]
                             if ll:
                                 note(*ll[0]); latlon["gmti_tracks"].append(ll)
+                                export["gmti"].append({
+                                    "coords": [(lo, la) for la, lo in ll],
+                                    "track_id": t["id"], "etat": t.get("etat", ""),
+                                    "aerien": bool(t["is_air"]),
+                                    "rotateur": bool(t["is_rotator"]),
+                                    "hits": t["hits"]})
                         latlon["gmti_raw"] = [fr.to_ll(x, y) for x, y in res["raw"]]
-                        parts.append("GMTI %d pistes" % len(res["tracks"]))
+                        lbl = "GMTI %d pistes" % len(res["tracks"])
+                        if gmti_span is not None:
+                            lbl += " (0–%.0f s)" % gmti_span
+                        parts.append(lbl)
         except Exception as e:
             parts.append("GMTI KO (%s)" % type(e).__name__)
         # CoT
@@ -843,6 +890,8 @@ class Console(tk.Tk):
                     la, lo = cot_extract._fnum(row["lat"]), cot_extract._fnum(row["lon"])
                     if la is not None and lo is not None and not (la == 0 and lo == 0):
                         note(la, lo); latlon["cot_points"].append((la, lo, row["affiliation"]))
+                        export["cot"].append({"lon": lo, "lat": la, "uid": uid,
+                                              "affiliation": row["affiliation"]})
                 for uid, tr in r["tracks"].items():
                     if len(tr) >= 2:
                         latlon["cot_tracks"].append([(la, lo) for (_t, la, lo) in tr])
@@ -861,6 +910,10 @@ class Console(tk.Tk):
         except Exception as e:
             parts.append("vidéo KO (%s)" % type(e).__name__)
 
+        if limit and limit > 0:
+            parts.append("[limite %d pq : GMTI/vidéo bornés, CoT complet — "
+                         "périmètres temporels différents]" % limit)
+
         if ref[0] is None:
             self.q.put(("fused_status", "Aucune donnée géolocalisée à fusionner.")); return
         frame = GeoFrame(*ref[0])
@@ -871,7 +924,7 @@ class Console(tk.Tk):
              "video_sensor": [frame.to_xy(la, lo) for la, lo in latlon["video_sensor"]],
              "video_footprints": [(*frame.to_xy(sla, slo), *frame.to_xy(fla, flo))
                                   for sla, slo, fla, flo in latlon["video_footprints"]]}
-        self.q.put(("fused", L, frame, " · ".join(parts) or "rien"))
+        self.q.put(("fused", L, frame, " · ".join(parts) or "rien", export))
 
     def _fused_toggle(self):
         self.fused_canvas.show_gmti = self.f_gmti.get()
@@ -882,6 +935,47 @@ class Console(tk.Tk):
     def _fused_fit(self):
         self.fused_canvas._fit_visible()
         self.fused_canvas.redraw()
+
+    def _fused_export(self):
+        """P3.4 : exporte la dernière fusion en GeoJSON WGS84 (lon,lat).
+        Pistes GMTI = LineString (track_id, etat, aerien, rotateur, hits) ;
+        objets CoT = Point (uid, affiliation)."""
+        exp = self.fused_export
+        if not exp or not (exp["gmti"] or exp["cot"]):
+            messagebox.showinfo("Export", "Rien à exporter : lance d'abord une fusion.")
+            return
+        out = filedialog.asksaveasfilename(defaultextension=".geojson",
+                                           initialfile="fusion.geojson",
+                                           filetypes=[("GeoJSON", "*.geojson *.json"), ("Tous", "*.*")])
+        if not out:
+            return
+        feats = []
+        for t in exp["gmti"]:
+            if len(t["coords"]) < 2:
+                continue
+            feats.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString",
+                             "coordinates": [[round(lo, 7), round(la, 7)] for lo, la in t["coords"]]},
+                "properties": {"track_id": t["track_id"], "etat": t["etat"],
+                               "aerien": t["aerien"], "rotateur": t["rotateur"],
+                               "hits": t["hits"]}})
+        for c in exp["cot"]:
+            feats.append({
+                "type": "Feature",
+                "geometry": {"type": "Point",
+                             "coordinates": [round(c["lon"], 7), round(c["lat"], 7)]},
+                "properties": {"uid": c["uid"], "affiliation": c["affiliation"]}})
+        fc = {"type": "FeatureCollection",
+              "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
+              "features": feats}
+        try:
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(fc, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            messagebox.showerror("Export", "Écriture impossible : %s" % e)
+            return
+        self.fused_status.set("Export GeoJSON : %d entités → %s" % (len(feats), out))
 
     # ── Onglet Vue d'ensemble ────────────────────────────────────────────
     def _build_overview_tab(self, parent):
@@ -1207,23 +1301,22 @@ class Console(tk.Tk):
         threading.Thread(target=self._decode_worker, args=(path, out, self._limit()), daemon=True).start()
 
     def _decode_worker(self, path, out, limit):
-        # 1) Décodeur complet (pcap classique, taille raisonnable) -> Sink riche
-        #    (overlays zone/porteur + classification + hauteur).
-        if not _is_pcapng(path) and os.path.getsize(path) <= EXTRACT_MAX_BYTES:
+        # État (sink, gmti_csv) transmis par la QUEUE, jamais écrit depuis le thread.
+        # 1) Décodeur complet (taille raisonnable ; pcap ET pcapng via pcap_frames)
+        #    -> Sink riche (overlays zone/porteur + classification + hauteur).
+        if os.path.getsize(path) <= EXTRACT_MAX_BYTES:
             try:
                 ex = load_extract()
                 sink = ex.extract(path)
                 if sink.plots:
                     ex.write_csv(sink, out)
-                    self.sink = sink
-                    self.gmti_csv = out
-                    self.q.put(("gmti_status", "GMTI décodé (extracteur complet) : %d plots, "
-                                "%d dwells. Profil + Lancer le tracker." % (len(sink.plots), sink.dwell_count)))
+                    self.q.put(("gmti_decoded", sink, out,
+                                "GMTI décodé (extracteur complet) : %d plots, %d dwells. "
+                                "Profil + Lancer le tracker." % (len(sink.plots), sink.dwell_count)))
                     return
             except Exception:
                 pass   # repli ci-dessous
-        # 2) Repli STREAMING (pcapng / gros fichier / extracteur KO) — sans overlays.
-        self.sink = None
+        # 2) Repli STREAMING (gros fichier / extracteur KO) — sans overlays.
         if gmti_pcap_to_csv is None:
             self.q.put(("gmti_status", "Aucun décodeur GMTI disponible.")); return
         try:
@@ -1232,8 +1325,7 @@ class Console(tk.Tk):
                 self.q.put(("gmti_status", "Aucun flux GMTI détecté dans ce pcap.")); return
             with open(out, encoding="utf-8") as f:
                 n = max(0, sum(1 for _ in f) - 1)
-            self.gmti_csv = out
-            self.q.put(("gmti_status", "GMTI décodé (streaming) : %d plots. "
+            self.q.put(("gmti_decoded", None, out, "GMTI décodé (streaming) : %d plots. "
                         "(overlays zone/porteur indisponibles en repli)" % n))
         except Exception as e:
             self.q.put(("gmti_status", "Décodage GMTI échoué : %s" % e))
@@ -1384,8 +1476,12 @@ class Console(tk.Tk):
                     self.gmti_status.set("Profil %s : %d pistes, %d rejetées (%d plots)%s."
                                         % (profile, res["n_kept"], res["n_rejected"], len(res["raw"]), extra))
                     self.track_btn.config(state="normal")
+                elif kind == "gmti_decoded":
+                    self.sink = msg[1]; self.gmti_csv = msg[2]; self.gmti_status.set(msg[3])
                 elif kind == "inventaire":
                     self.inv_text.delete("1.0", "end"); self.inv_text.insert("end", msg[1])
+                    if len(msg) > 2 and msg[2] is not None:
+                        self.sink = msg[2]
                 elif kind == "cot_status":
                     self.cot_status.set(msg[1])
                 elif kind == "cot":
@@ -1395,12 +1491,15 @@ class Console(tk.Tk):
                 elif kind == "fused_status":
                     self.fused_status.set(msg[1])
                 elif kind == "fused":
-                    L, frame, summary = msg[1], msg[2], msg[3]
+                    L, frame, summary, export = msg[1], msg[2], msg[3], msg[4]
+                    self.fused_export = export
                     self.fused_canvas.show_gmti = self.f_gmti.get()
                     self.fused_canvas.show_cot = self.f_cot.get()
                     self.fused_canvas.show_video = self.f_video.get()
                     self.fused_canvas.set_fused(L, frame, fit=True)
                     self.fused_status.set("Fusion : " + summary)
+                    self.fused_export_btn.config(
+                        state=("normal" if (export["gmti"] or export["cot"]) else "disabled"))
                 elif kind == "overview":
                     self._populate_overview(msg[1], msg[2])
                 elif kind == "video_status":
