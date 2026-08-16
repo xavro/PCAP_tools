@@ -27,6 +27,11 @@ Application desktop à **deux onglets**. Tkinter est fourni avec Python : l'ongl
 python pcap_console.py
 ```
 
+**Onglet « Vue d'ensemble »** — un clic *Analyser le pcap* liste les
+**protocoles présents et leur port** (GMTI / CoT / vidéo…) ; **double-clic** sur
+une ligne ouvre l'onglet dédié (et pré-remplit le port vidéo). Point d'entrée
+pour savoir ce que contient une capture.
+
 **Onglet « Rejeu »** — piloter le rejeu **sans taper les lignes `--route`** :
 analyse automatique → **cocher les flux**, saisir la cible `IP[:port]`,
 **« + client »** (fan-out) → **Start / Stop**, vitesse, boucle, statut live. La

@@ -392,17 +392,21 @@ class Console(tk.Tk):
         ttk.Entry(top, textvariable=self.limit_var, width=8).pack(side="left")
 
         nb = ttk.Notebook(self)
+        self.nb = nb
         nb.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        self.tab_overview = ttk.Frame(nb)
         self.tab_replay = ttk.Frame(nb)
         self.tab_gmti = ttk.Frame(nb)
         self.tab_inv = ttk.Frame(nb)
         self.tab_cot = ttk.Frame(nb)
         self.tab_video = ttk.Frame(nb)
+        nb.add(self.tab_overview, text="  Vue d'ensemble  ")
         nb.add(self.tab_replay, text="  Rejeu  ")
         nb.add(self.tab_gmti, text="  GMTI → Pistes  ")
         nb.add(self.tab_inv, text="  Inventaire 4607  ")
         nb.add(self.tab_cot, text="  CoT  ")
         nb.add(self.tab_video, text="  Vidéo 4609  ")
+        self._build_overview_tab(self.tab_overview)
         self._build_replay_tab(self.tab_replay)
         self._build_gmti_tab(self.tab_gmti)
         self._build_inventaire_tab(self.tab_inv)
@@ -509,6 +513,63 @@ class Console(tk.Tk):
             self.q.put(("inventaire", ex.rapport(sink)))
         except Exception as e:
             self.q.put(("inventaire", "Inventaire échoué : %s" % e))
+
+    # ── Onglet Vue d'ensemble ────────────────────────────────────────────
+    def _build_overview_tab(self, parent):
+        bar = ttk.Frame(parent, padding=(0, 6))
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Analyser le pcap", command=self._analyze_overview).pack(side="left")
+        ttk.Label(bar, text="Détecte les protocoles présents et leur port. "
+                  "Double-clic sur une ligne → ouvre l'onglet dédié.", padding=(8, 0)).pack(side="left")
+        self.ov_status = tk.StringVar(value="Choisis un pcap et lance l'analyse.")
+        ttk.Label(parent, textvariable=self.ov_status, padding=(0, 2), font=("Consolas", 9)).pack(anchor="w")
+        cols = ("proto", "port", "protocole", "paquets", "octets")
+        self.ov_tree = ttk.Treeview(parent, columns=cols, show="headings", height=16)
+        for c, w in (("proto", 60), ("port", 70), ("protocole", 220), ("paquets", 90), ("octets", 110)):
+            self.ov_tree.heading(c, text=c)
+            self.ov_tree.column(c, width=w, stretch=(c == "protocole"))
+        self.ov_tree.pack(fill="both", expand=True)
+        self.ov_tree.bind("<Double-1>", self._overview_open)
+
+    def _analyze_overview(self):
+        path = self._valid_path()
+        if not path:
+            return
+        self.ov_status.set("Analyse en cours…")
+        threading.Thread(target=self._overview_worker, args=(path, self._limit()), daemon=True).start()
+
+    def _overview_worker(self, path, limit):
+        try:
+            res = pcap_analyze.scan(path, limit)
+            self.q.put(("overview", pcap_analyze.port_rows(res["ports"]), res))
+        except Exception as e:
+            self.q.put(("ov_status", "Analyse échouée : %s" % e))
+
+    def _populate_overview(self, rows, res):
+        self.ov_tree.delete(*self.ov_tree.get_children())
+        apps = []
+        for proto, dport, dominant, pkts, nbytes, dsts in rows:
+            self.ov_tree.insert("", "end", values=(proto, dport, dominant, pkts, nbytes))
+            if is_app_proto(dominant):
+                apps.append(dominant.split("/")[0].split("-")[0])
+        uniq = ", ".join(sorted(set(apps))) or "aucun protocole applicatif reconnu"
+        self.ov_status.set("%d paquets, %d ports. Protocoles : %s"
+                           % (res["npkt"], len(rows), uniq))
+
+    def _overview_open(self, _e):
+        sel = self.ov_tree.selection()
+        if not sel:
+            return
+        proto, port, dominant, *_ = self.ov_tree.item(sel[0], "values")
+        if dominant.startswith("GMTI"):
+            self.nb.select(self.tab_gmti)
+        elif dominant.startswith("CoT"):
+            self.nb.select(self.tab_cot)
+        elif dominant.startswith("MPEG"):
+            self.video_port.set(str(port))
+            self.nb.select(self.tab_video)
+        else:
+            self.nb.select(self.tab_replay)
 
     # ── Onglet Vidéo 4609 ────────────────────────────────────────────────
     def _build_video_tab(self, parent):
@@ -923,6 +984,10 @@ class Console(tk.Tk):
                     self.cot_status.set(msg[1])
                 elif kind == "cot":
                     self._populate_cot(msg[1], msg[2], msg[3])
+                elif kind == "ov_status":
+                    self.ov_status.set(msg[1])
+                elif kind == "overview":
+                    self._populate_overview(msg[1], msg[2])
                 elif kind == "video_status":
                     self.video_status.set(msg[1])
                 elif kind == "video":
