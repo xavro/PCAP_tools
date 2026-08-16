@@ -219,8 +219,13 @@ def _decode_dwell(b, seg):
                 continue
             if bit == 31: tr["lat"] = _sa32(b, p)
             elif bit == 32: tr["lon"] = _ba32(b, p)
-            elif bit == 33: tr["dlat"] = _sa16(b, p)
-            elif bit == 34: tr["dlon"] = _sa16(b, p)
+            # D32.4/D32.5 : ENTIERS SIGNÉS 16 bits BRUTS (pas un angle) — le
+            # standard les multiplie ensuite par les scale factors D10/D11.
+            # (Correctif : _sa16 appliquait à tort ×90/2^15, faussant les
+            # positions en mode delta. Vérifier le MÊME bug dans le parser Java
+            # Gmti4607Parser du receiver GeoEvent, hors de ce dépôt.)
+            elif bit == 33: tr["dlat"] = _s16(b, p)
+            elif bit == 34: tr["dlon"] = _s16(b, p)
             elif bit == 36: tr["vel_los"] = _s16(b, p)     # cm/s (brut)
             elif bit == 38: tr["snr"] = _s8(b, p)
             elif bit == 39: tr["cls"] = _u8(b, p)
@@ -333,13 +338,49 @@ def export(path, out_path, port, limit=0):
     return 0
 
 
+def selftest():
+    """Vérifie le décodage en MODE DELTA (bits 33/34 = entiers signés bruts
+    multipliés par les scale factors, PAS un angle). Sans ce correctif, _sa16
+    faussait la position."""
+    def e_sa32(deg): return int(round(deg / (90.0 / _2_31)))
+    def e_ba32(deg): return int(round((deg % 360) / (360.0 / _2_32)))
+    present = [0, 1, 3, 4, 5, 6, 8, 9, 22, 23, 33, 34]   # header + delta (pas 31/32)
+    mask = 0
+    for bit in present:
+        mask |= 1 << (63 - bit)
+    scale_lat, scale_lon, clat, clon = 0.0001, 0.0002, 46.5, 3.4
+    dlat_raw, dlon_raw = 1000, 500                        # entiers bruts
+    seg_body = mask.to_bytes(8, "big")
+    seg_body += struct.pack(">H", 7) + struct.pack(">H", 2) + struct.pack(">H", 1)  # revisit,dwell,trc
+    seg_body += struct.pack(">I", 123456)                 # dwell_time_ms
+    seg_body += struct.pack(">i", e_sa32(46.6)) + struct.pack(">I", e_ba32(3.5))    # slat/slon
+    seg_body += struct.pack(">i", e_sa32(scale_lat)) + struct.pack(">I", e_ba32(scale_lon))
+    seg_body += struct.pack(">i", e_sa32(clat)) + struct.pack(">I", e_ba32(clon))
+    seg_body += struct.pack(">h", dlat_raw) + struct.pack(">h", dlon_raw)           # delta bruts
+    seg = struct.pack(">B", SEG_DWELL) + struct.pack(">I", len(seg_body) + 5) + seg_body
+    rows = _decode_dwell(seg, 0)
+    assert len(rows) == 1, rows
+    lat, lon = rows[0]["lat"], rows[0]["lon"]
+    exp_lat = clat + dlat_raw * (e_sa32(scale_lat) * (90.0 / _2_31))
+    exp_lon = clon + dlon_raw * (e_ba32(scale_lon) * (360.0 / _2_32))
+    assert abs(lat - exp_lat) < 1e-5 and abs(lon - exp_lon) < 1e-5, (lat, lon, exp_lat, exp_lon)
+    assert abs(lat - 46.6) < 1e-4 and abs(lon - 3.5) < 1e-4, (lat, lon)
+    # Contrôle anti-régression : l'ancien bug (_sa16) donnerait lat ≈ 46.5003.
+    assert abs(lat - 46.5003) > 1e-2
+    print("selftest OK — mode delta décodé correctement : lat=%.6f lon=%.6f" % (lat, lon))
+    return 0
+
+
 def main(argv=None):
+    if "--selftest" in (argv if argv is not None else sys.argv[1:]):
+        return selftest()
     ap = argparse.ArgumentParser(description="Décodage GMTI 4607 pcap -> CSV de plots (pour le tracker)")
     ap.add_argument("pcap", help="fichier .pcap ou .pcapng")
     ap.add_argument("-o", "--out", default="plots.csv", help="CSV de sortie (défaut plots.csv)")
     ap.add_argument("--port", type=int, default=None,
                     help="port UDP GMTI (défaut : auto-détection ; 27551 labo, 5454 pré-prod)")
     ap.add_argument("--limit", type=int, default=0, help="n'analyser que les N premiers paquets")
+    ap.add_argument("--selftest", action="store_true", help="test unitaire (mode delta) et sortir")
     args = ap.parse_args(argv)
     return export(args.pcap, args.out, args.port, args.limit)
 

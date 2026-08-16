@@ -125,73 +125,118 @@ def _fnum(v):
         return None
 
 
+_TCP_MAX_BUF = 1_000_000        # borne du tampon de réassemblage par flux TCP (1 Mo)
+_TCP_DECIDE_BYTES = 4096        # au-delà, si aucun <event vu, le flux TCP est non-CoT
+
+
 def scan_cot(pcap, filter_type=None, descriptions=None):
     """Parse un pcap et renvoie les CoT EN MÉMOIRE (réutilisable GUI/tests).
 
-    Retour : {total, kept, malformed, types(Counter), type_example,
-              rows(uid->dict dernière valeur), tracks(uid->[(time,lat,lon)]),
-              events(list raw xml)}. Aucune écriture de fichier.
+    UDP : un event par datagramme (inchangé). TCP : RÉASSEMBLAGE simple par flux
+    (src,sport,dst,dport) — concaténation dans l'ordre de capture, SANS gestion
+    des retransmissions ni du désordre — pour récupérer les <event> coupés entre
+    segments (sinon perdus silencieusement). Tampon incrémental borné à 1 Mo.
+
+    Retour : {total, kept, malformed, types, type_example, rows, tracks, events,
+              by_uid, tcp_recovered (events à cheval sur ≥2 segments),
+              residual_bytes (tampons TCP non parsés en fin), empty_uid}.
     """
     descriptions = descriptions or {}
     events, by_uid, rows = [], {}, {}
     tracks = collections.defaultdict(list)
     types = collections.Counter()
     type_example = {}
-    total = kept = malformed = 0
+    counters = {"total": 0, "kept": 0, "malformed": 0, "tcp_recovered": 0, "empty_uid": 0}
+
+    def process(raw, src):
+        counters["total"] += 1
+        try:
+            el = ET.fromstring(raw)
+        except ET.ParseError:
+            counters["malformed"] += 1
+            return
+        cot_type = el.get("type", "") or ""
+        if filter_type and filter_type not in cot_type:
+            return
+        counters["kept"] += 1
+        uid = el.get("uid", "") or ""
+        if uid == "":
+            counters["empty_uid"] += 1
+        events.append(raw)
+        by_uid[uid] = raw
+        types[cot_type] += 1
+        type_example.setdefault(cot_type, uid)
+        point = el.find("point")
+        det = el.find("detail")
+        duid = det.find("uid") if det is not None else None
+        contact = det.find("contact") if det is not None else None
+        track = det.find("track") if det is not None else None
+        lat = attr(point, "lat") if point is not None else None
+        lon = attr(point, "lon") if point is not None else None
+        rows[uid] = {
+            "uid": uid, "type": cot_type,
+            "affiliation": affiliation(cot_type), "dimension": dimension(cot_type),
+            "sidc_algo": sidc_algo(cot_type),
+            "type_description": describe(cot_type, descriptions),
+            "track_number": (attr(duid, "tadilj") or attr(duid, "tadila")) if duid is not None else None,
+            "callsign": attr(contact, "callsign") if contact is not None else None,
+            "how": attr(el, "how"), "src": src,
+            "lat": lat, "lon": lon,
+            "hae": attr(point, "hae") if point is not None else None,
+            "ce": attr(point, "ce") if point is not None else None,
+            "le": attr(point, "le") if point is not None else None,
+            "course": attr(track, "course") if track is not None else None,
+            "speed": attr(track, "speed") if track is not None else None,
+            "time": attr(el, "time"),
+        }
+        fla, flo = _fnum(lat), _fnum(lon)
+        if fla is not None and flo is not None and not (fla == 0.0 and flo == 0.0):
+            tracks[uid].append((attr(el, "time"), fla, flo))
+
+    tcp = {}   # (src,sport,dst,dport) -> {"s": str tampon, "cot": bool|None}
 
     for ts, lt, frame in iter_frames(pcap):
         r = parse(lt, frame)
         if not r:
             continue
         proto, src, sport, dst, dport, pl = r
-        if classify(pl) != "CoT-XML":
+        if proto == "UDP":
+            if classify(pl) != "CoT-XML":
+                continue
+            for raw in EVENT_RE.findall(pl.decode("utf-8", "replace")):
+                process(raw, src)
             continue
-        text = pl.decode("utf-8", "replace")
-        for raw in EVENT_RE.findall(text):
-            total += 1
-            try:
-                el = ET.fromstring(raw)
-            except ET.ParseError:
-                malformed += 1
+        # ── TCP : réassemblage par flux ──────────────────────────────────
+        key = (src, sport, dst, dport)
+        st = tcp.get(key)
+        if st is None:
+            st = tcp[key] = {"s": "", "cot": None}
+        if st["cot"] is False:
+            continue
+        seg_start = len(st["s"])
+        st["s"] += pl.decode("utf-8", "replace")
+        if st["cot"] is None:
+            if "<event" in st["s"] or "<?xml" in st["s"]:
+                st["cot"] = True
+            elif len(st["s"]) > _TCP_DECIDE_BYTES:
+                st["cot"] = False; st["s"] = ""; continue
+            else:
                 continue
-            cot_type = el.get("type", "") or ""
-            if filter_type and filter_type not in cot_type:
-                continue
-            kept += 1
-            uid = el.get("uid", "") or ""
-            events.append(raw)
-            by_uid[uid] = raw
-            types[cot_type] += 1
-            type_example.setdefault(cot_type, uid)
+        last_end = 0
+        for m in EVENT_RE.finditer(st["s"]):
+            if m.start() < seg_start:          # event commencé dans un segment antérieur
+                counters["tcp_recovered"] += 1
+            process(m.group(0), src)
+            last_end = m.end()
+        tail = st["s"].rfind("<event", last_end)   # garder une éventuelle queue non fermée
+        st["s"] = st["s"][tail:] if tail >= 0 else ""
+        if len(st["s"]) > _TCP_MAX_BUF:
+            st["s"] = st["s"][-_TCP_MAX_BUF:]
 
-            point = el.find("point")
-            det = el.find("detail")
-            duid = det.find("uid") if det is not None else None
-            contact = det.find("contact") if det is not None else None
-            track = det.find("track") if det is not None else None
-            lat = attr(point, "lat") if point is not None else None
-            lon = attr(point, "lon") if point is not None else None
-            rows[uid] = {
-                "uid": uid, "type": cot_type,
-                "affiliation": affiliation(cot_type), "dimension": dimension(cot_type),
-                "sidc_algo": sidc_algo(cot_type),
-                "type_description": describe(cot_type, descriptions),
-                "track_number": (attr(duid, "tadilj") or attr(duid, "tadila")) if duid is not None else None,
-                "callsign": attr(contact, "callsign") if contact is not None else None,
-                "how": attr(el, "how"), "src": src,
-                "lat": lat, "lon": lon,
-                "hae": attr(point, "hae") if point is not None else None,
-                "ce": attr(point, "ce") if point is not None else None,
-                "le": attr(point, "le") if point is not None else None,
-                "course": attr(track, "course") if track is not None else None,
-                "speed": attr(track, "speed") if track is not None else None,
-                "time": attr(el, "time"),
-            }
-            fla, flo = _fnum(lat), _fnum(lon)
-            if fla is not None and flo is not None and not (fla == 0.0 and flo == 0.0):
-                tracks[uid].append((attr(el, "time"), fla, flo))
-
-    return {"total": total, "kept": kept, "malformed": malformed,
+    residual = sum(len(v["s"]) for v in tcp.values() if v["cot"])
+    return {"total": counters["total"], "kept": counters["kept"],
+            "malformed": counters["malformed"], "tcp_recovered": counters["tcp_recovered"],
+            "residual_bytes": residual, "empty_uid": counters["empty_uid"],
             "types": types, "type_example": type_example, "rows": rows,
             "tracks": dict(tracks), "events": events, "by_uid": by_uid}
 
@@ -262,6 +307,9 @@ def main() -> int:
     print(f"Messages CoT lus     : {total} (malformés : {malformed})")
     print(f"Retenus              : {kept}"
           + (f"  [filtre type contient '{args.filter_type}']" if args.filter_type else ""))
+    print(f"Reassembles TCP      : {res['tcp_recovered']} event(s) a cheval sur >=2 segments")
+    print(f"Tampon TCP résiduel  : {res['residual_bytes']} octet(s) non parsés en fin de capture")
+    print(f"Events à uid vide    : {res['empty_uid']} (écrasés sous la clé '')")
     print(f"Pistes distinctes    : {len(rows)}")
     print(f"Types distincts      : {len(types)}")
     print(f"CoTtypes.xml         : {'chargé' if descriptions else 'absent (colonne description vide)'}")
