@@ -3,9 +3,9 @@
 
 Ferme la boucle d'évaluation d'algorithme SANS passer par GeoEvent :
 
-    pcap  --(ce script)-->  plots.csv  --(prototype_tracker_gmti/demo.py)-->  pistes
+    pcap  --(ce script)-->  plots.csv  --(prototype_tracker_gmti_v8.1/demo.py)-->  pistes
 
-Émet exactement le CSV attendu par `tools/prototype_tracker_gmti/demo.py`
+Émet exactement le CSV attendu par `tools/prototype_tracker_gmti_v8.1/demo.py`
 (délimiteur ';', une ligne par target report) :
 
   dwell_time_ms;revisit_idx;dwell_idx;lat;lon;vel_los_cms;snr_db;classification;
@@ -32,7 +32,7 @@ Usage :
   python gmti_pcap_to_csv.py capture.pcap --port 5454 -o plots.csv
 
   # puis :
-  python prototype_tracker_gmti/demo.py plots.csv
+  python prototype_tracker_gmti_v8.1/demo.py plots.csv
 """
 from __future__ import annotations
 
@@ -299,7 +299,7 @@ def export(path, out_path, port, limit=0):
         print("ATTENTION : %d payload(s) du port %d rejeté(s) (non reconnus 4607)"
               % (n_rejected, port))
     print("-> %s" % out_path)
-    print("Évaluer l'algo : python prototype_tracker_gmti/demo.py %s" % out_path)
+    print("Évaluer l'algo : python prototype_tracker_gmti_v8.1/demo.py %s" % out_path)
     return 0
 
 

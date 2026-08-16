@@ -110,7 +110,7 @@ Les trois décodeurs marchent aussi en ligne de commande :
 ```bash
 python video4609.py capture.pcap --limit 200000        # inventaire TS + KLV
 python cot_extract.py capture.pcap                      # events.xml + tracks.csv + types.csv
-python prototype_tracker_gmti_v7/stanag4607_extract.py capture.pcap --rapport r.txt --csv plots.csv
+python prototype_tracker_gmti_v8.1/stanag4607_extract.py capture.pcap --rapport r.txt --csv plots.csv
 # (adapter le numéro de version au dernier prototype_tracker_gmti_v*)
 ```
 
@@ -125,7 +125,7 @@ python prototype_tracker_gmti_v7/stanag4607_extract.py capture.pcap --rapport r.
 | Pour lancer… | Il faut |
 |---|---|
 | `pcap_analyze.py`, `pcap_replay.py`, `gmti_pcap_to_csv.py` | **rien** — bibliothèque standard Python 3 (≥ 3.7) |
-| `prototype_tracker_gmti/demo.py` + `tracker.py` | `numpy`, `scipy` (≥ 1.13), `matplotlib` (≥ 3.8) — versions compatibles numpy 2.x |
+| `prototype_tracker_gmti_v8.1/demo.py` + `tracker.py` | `numpy`, `scipy` (≥ 1.13), `matplotlib` (≥ 3.8) — versions compatibles numpy 2.x |
 
 ```bash
 pip install scipy matplotlib          # numpy est tiré en dépendance
@@ -264,7 +264,7 @@ normalisées en −180..180 ; incertitudes portée/travers/vitesse radiale en br
 
 ---
 
-## `prototype_tracker_gmti/` — tracker MTI → pistes à ID persistant
+## `prototype_tracker_gmti_v8.1/` — tracker MTI → pistes à ID persistant
 
 Corrèle les plots MTI en **pistes à `track_id` unique** :
 **prédiction Kalman (vitesse constante) → gating Mahalanobis (khi²) → association
