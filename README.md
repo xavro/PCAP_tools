@@ -57,6 +57,13 @@ tracker par profil en un clic (~0,03 s) pour comparer nombre de pistes et
 fragmentation. `routier_zone` (vie de piste en secondes, gate croissant) est le
 profil des scans grande zone où une cible n'est pas vue à chaque dwell.
 
+Les canvas GMTI et CoT portent un **graticule lat/lon** et une **lecture de
+position (lat/lon + MGRS) sous le curseur** (`mgrs_lite.py`, conversion pure
+Python). Un **fond de carte raster** (ArcGIS Server `MapServer/export` ou
+`ImageServer`) peut se glisser derrière — URL configurable, repli sur le
+graticule sans serveur. *(Les VectorTileServer ne conviennent pas : tuiles
+vectorielles à rendre côté client.)*
+
 **Onglet « Inventaire 4607 »** — *ce que le vecteur émet réellement* : lance
 `stanag4607_extract` et affiche segments reçus, **présence de chaque champ (%)**,
 plages min/méd/max, **classifications**, **Job Definition** (radar mode,

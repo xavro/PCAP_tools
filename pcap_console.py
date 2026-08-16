@@ -28,6 +28,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pcap_analyze          # noqa: E402
 import pcap_replay           # noqa: E402
 try:
+    import mgrs_lite         # noqa: E402
+except Exception:
+    mgrs_lite = None
+try:
     import gmti_pcap_to_csv  # noqa: E402
 except Exception:
     gmti_pcap_to_csv = None
@@ -77,6 +81,33 @@ def build_route_specs(selected):
 
 def is_app_proto(dominant):
     return dominant.startswith(pcap_analyze.APP)
+
+
+class GeoFrame:
+    """Repère local ENU équirectangulaire (lat/lon <-> mètres). Interface
+    compatible avec tracker.LocalFrame (to_xy / to_ll)."""
+    def __init__(self, lat0, lon0):
+        self.lat0, self.lon0 = lat0, lon0
+        self.kx = 111320.0 * math.cos(math.radians(lat0))
+        self.ky = 110540.0
+
+    def to_xy(self, lat, lon):
+        return (lon - self.lon0) * self.kx, (lat - self.lat0) * self.ky
+
+    def to_ll(self, x, y):
+        return self.lat0 + y / self.ky, self.lon0 + x / self.kx
+
+
+_GRID_STEPS = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
+
+
+def _grid_step(span_deg):
+    """Pas de graticule (°) pour ~5 lignes sur l'étendue visible."""
+    target = max(span_deg, 1e-6) / 5.0
+    for s in _GRID_STEPS:
+        if s >= target:
+            return s
+    return _GRID_STEPS[-1]
 
 
 def _tracker_dir():
@@ -131,6 +162,7 @@ class TrackCanvas(tk.Canvas):
         self.tracks = []
         self.zone = []           # bounding area du job [(x,y),...]
         self.porteur = []        # trajet Platform Location [(x,y),...]
+        self.geo_frame = None    # repère ENU<->lat/lon (graticule + lecture)
         self.show_raw = True
         self.show_smooth = False
         self.scale = 1.0
@@ -140,15 +172,53 @@ class TrackCanvas(tk.Canvas):
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<ButtonPress-1>", self._press)
         self.bind("<B1-Motion>", self._motion)
+        self.bind("<Motion>", self._readout)
         self.bind("<MouseWheel>", self._wheel)          # Windows / macOS
         self.bind("<Button-4>", self._wheel)            # X11 molette haut
         self.bind("<Button-5>", self._wheel)            # X11 molette bas
 
-    def set_data(self, raw, tracks, zone=None, porteur=None, fit=True):
+    def draw_graticule(self):
+        """Grille lat/lon + labels sur l'étendue visible (si repère géo connu)."""
+        if not self.geo_frame or self.scale <= 0:
+            return
+        W = max(self.winfo_width(), 2); H = max(self.winfo_height(), 2)
+        lls = [self.geo_frame.to_ll(*self.s2w(sx, sy))
+               for sx, sy in ((0, 0), (W, 0), (0, H), (W, H))]
+        lats = [p[0] for p in lls]; lons = [p[1] for p in lls]
+        latmin, latmax = min(lats), max(lats); lonmin, lonmax = min(lons), max(lons)
+        step = _grid_step(max(latmax - latmin, lonmax - lonmin))
+        la = math.floor(latmin / step) * step
+        while la <= latmax + step:
+            a = self.w2s(*self.geo_frame.to_xy(la, lonmin))
+            b = self.w2s(*self.geo_frame.to_xy(la, lonmax))
+            self.create_line(a[0], a[1], b[0], b[1], fill="#20282f")
+            self.create_text(3, a[1], text="%.3f" % la, anchor="w", fill="#4a5560", font=("Consolas", 7))
+            la += step
+        lo = math.floor(lonmin / step) * step
+        while lo <= lonmax + step:
+            a = self.w2s(*self.geo_frame.to_xy(latmin, lo))
+            b = self.w2s(*self.geo_frame.to_xy(latmax, lo))
+            self.create_line(a[0], a[1], b[0], b[1], fill="#20282f")
+            self.create_text(a[0], H - 2, text="%.3f" % lo, anchor="s", fill="#4a5560", font=("Consolas", 7))
+            lo += step
+
+    def _readout(self, e):
+        """Lecture lat/lon (+ MGRS) sous le curseur, en bas à droite."""
+        if not self.geo_frame:
+            return
+        self.delete("readout")
+        lat, lon = self.geo_frame.to_ll(*self.s2w(e.x, e.y))
+        mgrs = (mgrs_lite.latlon_to_mgrs(lat, lon) if mgrs_lite else None) or ""
+        self.create_text(self.winfo_width() - 6, self.winfo_height() - 6,
+                         text="%.5f, %.5f  %s" % (lat, lon, mgrs), anchor="se",
+                         fill="#c2c8ce", font=("Consolas", 8), tags="readout")
+
+    def set_data(self, raw, tracks, zone=None, porteur=None, frame=None, fit=True):
         self.raw = raw or []
         self.tracks = tracks or []
         self.zone = zone or []
         self.porteur = porteur or []
+        self.geo_frame = frame
         if fit:
             self.fit()
         self.redraw()
@@ -194,6 +264,7 @@ class TrackCanvas(tk.Canvas):
                              text="(décoder le GMTI puis lancer le tracker)",
                              fill="#5a6675", font=("Segoe UI", 11))
             return
+        self.draw_graticule()
         # Zone de job (bounding area) : polygone tireté.
         if len(self.zone) >= 3:
             flat = []
@@ -286,9 +357,10 @@ class CotCanvas(TrackCanvas):
         self.uid_tracks = []   # [[(x,y),...], ...]
         self.show_tracks = True
 
-    def set_cot(self, points, uid_tracks, fit=True):
+    def set_cot(self, points, uid_tracks, frame=None, fit=True):
         self.points = points or []
         self.uid_tracks = uid_tracks or []
+        self.geo_frame = frame
         if fit:
             self.fit()
         self.redraw()
@@ -306,6 +378,7 @@ class CotCanvas(TrackCanvas):
                              text="(analyser le CoT du pcap)", fill="#5a6675",
                              font=("Segoe UI", 11))
             return
+        self.draw_graticule()
         if self.show_tracks:
             for tr in self.uid_tracks:
                 if len(tr) >= 2:
@@ -694,19 +767,18 @@ class Console(tk.Tk):
             if la is not None and lo is not None and not (la == 0 and lo == 0):
                 lat0, lon0 = la, lo; break
         points, uid_tracks = [], []
+        frame = None
         if lat0 is not None:
-            kx = 111320.0 * math.cos(math.radians(lat0)); ky = 110540.0
-            to_xy = lambda la, lo: ((lo - lon0) * kx, (la - lat0) * ky)
+            frame = GeoFrame(lat0, lon0)
             for uid, r in rows.items():
                 la, lo = cot_extract._fnum(r["lat"]), cot_extract._fnum(r["lon"])
                 if la is None or lo is None or (la == 0 and lo == 0):
                     continue
-                x, y = to_xy(la, lo)
-                points.append((x, y, r["affiliation"], uid))
+                points.append((*frame.to_xy(la, lo), r["affiliation"], uid))
             for uid, tr in res["tracks"].items():
                 if len(tr) >= 2:
-                    uid_tracks.append([to_xy(la, lo) for (_t, la, lo) in tr])
-        self.q.put(("cot", res, points, uid_tracks))
+                    uid_tracks.append([frame.to_xy(la, lo) for (_t, la, lo) in tr])
+        self.q.put(("cot", res, points, uid_tracks, frame))
 
     def _cot_select(self, _e):
         sel = self.cot_tree.selection()
@@ -898,13 +970,13 @@ class Console(tk.Tk):
         except Exception as e:
             self.q.put(("track_err", "Tracker échoué : %s" % e))
 
-    def _populate_cot(self, res, points, uid_tracks):
+    def _populate_cot(self, res, points, uid_tracks, frame=None):
         self._cot_rows = res["rows"]
         self.cot_tree.delete(*self.cot_tree.get_children())
         for uid, r in sorted(res["rows"].items()):
             self.cot_tree.insert("", "end", values=(uid, r["type"], r["affiliation"], r.get("callsign") or ""))
         self.cot_canvas.show_tracks = self.cot_tracks_var.get()
-        self.cot_canvas.set_cot(points, uid_tracks, fit=True)
+        self.cot_canvas.set_cot(points, uid_tracks, frame=frame, fit=True)
         # Inventaire des types dans le panneau détail (avant sélection).
         self.cot_detail.delete("1.0", "end")
         self.cot_detail.insert("end", "INVENTAIRE CoT — %d events, %d types, %d objets (malformés %d)\n\n"
@@ -969,7 +1041,8 @@ class Console(tk.Tk):
                     raw, zone, porteur = self._overlays(res)
                     self.track_canvas.show_raw = self.raw_var.get()
                     self.track_canvas.show_smooth = self.smooth_var.get()
-                    self.track_canvas.set_data(raw, res["tracks"], zone=zone, porteur=porteur, fit=True)
+                    self.track_canvas.set_data(raw, res["tracks"], zone=zone, porteur=porteur,
+                                               frame=res.get("frame"), fit=True)
                     extra = ""
                     if zone:
                         extra += " · zone job"
@@ -983,7 +1056,7 @@ class Console(tk.Tk):
                 elif kind == "cot_status":
                     self.cot_status.set(msg[1])
                 elif kind == "cot":
-                    self._populate_cot(msg[1], msg[2], msg[3])
+                    self._populate_cot(msg[1], msg[2], msg[3], msg[4])
                 elif kind == "ov_status":
                     self.ov_status.set(msg[1])
                 elif kind == "overview":
