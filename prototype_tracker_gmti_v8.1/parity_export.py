@@ -12,7 +12,7 @@ Ex. :
   python parity_export.py ../plots.csv routier parity_expected_routier.csv
 
 Sortie (délimiteur ';') :
-  dwell_time_ms;track_id;state;lat;lon;hits
+  dwell_time_ms;track_id;state;lat;lon;hits;aerien;rotateur
 Les identifiants de piste NE coïncident PAS avec ceux du Java (compteurs distincts) :
 le comparateur apparie les pistes par proximité de position, pas par id.
 """
@@ -42,11 +42,12 @@ def export(csv_in, profile, csv_out):
             if st not in DISPLAYABLE or not tr.confirmed_ever:
                 continue
             lat, lon = frame.to_ll(tr.x[0], tr.x[1])
-            rows.append((ms, tr.id, st, lat, lon, tr.hits))
+            rows.append((ms, tr.id, st, lat, lon, tr.hits,
+                         int(bool(tr.is_air)), int(bool(tr.is_rotator))))
     with open(csv_out, "w", encoding="utf-8") as f:
-        f.write("dwell_time_ms;track_id;state;lat;lon;hits\n")
-        for ms, tid, st, lat, lon, hits in rows:
-            f.write("%d;%d;%s;%.7f;%.7f;%d\n" % (ms, tid, st, lat, lon, hits))
+        f.write("dwell_time_ms;track_id;state;lat;lon;hits;aerien;rotateur\n")
+        for ms, tid, st, lat, lon, hits, air, rot in rows:
+            f.write("%d;%d;%s;%.7f;%.7f;%d;%d;%d\n" % (ms, tid, st, lat, lon, hits, air, rot))
     print("parity_export : %d lignes (%s) -> %s" % (len(rows), profile, csv_out))
 
 
