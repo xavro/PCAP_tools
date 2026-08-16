@@ -59,10 +59,20 @@ profil des scans grande zone où une cible n'est pas vue à chaque dwell.
 
 Les canvas GMTI et CoT portent un **graticule lat/lon** et une **lecture de
 position (lat/lon + MGRS) sous le curseur** (`mgrs_lite.py`, conversion pure
-Python). Un **fond de carte raster** (ArcGIS Server `MapServer/export` ou
-`ImageServer`) peut se glisser derrière — URL configurable, repli sur le
-graticule sans serveur. *(Les VectorTileServer ne conviennent pas : tuiles
-vectorielles à rendre côté client.)*
+Python), et un **fond de carte raster ArcGIS Server** optionnel (case
+« Fond ArcGIS ») : `arcgis_basemap.py` appelle `MapServer/export` en **EPSG:4326**
+(alignement exact avec le canvas ENU), rafraîchi au relâchement du pan/zoom, avec
+**repli graticule** si le serveur est absent. Configuration dans **`basemap.json`**
+(à côté du script) :
+
+```json
+{"url": "https://asus-xav/arcgis/rest/services/WorldTopoMap/MapServer",
+ "token": null, "insecure": true}
+```
+
+`insecure: true` accepte le certificat auto-signé d'un serveur DEV local.
+*(Un VectorTileServer ne convient pas : tuiles vectorielles à rendre côté client
+— il faut un MapServer raster / ImageServer.)*
 
 **Onglet « Inventaire 4607 »** — *ce que le vecteur émet réellement* : lance
 `stanag4607_extract` et affiche segments reçus, **présence de chaque champ (%)**,

@@ -12,6 +12,7 @@ Application desktop (bibliothèque standard : tkinter) à deux onglets :
 L'onglet Rejeu ne dépend de rien (stdlib). L'onglet GMTI charge le tracker
 (numpy + scipy) EN LAZY : s'ils manquent, seul cet onglet est indisponible.
 """
+import base64
 import importlib
 import math
 import os
@@ -31,6 +32,10 @@ try:
     import mgrs_lite         # noqa: E402
 except Exception:
     mgrs_lite = None
+try:
+    import arcgis_basemap    # noqa: E402
+except Exception:
+    arcgis_basemap = None
 try:
     import gmti_pcap_to_csv  # noqa: E402
 except Exception:
@@ -169,13 +174,44 @@ class TrackCanvas(tk.Canvas):
         self.cx = 0.0
         self.cy = 0.0
         self._drag = None
+        # Fond de carte ArcGIS (raster) : image + emprise + callback de requête.
+        self.basemap_enabled = False
+        self.basemap_photo = None
+        self.basemap_bbox = None
+        self.request_basemap = None    # fixé par l'app : callback(canvas)
+        self._bm_after = None
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<ButtonPress-1>", self._press)
         self.bind("<B1-Motion>", self._motion)
+        self.bind("<ButtonRelease-1>", lambda e: self._view_changed())
         self.bind("<Motion>", self._readout)
         self.bind("<MouseWheel>", self._wheel)          # Windows / macOS
         self.bind("<Button-4>", self._wheel)            # X11 molette haut
         self.bind("<Button-5>", self._wheel)            # X11 molette bas
+
+    def _view_changed(self):
+        """Après un pan/zoom : re-demande le fond (débattu) si activé."""
+        if not (self.basemap_enabled and self.request_basemap and self.geo_frame):
+            return
+        if self._bm_after:
+            try: self.after_cancel(self._bm_after)
+            except Exception: pass
+        self._bm_after = self.after(300, lambda: self.request_basemap(self))
+
+    def apply_basemap(self, png_bytes, bbox):
+        try:
+            self.basemap_photo = tk.PhotoImage(data=base64.b64encode(png_bytes).decode("ascii"))
+            self.basemap_bbox = bbox
+            self.redraw()
+        except Exception:
+            pass
+
+    def _draw_basemap(self):
+        if not (self.basemap_enabled and self.basemap_photo and self.basemap_bbox and self.geo_frame):
+            return
+        lonmin, latmin, lonmax, latmax = self.basemap_bbox
+        nx, ny = self.w2s(*self.geo_frame.to_xy(latmax, lonmin))   # coin nord-ouest
+        self.create_image(nx, ny, image=self.basemap_photo, anchor="nw")
 
     def draw_graticule(self):
         """Grille lat/lon + labels sur l'étendue visible (si repère géo connu)."""
@@ -264,6 +300,7 @@ class TrackCanvas(tk.Canvas):
                              text="(décoder le GMTI puis lancer le tracker)",
                              fill="#5a6675", font=("Segoe UI", 11))
             return
+        self._draw_basemap()
         self.draw_graticule()
         # Zone de job (bounding area) : polygone tireté.
         if len(self.zone) >= 3:
@@ -343,6 +380,7 @@ class TrackCanvas(tk.Canvas):
         self.cx = wx - (e.x - W / 2) / self.scale
         self.cy = wy + (e.y - H / 2) / self.scale
         self.redraw()
+        self._view_changed()
 
 
 # ── Canvas CoT : points colorés par affiliation + trace par uid ─────────────
@@ -378,6 +416,7 @@ class CotCanvas(TrackCanvas):
                              text="(analyser le CoT du pcap)", fill="#5a6675",
                              font=("Segoe UI", 11))
             return
+        self._draw_basemap()
         self.draw_graticule()
         if self.show_tracks:
             for tr in self.uid_tracks:
@@ -450,6 +489,9 @@ class Console(tk.Tk):
         self.gmti_csv = None
         self.sink = None            # Sink de l'extracteur (overlays/inventaire), si dispo
         self._cot_rows = {}         # dernières valeurs CoT par uid (field=value)
+        self._bm_failed = False     # fond de carte : n'alerter qu'une fois
+        self.basemap_cfg = (arcgis_basemap.load_config(os.path.dirname(os.path.abspath(__file__)))
+                            if arcgis_basemap else None)
         self.path_var = tk.StringVar()
         self.limit_var = tk.StringVar(value=str(SCAN_LIMIT_DEFAULT))
         self._build_ui()
@@ -485,6 +527,10 @@ class Console(tk.Tk):
         self._build_inventaire_tab(self.tab_inv)
         self._build_cot_tab(self.tab_cot)
         self._build_video_tab(self.tab_video)
+
+        # Fond de carte ArcGIS piloté par l'app pour les canvas géo.
+        for cv in (self.track_canvas, self.cot_canvas):
+            cv.request_basemap = self._basemap_for
 
         self.status_var = tk.StringVar(value="Prêt.")
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2),
@@ -545,6 +591,9 @@ class Console(tk.Tk):
         ttk.Checkbutton(bar, text="lissage RTS", variable=self.smooth_var,
                         command=self._toggle_view).pack(side="left", padx=2)
         ttk.Button(bar, text="Ajuster la vue", command=self._fit_view).pack(side="left", padx=6)
+        self.gmti_bm_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Fond ArcGIS", variable=self.gmti_bm_var,
+                        command=lambda: self._toggle_basemap(self.track_canvas, self.gmti_bm_var)).pack(side="left")
 
         self.gmti_status = tk.StringVar(value="Décoder le GMTI d'un pcap, puis lancer le tracker.")
         ttk.Label(parent, textvariable=self.gmti_status, padding=(0, 2),
@@ -717,6 +766,9 @@ class Console(tk.Tk):
         ttk.Checkbutton(bar, text="trace par uid", variable=self.cot_tracks_var,
                         command=self._cot_toggle_tracks).pack(side="left", padx=8)
         ttk.Button(bar, text="Ajuster la vue", command=self._cot_fit).pack(side="left")
+        self.cot_bm_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Fond ArcGIS", variable=self.cot_bm_var,
+                        command=lambda: self._toggle_basemap(self.cot_canvas, self.cot_bm_var)).pack(side="left", padx=6)
 
         self.cot_status = tk.StringVar(value="Analyser le CoT d'un pcap (events, affiliations, positions).")
         ttk.Label(parent, textvariable=self.cot_status, padding=(0, 2),
@@ -987,6 +1039,40 @@ class Console(tk.Tk):
                                    % (t, n, cot_extract.affiliation(t), cot_extract.dimension(t)))
         self.cot_status.set("CoT : %d events, %d types, %d objets positionnés."
                             % (res["kept"], len(res["types"]), len(points)))
+
+    # ── Fond de carte ArcGIS ─────────────────────────────────────────────
+    def _toggle_basemap(self, canvas, var):
+        if arcgis_basemap is None or not self.basemap_cfg:
+            messagebox.showwarning("Fond de carte", "Module arcgis_basemap indisponible.")
+            var.set(False); return
+        canvas.basemap_enabled = var.get()
+        if not canvas.basemap_enabled:
+            canvas.basemap_photo = None
+            canvas.redraw()
+        else:
+            self._basemap_for(canvas)
+
+    def _basemap_for(self, canvas):
+        if not (canvas.geo_frame and canvas.basemap_enabled and self.basemap_cfg):
+            return
+        W = max(canvas.winfo_width(), 2); H = max(canvas.winfo_height(), 2)
+        corners = [canvas.geo_frame.to_ll(*canvas.s2w(sx, sy))
+                   for sx, sy in ((0, 0), (W, 0), (0, H), (W, H))]
+        lats = [c[0] for c in corners]; lons = [c[1] for c in corners]
+        bbox = (min(lons), min(lats), max(lons), max(lats))
+        url = arcgis_basemap.export_url(self.basemap_cfg["url"], *bbox, W, H, self.basemap_cfg["token"])
+        threading.Thread(target=self._bm_worker, args=(canvas, url, bbox), daemon=True).start()
+
+    def _bm_worker(self, canvas, url, bbox):
+        try:
+            png = arcgis_basemap.fetch_png(url, self.basemap_cfg.get("insecure", True))
+            self.after(0, lambda: canvas.apply_basemap(png, bbox))
+        except Exception as e:
+            if not self._bm_failed:
+                self._bm_failed = True
+                self.after(0, lambda: messagebox.showwarning(
+                    "Fond de carte", "Fond ArcGIS indisponible :\n%s\n\n"
+                    "Le graticule reste affiché. Vérifie l'URL/token dans basemap.json." % e))
 
     def _overlays(self, res):
         """Construit (raw_coloré, zone_job, trajet_porteur) depuis le Sink de
