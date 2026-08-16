@@ -115,20 +115,28 @@ def _grid_step(span_deg):
     return _GRID_STEPS[-1]
 
 
+def _version_tuple(suffix):
+    """'8' -> (8,) ; '8.1' -> (8,1) ; None si non versionné."""
+    parts = suffix.split(".")
+    if parts and all(p.isdigit() for p in parts):
+        return tuple(int(p) for p in parts)
+    return None
+
+
 def _tracker_dir():
-    """Dossier du tracker : la version v<N> la plus élevée ayant track_run.py."""
+    """Dossier du tracker : la version v<N[.M]> la plus élevée ayant track_run.py
+    (gère les versions à point, ex. v8.1 > v8 > v7)."""
     base = os.path.dirname(os.path.abspath(__file__))
-    best, best_n = None, -1
+    best, best_ver = None, ()
     try:
         for name in os.listdir(base):
             if not name.startswith(TRACKER_PREFIX):
                 continue
-            suffix = name[len(TRACKER_PREFIX):]
-            if (suffix.isdigit() and os.path.isdir(os.path.join(base, name))
+            ver = _version_tuple(name[len(TRACKER_PREFIX):])
+            if (ver and os.path.isdir(os.path.join(base, name))
                     and os.path.isfile(os.path.join(base, name, "track_run.py"))):
-                n = int(suffix)
-                if n > best_n:
-                    best_n, best = n, name
+                if ver > best_ver:
+                    best_ver, best = ver, name
     except OSError:
         pass
     return os.path.join(base, best) if best else os.path.join(base, TRACKER_PREFIX + "7")
@@ -322,7 +330,13 @@ class TrackCanvas(tk.Canvas):
                 col = CLASS_COLORS.get(p[2], CLASS_DEFAULT) if len(p) > 2 else "#59636f"
                 self.create_rectangle(sx, sy, sx + 1, sy + 1, outline=col)
         for i, tr in enumerate(self.tracks):
-            col = PALETTE[i % len(PALETTE)]
+            # v8+ : rotateur fixe (probable éolienne) grisé ; candidat aérien violet.
+            if tr.get("is_rotator"):
+                col, tag = "#6b7280", " ⊗"
+            elif tr.get("is_air"):
+                col, tag = "#b388ff", " ✈"
+            else:
+                col, tag = PALETTE[i % len(PALETTE)], ""
             pts = tr["smooth"] if (self.show_smooth and tr.get("smooth")) else tr["pts"]
             if len(pts) >= 2:
                 flat = []
@@ -333,7 +347,7 @@ class TrackCanvas(tk.Canvas):
             if pts:
                 ex, ey = self.w2s(*pts[-1])
                 self.create_oval(ex - 4, ey - 4, ex + 4, ey + 4, fill=col, outline="")
-                self.create_text(ex + 8, ey, text="#%d" % tr["id"], anchor="w",
+                self.create_text(ex + 8, ey, text="#%d%s" % (tr["id"], tag), anchor="w",
                                  fill=col, font=("Consolas", 8))
         # échelle
         self._draw_scalebar()
