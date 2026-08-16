@@ -50,6 +50,12 @@ class Params:
 TENTATIVE, CONFIRMED, SOLID, COASTING, DEAD = (
     "Faible", "Confirmee", "Solide", "Coasting", "Supprimee")
 
+# Constantes reutilisees (evite de recreer ces matrices a chaque appel ;
+# valeurs strictement identiques a np.array(...)/np.eye(...) — resultat inchange).
+_H = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])   # observation position
+_I2 = np.eye(2)
+_I4 = np.eye(4)
+
 
 class Track:
     _ids = itertools.count(1)
@@ -81,26 +87,26 @@ class Track:
         F = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]])
         q = self.q_accel**2
         G = np.array([[dt**2 / 2, 0], [0, dt**2 / 2], [dt, 0], [0, dt]])
-        Q = G @ (q * np.eye(2)) @ G.T
+        Q = G @ (q * _I2) @ G.T
         self.x = F @ self.x
         self.P = F @ self.P @ F.T + Q
         self.t = t
 
     def innovation(self, plot):
         """Retourne (d2 Mahalanobis, y, S) entre le plot et la prediction."""
-        H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]])
+        H = _H
         y = np.array([plot.x, plot.y]) - H @ self.x
         S = H @ self.P @ H.T + plot.R
         d2 = float(y @ np.linalg.solve(S, y))
         return d2, y, S
 
     def update(self, plot):
-        H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]])
+        H = _H
         y = np.array([plot.x, plot.y]) - H @ self.x
         S = H @ self.P @ H.T + plot.R
         K = self.P @ H.T @ np.linalg.inv(S)
         self.x = self.x + K @ y
-        self.P = (np.eye(4) - K @ H) @ self.P
+        self.P = (_I4 - K @ H) @ self.P
         self.hits += 1
         self.misses = 0
         self.t_last_update = self.t
@@ -186,16 +192,40 @@ class Tracker:
             tr.predict(t)
 
         # --- Matrice de couts pistes x plots avec gating ---
+        # Broad-phase spatial : les plots sont indexes sur une grille reguliere,
+        # et l'innovation (2x2, couteuse) n'est evaluee QUE pour les couples dont
+        # la distance predite est sous le gate. Sur un scan grande zone (gates
+        # larges mais plots epars, cf. routier_zone), la quasi-totalite des
+        # couples est hors gate : on evite ainsi ~99 % des solve/det. La matrice
+        # de couts produite est STRICTEMENT identique a la version dense (les
+        # couples hors gate valaient BIG) -> meme affectation, memes pistes.
         n_t, n_p = len(self.tracks), len(plots)
         BIG = 1e9
         cost = np.full((n_t, n_p), BIG)
-        for i, tr in enumerate(self.tracks):
+        if n_t and n_p:
+            # Cellule dimensionnee sur le gate MAX possible (gate_max + croissance
+            # bornee par la duree de vie) : chaque piste n'interroge alors qu'un
+            # voisinage 3x3 dans le cas courant (rad reste exact si depasse).
+            grow_cap = Params.GATE_GROW_MPS * (Params.DELETE_SEC or 0.0)
+            cell = max(50.0, Params.GATE_MAX_M + grow_cap)
+            grid = {}
             for j, pl in enumerate(plots):
-                d2, y, S = tr.innovation(pl)
+                grid.setdefault((int(pl.x // cell), int(pl.y // cell)), []).append(j)
+            for i, tr in enumerate(self.tracks):
                 gate_m = tr.gate_max + Params.GATE_GROW_MPS * (tr.t - tr.t_last_update)
-                if d2 < Params.GATE_CHI2 and math.hypot(y[0], y[1]) < gate_m:
-                    # cout = -log vraisemblance (distance + volume d'incertitude)
-                    cost[i, j] = d2 + math.log(np.linalg.det(S))
+                px, py = tr.x[0], tr.x[1]
+                cx, cy = int(px // cell), int(py // cell)
+                rad = int(gate_m // cell) + 1
+                for gx in range(cx - rad, cx + rad + 1):
+                    for gy in range(cy - rad, cy + rad + 1):
+                        for j in grid.get((gx, gy), ()):
+                            pl = plots[j]
+                            if math.hypot(pl.x - px, pl.y - py) >= gate_m:
+                                continue
+                            d2, _y, S = tr.innovation(pl)
+                            if d2 < Params.GATE_CHI2:
+                                # cout = -log vraisemblance (distance + incertitude)
+                                cost[i, j] = d2 + math.log(np.linalg.det(S))
 
         # --- Affectation globale (GNN / hongrois) ---
         assigned_t, assigned_p = set(), set()
