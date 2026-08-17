@@ -11,6 +11,9 @@ Application desktop (bibliothèque standard : tkinter) à deux onglets :
 
 L'onglet Rejeu ne dépend de rien (stdlib). L'onglet GMTI charge le tracker
 (numpy + scipy) EN LAZY : s'ils manquent, seul cet onglet est indisponible.
+
+Thème : sombre par défaut via sv_ttk (pip install sv-ttk, optionnel) avec fallback
+ttk `clam` sombre intégré ; F2 / bouton ☾☀ bascule sombre ↔ clair (voir apply_theme).
 """
 import base64
 import importlib
@@ -50,6 +53,62 @@ try:
     import video4609         # noqa: E402
 except Exception:
     video4609 = None
+try:
+    import sv_ttk            # noqa: E402  thème sombre « Sun Valley » (optionnel : pip install sv-ttk)
+except Exception:
+    sv_ttk = None
+
+# Palette sombre partagée (alignée sur sv_ttk dark + canvas géo).
+UI_BG = "#1c1c1c"          # fond fenêtre sv_ttk dark
+UI_PANEL = "#0e1216"       # zones texte / canvas (déjà utilisé par les canvas géo)
+UI_FG = "#e6edf3"
+UI_MUTED = "#8a8f98"
+UI_ACCENT = "#00c8ff"
+MONO_FONT = ("Consolas", -13)   # taille en px : cohérent avec les polices sv_ttk (px) quel que soit le DPI
+
+
+UI_LIGHT = {"bg": "#fafafa", "panel": "#ffffff", "fg": "#1b1b1b", "muted": "#6b7280"}
+UI_DARK = {"bg": UI_BG, "panel": UI_PANEL, "fg": UI_FG, "muted": UI_MUTED}
+
+
+def apply_theme(root, mode="dark"):
+    """Applique le thème (« dark » ou « light ») : sv_ttk si installé, sinon fallback ttk
+    `clam` recoloré. Les widgets tk non-ttk (ScrolledText, Canvas) sont recolorés via
+    option_add (pris en compte pour les widgets créés ensuite) — pour un changement à
+    chaud, `Console._retheme_text_widgets` repasse sur les widgets existants."""
+    pal = UI_DARK if mode == "dark" else UI_LIGHT
+    st = ttk.Style(root)
+    if sv_ttk is not None:
+        sv_ttk.set_theme(mode)
+    else:
+        st.theme_use("clam")
+        field = pal["panel"]
+        st.configure(".", background=pal["bg"], foreground=pal["fg"], fieldbackground=field,
+                     bordercolor="#333" if mode == "dark" else "#c8c8c8",
+                     troughcolor=pal["bg"], selectbackground=UI_ACCENT)
+        st.configure("TNotebook", background=pal["bg"], borderwidth=0)
+        st.configure("TNotebook.Tab", background=pal["bg"], padding=(10, 5))
+        st.map("TNotebook.Tab", background=[("selected", "#2a2f36" if mode == "dark" else "#e4e4e4")])
+        st.configure("Treeview", background=field, fieldbackground=field, foreground=pal["fg"])
+        st.configure("Treeview.Heading", background="#2a2f36" if mode == "dark" else "#e4e4e4",
+                     foreground=pal["fg"])
+        st.configure("Accent.TButton", background=UI_ACCENT, foreground="#000")
+        root.configure(bg=pal["bg"])
+    # Boutons d'action : Start en accent (sv_ttk fournit Accent.TButton), Stop en rouge.
+    st.configure("Stop.TButton", foreground="#ff5252")
+    st.configure("Status.TLabel", foreground=pal["muted"], font=MONO_FONT)
+    st.configure("Muted.TLabel", foreground=pal["muted"])
+    # Bandeau d'en-tête : titre en accent + sous-titre atténué (fond = fond fenêtre,
+    # sv_ttk ne repeint pas le fond des TFrame ; un Separator délimite le bandeau).
+    st.configure("HeaderTitle.TLabel", foreground=UI_ACCENT, font=("Segoe UI Semibold", 12))
+    st.configure("HeaderSub.TLabel", foreground=pal["muted"])
+    # Widgets tk classiques (ScrolledText…) : fond panneau, texte clair, curseur clair.
+    for opt, val in (("*Text.background", pal["panel"]), ("*Text.foreground", pal["fg"]),
+                     ("*Text.insertBackground", pal["fg"]), ("*Text.selectBackground", "#264f78"),
+                     ("*Text.borderWidth", 0), ("*Text.highlightThickness", 0),
+                     ("*Canvas.background", pal["bg"])):
+        root.option_add(opt, val)
+    return pal
 
 # Couleurs par affiliation CoT (MIL-STD-2525 : ami=bleu, hostile=rouge, neutre=vert…).
 AFFIL_COLORS = {"FRIEND": "#00c8ff", "ASSUMED_FRIEND": "#00c8ff", "JOKER": "#00c8ff",
@@ -625,7 +684,7 @@ class FlowRow:
         self.frame = ttk.Frame(parent)
         ttk.Checkbutton(self.frame, variable=self.replay).grid(row=0, column=0, padx=(0, 4))
         label = "%s/%-6d %-20s %8d pkts" % (proto.lower(), dport, dominant, pkts)
-        ttk.Label(self.frame, text=label, font=("Consolas", 9)).grid(row=0, column=1, sticky="w")
+        ttk.Label(self.frame, text=label, font=MONO_FONT).grid(row=0, column=1, sticky="w")
         self.targets_frame = ttk.Frame(self.frame)
         self.targets_frame.grid(row=0, column=2, sticky="w", padx=6)
         self.target_vars = []
@@ -653,7 +712,8 @@ class Console(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Console pcap — ISRBOX / 33e ESRA")
-        self.geometry("960x720")
+        self.geometry("1100x760")
+        self.minsize(900, 600)
         self.rows = []
         self.worker = None
         self.stop_event = threading.Event()
@@ -667,17 +727,35 @@ class Console(tk.Tk):
                             if arcgis_basemap else None)
         self.path_var = tk.StringVar()
         self.limit_var = tk.StringVar(value=str(SCAN_LIMIT_DEFAULT))
+        self.theme_mode = "dark"
+        self.pal = apply_theme(self, self.theme_mode)
         self._build_ui()
+        self.bind("<F2>", lambda _e: self._toggle_theme())
+        # sv_ttk repeint les widgets tk (tk_setPalette) sur <<ThemeChanged>>, événement
+        # asynchrone : on repasse derrière pour garder le fond « panneau » des zones texte.
+        self.bind("<<ThemeChanged>>",
+                  lambda _e: self.after_idle(self._retheme_text_widgets, self, self.pal), add="+")
         self.after(150, self._pump)
 
     def _build_ui(self):
-        top = ttk.Frame(self, padding=8)
+        # Bandeau d'en-tête : titre à gauche, sélection du pcap à droite.
+        top = ttk.Frame(self, padding=(12, 8))
         top.pack(fill="x")
+        ttk.Separator(self).pack(fill="x")
+        title = ttk.Frame(top)
+        title.pack(side="left", padx=(0, 16))
+        ttk.Label(title, text="◉ Console pcap", style="HeaderTitle.TLabel").pack(anchor="w")
+        ttk.Label(title, text="ISRBOX / 33e ESRA · analyse · rejeu · GMTI · CoT · vidéo",
+                  style="HeaderSub.TLabel").pack(anchor="w")
+        # Éléments de droite d'abord (pack right), le champ pcap prend l'espace restant.
+        self.theme_btn = ttk.Button(top, text="☾", width=3, command=self._toggle_theme)
+        self.theme_btn.pack(side="right", padx=(12, 0))
+        ttk.Label(top, text="F2", style="HeaderSub.TLabel").pack(side="right")
+        ttk.Entry(top, textvariable=self.limit_var, width=8).pack(side="right")
+        ttk.Label(top, text="limit").pack(side="right", padx=(8, 2))
+        ttk.Button(top, text="Parcourir…", command=self._browse).pack(side="right")
         ttk.Label(top, text="Fichier pcap :").pack(side="left")
-        ttk.Entry(top, textvariable=self.path_var, width=56).pack(side="left", padx=4)
-        ttk.Button(top, text="Parcourir…", command=self._browse).pack(side="left")
-        ttk.Label(top, text="limit").pack(side="left", padx=(8, 2))
-        ttk.Entry(top, textvariable=self.limit_var, width=8).pack(side="left")
+        ttk.Entry(top, textvariable=self.path_var, width=30).pack(side="left", padx=4, fill="x", expand=True)
 
         nb = ttk.Notebook(self)
         self.nb = nb
@@ -685,21 +763,18 @@ class Console(tk.Tk):
         self.tab_overview = ttk.Frame(nb)
         self.tab_replay = ttk.Frame(nb)
         self.tab_gmti = ttk.Frame(nb)
-        self.tab_inv = ttk.Frame(nb)
         self.tab_cot = ttk.Frame(nb)
         self.tab_video = ttk.Frame(nb)
         self.tab_fused = ttk.Frame(nb)
-        nb.add(self.tab_overview, text="  Vue d'ensemble  ")
-        nb.add(self.tab_replay, text="  Rejeu  ")
-        nb.add(self.tab_gmti, text="  GMTI → Pistes  ")
-        nb.add(self.tab_inv, text="  Inventaire 4607  ")
-        nb.add(self.tab_cot, text="  CoT  ")
-        nb.add(self.tab_video, text="  Vidéo 4609  ")
-        nb.add(self.tab_fused, text="  Carte fusionnée  ")
+        nb.add(self.tab_overview, text="  ⌂  Vue d'ensemble  ")
+        nb.add(self.tab_replay, text="  ▶  Rejeu  ")
+        nb.add(self.tab_gmti, text="  ◎  GMTI → Pistes  ")
+        nb.add(self.tab_cot, text="  ✦  CoT  ")
+        nb.add(self.tab_video, text="  ▣  Vidéo 4609  ")
+        nb.add(self.tab_fused, text="  ⊕  Carte fusionnée  ")
         self._build_overview_tab(self.tab_overview)
         self._build_replay_tab(self.tab_replay)
         self._build_gmti_tab(self.tab_gmti)
-        self._build_inventaire_tab(self.tab_inv)
         self._build_cot_tab(self.tab_cot)
         self._build_video_tab(self.tab_video)
         self._build_fused_tab(self.tab_fused)
@@ -709,8 +784,24 @@ class Console(tk.Tk):
             cv.request_basemap = self._basemap_for
 
         self.status_var = tk.StringVar(value="Prêt.  Tracker : %s" % tracker_version())
-        ttk.Label(self, textvariable=self.status_var, padding=(8, 2),
-                  font=("Consolas", 9)).pack(anchor="w")
+        ttk.Separator(self).pack(fill="x")
+        ttk.Label(self, textvariable=self.status_var, padding=(8, 3),
+                  style="Status.TLabel").pack(anchor="w")
+
+    def _toggle_theme(self):
+        """Bascule sombre/clair (bouton ☾/☀ ou F2) et repasse sur les widgets tk déjà créés."""
+        self.theme_mode = "light" if self.theme_mode == "dark" else "dark"
+        self.pal = apply_theme(self, self.theme_mode)
+        self.theme_btn.configure(text="☾" if self.theme_mode == "dark" else "☀")
+        self._retheme_text_widgets(self, self.pal)
+
+    def _retheme_text_widgets(self, w, pal):
+        for c in w.winfo_children():
+            if isinstance(c, tk.Text):
+                c.configure(bg=pal["panel"], fg=pal["fg"], insertbackground=pal["fg"])
+            elif isinstance(c, tk.Canvas) and not isinstance(c, TrackCanvas):
+                c.configure(bg=pal["bg"])
+            self._retheme_text_widgets(c, pal)
 
     # ── Onglet Rejeu ─────────────────────────────────────────────────────
     def _build_replay_tab(self, parent):
@@ -741,12 +832,13 @@ class Console(tk.Tk):
         ttk.Checkbutton(ctl, text="Boucle", variable=self.loop_var).pack(side="left", padx=6)
         self.drop_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(ctl, text="Ignorer flux non cochés", variable=self.drop_var).pack(side="left", padx=6)
-        self.start_btn = ttk.Button(ctl, text="▶ Start", command=self._start)
+        self.start_btn = ttk.Button(ctl, text="▶ Start", command=self._start, style="Accent.TButton")
         self.start_btn.pack(side="left", padx=(16, 2))
-        self.stop_btn = ttk.Button(ctl, text="■ Stop", command=self._stop, state="disabled")
+        self.stop_btn = ttk.Button(ctl, text="■ Stop", command=self._stop, state="disabled",
+                                   style="Stop.TButton")
         self.stop_btn.pack(side="left", padx=2)
 
-        self.log = scrolledtext.ScrolledText(parent, height=7, font=("Consolas", 9))
+        self.log = scrolledtext.ScrolledText(parent, height=7, font=MONO_FONT)
         self.log.pack(fill="both", expand=False, pady=(4, 0))
 
     # ── Onglet GMTI → Pistes ─────────────────────────────────────────────
@@ -773,20 +865,41 @@ class Console(tk.Tk):
 
         self.gmti_status = tk.StringVar(value="Décoder le GMTI d'un pcap, puis lancer le tracker.")
         ttk.Label(parent, textvariable=self.gmti_status, padding=(0, 2),
-                  font=("Consolas", 9)).pack(anchor="w")
-        self.track_canvas = TrackCanvas(parent)
+                  font=MONO_FONT).pack(anchor="w")
+
+        # Écran partagé (comme l'onglet CoT) : à gauche l'analyse du flux (inventaire
+        # 4607), à droite la carte du tracker (plots + pistes).
+        pan = ttk.Panedwindow(parent, orient="horizontal")
+        pan.pack(fill="both", expand=True)
+        left = ttk.Frame(pan, width=420)
+        self._build_inventaire_pane(left)
+        right = ttk.Frame(pan)
+        self.track_canvas = TrackCanvas(right)
         self.track_canvas.pack(fill="both", expand=True)
+        pan.add(left, weight=0)
+        pan.add(right, weight=1)
 
     # ── Actions communes ─────────────────────────────────────────────────
-    # ── Onglet Inventaire 4607 ───────────────────────────────────────────
-    def _build_inventaire_tab(self, parent):
-        bar = ttk.Frame(parent, padding=(0, 6))
+    # ── Volet Inventaire 4607 (gauche de l'onglet GMTI) ──────────────────
+    def _build_inventaire_pane(self, parent):
+        bar = ttk.Frame(parent, padding=(0, 0, 6, 4))
         bar.pack(fill="x")
-        ttk.Button(bar, text="Analyser (inventaire 4607)", command=self._inventaire).pack(side="left")
-        ttk.Label(bar, text="Ce que le vecteur émet : segments, présence des champs, "
-                  "plages, classifications, job def, porteur.", padding=(8, 0)).pack(side="left")
-        self.inv_text = scrolledtext.ScrolledText(parent, font=("Consolas", 9), wrap="none")
-        self.inv_text.pack(fill="both", expand=True)
+        ttk.Button(bar, text="☰ Inventaire 4607", command=self._inventaire).pack(side="left")
+        ttk.Label(bar, text="segments, champs, plages, job def, porteur",
+                  style="Muted.TLabel", padding=(8, 0)).pack(side="left")
+        box = ttk.Frame(parent)
+        box.pack(fill="both", expand=True, padx=(0, 6))
+        self.inv_text = tk.Text(box, font=MONO_FONT, wrap="none", width=52)
+        vsb = ttk.Scrollbar(box, orient="vertical", command=self.inv_text.yview)
+        hsb = ttk.Scrollbar(box, orient="horizontal", command=self.inv_text.xview)
+        self.inv_text.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.inv_text.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        box.rowconfigure(0, weight=1); box.columnconfigure(0, weight=1)
+        self.inv_text.insert("end", "Ce que le vecteur émet : segments, présence des champs, "
+                             "plages, classifications, job def, porteur.\n\n"
+                             "→ « Inventaire 4607 » pour analyser le pcap courant.")
 
     def _inventaire(self):
         path = self._valid_path()
@@ -831,7 +944,7 @@ class Console(tk.Tk):
         self.fused_export_btn.pack(side="left", padx=4)
 
         self.fused_status = tk.StringVar(value="Fusionne GMTI + CoT + empreinte vidéo sur une carte.")
-        ttk.Label(parent, textvariable=self.fused_status, padding=(0, 2), font=("Consolas", 9)).pack(anchor="w")
+        ttk.Label(parent, textvariable=self.fused_status, padding=(0, 2), font=MONO_FONT).pack(anchor="w")
         self.fused_canvas = FusedCanvas(parent)
         self.fused_canvas.pack(fill="both", expand=True)
 
@@ -985,7 +1098,7 @@ class Console(tk.Tk):
         ttk.Label(bar, text="Détecte les protocoles présents et leur port. "
                   "Double-clic sur une ligne → ouvre l'onglet dédié.", padding=(8, 0)).pack(side="left")
         self.ov_status = tk.StringVar(value="Choisis un pcap et lance l'analyse.")
-        ttk.Label(parent, textvariable=self.ov_status, padding=(0, 2), font=("Consolas", 9)).pack(anchor="w")
+        ttk.Label(parent, textvariable=self.ov_status, padding=(0, 2), font=MONO_FONT).pack(anchor="w")
         cols = ("proto", "port", "protocole", "paquets", "octets")
         self.ov_tree = ttk.Treeview(parent, columns=cols, show="headings", height=16)
         for c, w in (("proto", 60), ("port", 70), ("protocole", 220), ("paquets", 90), ("octets", 110)):
@@ -1046,8 +1159,8 @@ class Console(tk.Tk):
         ttk.Button(bar, text="Extraire .ts + ouvrir", command=self._extract_video).pack(side="left", padx=8)
         self.video_status = tk.StringVar(value="Analyser la vidéo 4609 (MPEG-TS + KLV MISB 0601). "
                                          "La lecture ouvre le .ts dans le lecteur système.")
-        ttk.Label(parent, textvariable=self.video_status, padding=(0, 2), font=("Consolas", 9)).pack(anchor="w")
-        self.video_text = scrolledtext.ScrolledText(parent, font=("Consolas", 9), wrap="none")
+        ttk.Label(parent, textvariable=self.video_status, padding=(0, 2), font=MONO_FONT).pack(anchor="w")
+        self.video_text = scrolledtext.ScrolledText(parent, font=MONO_FONT, wrap="none")
         self.video_text.pack(fill="both", expand=True)
 
     def _analyze_video(self):
@@ -1113,7 +1226,7 @@ class Console(tk.Tk):
 
         self.cot_status = tk.StringVar(value="Analyser le CoT d'un pcap (events, affiliations, positions).")
         ttk.Label(parent, textvariable=self.cot_status, padding=(0, 2),
-                  font=("Consolas", 9)).pack(anchor="w")
+                  font=MONO_FONT).pack(anchor="w")
 
         pan = ttk.Panedwindow(parent, orient="horizontal")
         pan.pack(fill="both", expand=True)
@@ -1128,13 +1241,15 @@ class Console(tk.Tk):
         self.cot_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.cot_tree.bind("<<TreeviewSelect>>", self._cot_select)
+        for aff, color in AFFIL_COLORS.items():      # lignes colorées comme les symboles carte
+            self.cot_tree.tag_configure("aff_%s" % aff, foreground=color)
         right = ttk.Frame(pan)
         self.cot_canvas = CotCanvas(right)
         self.cot_canvas.pack(fill="both", expand=True)
         pan.add(left, weight=0)
         pan.add(right, weight=1)
 
-        self.cot_detail = scrolledtext.ScrolledText(parent, height=8, font=("Consolas", 9))
+        self.cot_detail = scrolledtext.ScrolledText(parent, height=8, font=MONO_FONT)
         self.cot_detail.pack(fill="both", expand=False, pady=(4, 0))
 
     def _analyze_cot(self):
@@ -1365,7 +1480,9 @@ class Console(tk.Tk):
         self._cot_rows = res["rows"]
         self.cot_tree.delete(*self.cot_tree.get_children())
         for uid, r in sorted(res["rows"].items()):
-            self.cot_tree.insert("", "end", values=(uid, r["type"], r["affiliation"], r.get("callsign") or ""))
+            aff = r["affiliation"]
+            self.cot_tree.insert("", "end", values=(uid, r["type"], aff, r.get("callsign") or ""),
+                                 tags=("aff_%s" % (aff if aff in AFFIL_COLORS else ""),))
         self.cot_canvas.show_tracks = self.cot_tracks_var.get()
         self.cot_canvas.set_cot(points, uid_tracks, frame=frame, fit=True)
         # Inventaire des types dans le panneau détail (avant sélection).
