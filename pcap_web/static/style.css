@@ -153,3 +153,9 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 #inv, #gmti, #cot { max-height: none; }
 #cot .body { padding: 0 0 6px; }
 #klv .body { flex: 1; overflow: auto; }
+
+/* ── légende cliquable ── */
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 60%; }
+.legend span[data-ly] { cursor: pointer; user-select: none; padding: 1px 4px; border-radius: 4px; }
+.legend span[data-ly]:hover { background: rgba(255,255,255,.08); color: var(--fg); }
+.legend span[data-ly].off { opacity: .35; text-decoration: line-through; }

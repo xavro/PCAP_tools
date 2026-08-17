@@ -144,7 +144,8 @@ python pcap_web.py ../Captures/capture.pcap [--limit N] [--port 8765]   # ouvre 
 #   ?autoplay=file|replay pour démarrer directement (démo)
 ```
 
-Une **carte unique** (Leaflet, couches vidéo/KLV · CoT · GMTI commutables), la vidéo avec le
+Une **carte unique** (Leaflet ; la légende est cliquable : chaque entrée — trace, empreinte,
+centre image, plots, dwell, pistes, CoT, étiquettes — allume/éteint sa couche), la vidéo avec le
 tableau **KLV MISB 0601** à sa droite (2/3 – 1/3), et à gauche le panneau **Rejeu — routage**
 suivi d'**onglets par source** — FMV 4609 · GMTI 4607 · CoT — sélectionnés automatiquement
 selon l'action (résumé vivant dans chaque onglet) :

@@ -94,10 +94,6 @@
         <label class="chk">suivre <select id="follow" style="padding:1px 4px"><option value="sensor">le capteur</option><option value="center">le centre image</option><option value="both">capteur + empreinte</option><option value="none">rien</option></select></label>
         <label class="chk"><input type="checkbox" id="basemap" checked> fond de carte</label>
         <label class="chk"><input type="checkbox" id="fulltrack" checked> trace complète</label>
-        <div class="row" style="margin:0;gap:6px"><label class="chk"><input type="checkbox" id="ly-video" checked> vidéo/KLV</label>
-          <label class="chk"><input type="checkbox" id="ly-cot" checked> CoT</label>
-          <label class="chk"><input type="checkbox" id="ly-gmti" checked> GMTI</label>
-          <label class="chk"><input type="checkbox" id="cot-labels" checked> étiq.</label></div>
         <div style="display:flex;gap:4px"><button id="btn-fit" style="padding:2px 8px;flex:1">Ajuster la vue</button><button id="btn-bm" title="configurer le fond de carte" style="padding:2px 8px">⚙</button></div>
         <div style="display:flex;gap:4px"><button id="btn-geojson" style="padding:2px 8px;flex:1" title="pistes GMTI + objets/traces CoT + trace capteur vidéo (WGS84)">⤓ GeoJSON fusion</button><button id="btn-ts" style="padding:2px 8px" title="télécharger le TS du flux vidéo sélectionné">⤓ .ts</button></div>
       </div>
@@ -119,9 +115,16 @@
         </div>
         <div class="row"><button id="bm-save" class="accent">Appliquer &amp; enregistrer</button><button id="bm-close">Fermer</button><span id="bm-msg" class="muted"></span></div>
       </div>
-      <div class="legend"><i style="background:#00c8ff"></i>plateforme / trace &nbsp;
-        <i style="background:#ffd54f"></i>empreinte capteur &nbsp; <i style="background:#ff5252"></i>centre image &nbsp;
-        <i style="background:#7cff6b;border-radius:0"></i>plots GMTI &nbsp; <i style="background:transparent;border:1px solid #7cff6b;border-radius:0"></i>dwell &nbsp; <i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</div>
+      <div class="legend" title="cliquer une entrée pour masquer / afficher la couche">
+        <span data-ly="trace"><i style="background:#00c8ff"></i>plateforme / trace</span>
+        <span data-ly="foot"><i style="background:#ffd54f"></i>empreinte capteur</span>
+        <span data-ly="center"><i style="background:#ff5252"></i>centre image</span>
+        <span data-ly="plots"><i style="background:#7cff6b;border-radius:0"></i>plots GMTI</span>
+        <span data-ly="dwell"><i style="background:transparent;border:1px solid #7cff6b;border-radius:0"></i>dwell</span>
+        <span data-ly="tracks"><i style="background:#00c8ff;border-radius:0;height:3px;width:12px"></i>pistes GMTI</span>
+        <span data-ly="cot"><i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</span>
+        <span data-ly="labels"><i style="background:transparent;border:1px solid #8a8f98;border-radius:2px;width:12px;height:8px"></i>étiquettes</span>
+      </div>
     </div>
     <div id="video-wrap">
       <div id="video-col">

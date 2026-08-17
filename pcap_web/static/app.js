@@ -31,20 +31,32 @@
 
   // ── Carte (EPSG:3857 : tuiles ArcGIS Online ; export MapServer demandé en 3857) ─
   const map = L.map("map", { attributionControl: true, zoomSnap: 0.25, preferCanvas: true }).setView([46, 2], 5);
-  const lyVideo = L.layerGroup().addTo(map), lyCot = L.layerGroup().addTo(map), lyGmti = L.layerGroup().addTo(map);
+  const LY = {};                                       // clé légende → groupe de couches
+  ["trace", "foot", "center", "plots", "dwell", "tracks", "cot"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
+  const lyTrace = LY.trace, lyFoot = LY.foot, lyCenter = LY.center, lyPlots = LY.plots, lyDwell = LY.dwell, lyCot = LY.cot;
   const canvasR = L.canvas({ padding: 0.3 });
   map.attributionControl.setPrefix("");
   L.control.scale({ imperial: false }).addTo(map);
-  const fullTrack = L.polyline([], { color: "#00c8ff", weight: 1, opacity: .35, dashArray: "3 5" }).addTo(lyVideo);
-  const trace = L.polyline([], { color: "#00c8ff", weight: 2, opacity: .9 }).addTo(lyVideo);
-  const footprint = L.polygon([], { color: "#ffd54f", weight: 1.5, fillOpacity: .12 }).addTo(lyVideo);
-  const los = L.polyline([], { color: "#ffd54f", weight: 1, dashArray: "4 4", opacity: .7 }).addTo(lyVideo);
-  const sensor = L.circleMarker([0, 0], { radius: 6, color: "#00c8ff", fillColor: "#00c8ff", fillOpacity: 1, weight: 1 }).addTo(lyVideo);
-  const center = L.circleMarker([0, 0], { radius: 4, color: "#ff5252", fillColor: "#ff5252", fillOpacity: 1, weight: 1 }).addTo(lyVideo);
+  const fullTrack = L.polyline([], { color: "#00c8ff", weight: 1, opacity: .35, dashArray: "3 5" }).addTo(lyTrace);
+  const trace = L.polyline([], { color: "#00c8ff", weight: 2, opacity: .9 }).addTo(lyTrace);
+  const footprint = L.polygon([], { color: "#ffd54f", weight: 1.5, fillOpacity: .12 }).addTo(lyFoot);
+  const los = L.polyline([], { color: "#ffd54f", weight: 1, dashArray: "4 4", opacity: .7 }).addTo(lyCenter);
+  const sensor = L.circleMarker([0, 0], { radius: 6, color: "#00c8ff", fillColor: "#00c8ff", fillOpacity: 1, weight: 1 }).addTo(lyTrace);
+  const center = L.circleMarker([0, 0], { radius: 4, color: "#ff5252", fillColor: "#ff5252", fillOpacity: 1, weight: 1 }).addTo(lyCenter);
   sensor.bindTooltip("", { permanent: false, direction: "top" });
-  $("cot-labels").addEventListener("change", () => $("map").classList.toggle("no-cot-lbl", !$("cot-labels").checked));
-  [["ly-video", lyVideo], ["ly-cot", lyCot], ["ly-gmti", lyGmti]].forEach(([id, g]) =>
-    $(id).addEventListener("change", () => $(id).checked ? g.addTo(map) : g.remove()));
+  // Légende cliquable : chaque entrée allume/éteint sa couche (état mémorisé).
+  const legendState = JSON.parse(localStorage.getItem("legend") || "{}");
+  function applyLegend() {
+    document.querySelectorAll(".legend [data-ly]").forEach(el => {
+      const k = el.dataset.ly, on = legendState[k] !== false;
+      el.classList.toggle("off", !on);
+      if (k === "labels") $("map").classList.toggle("no-cot-lbl", !on);
+      else if (LY[k]) { if (on && !map.hasLayer(LY[k])) LY[k].addTo(map); if (!on && map.hasLayer(LY[k])) LY[k].remove(); }
+    });
+    localStorage.setItem("legend", JSON.stringify(legendState));
+  }
+  document.querySelectorAll(".legend [data-ly]").forEach(el => el.addEventListener("click", () => { legendState[el.dataset.ly] = legendState[el.dataset.ly] === false; applyLegend(); }));
+  applyLegend();
 
   // ── CoT : un marqueur + traîne par uid, coloré par affiliation (MIL-STD-2525) ─
   const AFF = { FRIEND: "#00c8ff", ASSUMED_FRIEND: "#00c8ff", JOKER: "#00c8ff", HOSTILE: "#ff5252", SUSPECT: "#ff5252",
@@ -97,31 +109,32 @@
         let ly;
         if (d.poly) ly = L.polygon(d.poly, { color: "#7cff6b", weight: 1.2, fillColor: "#7cff6b", fillOpacity: .10, opacity: .9, renderer: canvasR });
         else ly = L.circleMarker(d.center, { radius: 5, color: "#7cff6b", weight: 1, fill: false, renderer: canvasR });
-        ly.addTo(lyGmti); ly.bindTooltip(`dwell ${d.dwell != null ? d.dwell : ""} · revisit ${d.revisit != null ? d.revisit : ""} · ${d.n} cible(s)` +
+        ly.addTo(lyDwell); ly.bindTooltip(`dwell ${d.dwell != null ? d.dwell : ""} · revisit ${d.revisit != null ? d.revisit : ""} · ${d.n} cible(s)` +
           (d.range_he_km != null ? ` · ±${d.range_he_km.toFixed(2)} km / ±${(d.angle_he_deg || 0).toFixed(2)}°` : ""), { sticky: true });
         gmti.dwells.push(ly);
-        if (b.sensor && d.center) { dwellLine.setLatLngs([b.sensor, d.center]); if (!dwellLine._map) dwellLine.addTo(lyGmti); }
+        if (b.sensor && d.center) { dwellLine.setLatLngs([b.sensor, d.center]); if (!dwellLine._map) dwellLine.addTo(lyDwell); }
       });
-      while (gmti.dwells.length > DWELL_KEEP) lyGmti.removeLayer(gmti.dwells.shift());
+      while (gmti.dwells.length > DWELL_KEEP) lyDwell.removeLayer(gmti.dwells.shift());
       gmti.dwells.forEach((ly, i) => { const k = (i + 1) / gmti.dwells.length; ly.setStyle({ opacity: .25 + .65 * k, fillOpacity: ly instanceof L.Polygon ? .03 + .10 * k : 0 }); });
     }
     b.plots.forEach(p => {
       const v = p[2] || 0, col = v > 0 ? "#7cff6b" : "#ffb347";                    // signe de la vitesse radiale
-      const d = L.circleMarker([p[0], p[1]], { radius: 2, color: col, fillColor: col, fillOpacity: .9, weight: 0, renderer: canvasR }).addTo(lyGmti);
+      const d = L.circleMarker([p[0], p[1]], { radius: 2, color: col, fillColor: col, fillOpacity: .9, weight: 0, renderer: canvasR }).addTo(lyPlots);
       gmti.dots.push(d); const c = p[4] == null ? "?" : p[4]; gmti.stats.cls[c] = (gmti.stats.cls[c] || 0) + 1;
     });
-    while (gmti.dots.length > GMTI_MAX) lyGmti.removeLayer(gmti.dots.shift());
-    if (b.sensor && b.sensor[0] != null) { gmtiSensor.setLatLng(b.sensor); if (!gmtiSensor._map) gmtiSensor.addTo(lyGmti); }
+    while (gmti.dots.length > GMTI_MAX) lyPlots.removeLayer(gmti.dots.shift());
+    if (b.sensor && b.sensor[0] != null) { gmtiSensor.setLatLng(b.sensor); if (!gmtiSensor._map) gmtiSensor.addTo(lyDwell); }
     const cls = Object.entries(gmti.stats.cls).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `cls ${k}: <b>${v}</b>`).join(" · ");
     $("gmti-body").innerHTML = `paquets 4607 <b>${gmti.stats.pkts}</b> · dwells <b>${gmti.stats.dwells}</b> · plots <b>${gmti.stats.plots}</b> (affichés ${gmti.dots.length}) · t=<b>${b.t.toFixed(1)}</b> s<br>` +
       (b.sensor ? `capteur <b>${b.sensor[0].toFixed(4)} ${b.sensor[1].toFixed(4)}</b><br>` : "") + cls;
     $("gmti-sum").textContent = `${gmti.stats.plots} plots`;
   }
-  function resetGmti() { gmti.dots.forEach(d => lyGmti.removeLayer(d)); gmti.dots = []; gmti.dwells.forEach(d => lyGmti.removeLayer(d)); gmti.dwells = []; if (dwellLine._map) lyGmti.removeLayer(dwellLine); gmti.stats = { pkts: 0, plots: 0, dwells: 0, cls: {} }; if (gmtiSensor._map) lyGmti.removeLayer(gmtiSensor); }
+  function resetGmti() { gmti.dots.forEach(d => lyPlots.removeLayer(d)); gmti.dots = []; gmti.dwells.forEach(d => lyDwell.removeLayer(d)); gmti.dwells = []; if (dwellLine._map) lyDwell.removeLayer(dwellLine); gmti.stats = { pkts: 0, plots: 0, dwells: 0, cls: {} }; if (gmtiSensor._map) lyDwell.removeLayer(gmtiSensor); }
   let fitOnce = false;
 
   // ── Analyse statique GMTI : décodage + tracker (profil) ─────────────────────
-  const lyTracks = L.layerGroup().addTo(lyGmti);       // pistes / plots bruts / zone / porteur (statique)
+  const lyTracks = LY.tracks;                          // pistes + zone job / porteur (statique)
+  const lyRawStatic = L.layerGroup().addTo(lyPlots);   // plots bruts du tracker (statique) — sous « plots GMTI »
   const gs = { decoded: null, res: null };
   const ETAT_COL = { confirmee: "#00c8ff", coasting: "#ffd54f", tentative: "#8a8f98" };
   function trackColor(t) { return t.is_air ? "#ff9f43" : t.is_rotator ? "#e58cff" : (ETAT_COL[t.etat] || "#00c8ff"); }
@@ -151,12 +164,12 @@
     $("gmti-sum").textContent = `${r.n_kept} pistes · profil ${profile}`;
   }
   function drawTracks() {
-    lyTracks.clearLayers(); const r = gs.res; if (!r) return;
+    lyTracks.clearLayers(); lyRawStatic.clearLayers(); const r = gs.res; if (!r) return;
     if ($("gmti-ovl").checked) {
       if (r.zone.length) L.polygon(r.zone, { color: "#8a8f98", weight: 1, dashArray: "6 4", fill: false }).addTo(lyTracks);
       if (r.porteur.length) L.polyline(r.porteur, { color: "#e6edf3", weight: 1, opacity: .6, dashArray: "2 6" }).addTo(lyTracks);
     }
-    if ($("gmti-raw").checked) r.raw.forEach(pt => L.circleMarker([pt[0], pt[1]], { radius: 1.5, weight: 0, fillOpacity: .55, fillColor: "#7cff6b", renderer: canvasR }).addTo(lyTracks));
+    if ($("gmti-raw").checked) r.raw.forEach(pt => L.circleMarker([pt[0], pt[1]], { radius: 1.5, weight: 0, fillOpacity: .55, fillColor: "#7cff6b", renderer: canvasR }).addTo(lyRawStatic));
     const smooth = $("gmti-smooth").checked;
     r.tracks.forEach(t => {
       const pts = smooth && t.smooth.length ? t.smooth : t.pts; if (pts.length < 2) return;
@@ -293,7 +306,7 @@
     } catch (e) { return status("erreur : " + e.message, true); }
     state.streams = r.streams; state.flows = f.flows; state.flowsDur = f.duration_s;
     api("/api/settings").then(st => fillRecent(st.recent)).catch(() => {});
-    gs.decoded = null; gs.res = null; lyTracks.clearLayers(); $("gmti-status").textContent = "Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning)."; $("gmti-inv").hidden = true;
+    gs.decoded = null; gs.res = null; lyTracks.clearLayers(); lyRawStatic.clearLayers(); $("gmti-status").textContent = "Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning)."; $("gmti-inv").hidden = true;
     cs.data = null; resetCot(); $("cot-detail").hidden = true; $("cot-status").textContent = "";
     const sel = $("stream"); sel.innerHTML = "";
     r.streams.forEach(s => { const o = document.createElement("option"); o.value = s.dport;
