@@ -246,6 +246,11 @@
       state.bmLayer = L.tileLayer(AGOL.replace("{layer}", cfg.layer || "World_Imagery"), { maxZoom: 19, attribution: "Esri, Maxar, Earthstar Geographics — ArcGIS Online" }).addTo(map);
       state.bmLayer.on("tileerror", () => status("tuiles ArcGIS Online injoignables (internet ?)", true));
       state.bmLayer.bringToBack();
+    } else if (cfg.provider === "vectortiles") {
+      if (!window.maplibregl || !L.maplibreGL) return status("MapLibre indisponible (WebGL ?)", true);
+      state.bmLayer = L.maplibreGL({ style: `/vts/style.json?_=${Date.now()}`, attribution: "ArcGIS VectorTileServer — style Esri (MapLibre)", interactive: false }).addTo(map);
+      try { state.bmLayer.getMaplibreMap().on("error", e => { if (e && e.error && /style|Failed to fetch|403|404/i.test(String(e.error.message))) status("tuiles vectorielles : " + e.error.message + " — vérifier ⚙ (URL, token, certificat)", true); }); } catch (e) {}
+      state.bmLayer.bringToBack && state.bmLayer.bringToBack();
     } else if (cfg.provider === "mapserver_tiles") {
       state.bmLayer = L.tileLayer("/tile?z={z}&y={y}&x={x}", { maxZoom: 22, maxNativeZoom: 19, attribution: "ArcGIS Server (tuiles)" }).addTo(map);
       state.bmLayer.on("tileerror", () => status("tuiles ArcGIS Server injoignables — vérifier ⚙ (URL, token, certificat)", true));
@@ -276,7 +281,7 @@
     const c = state.bmCfg || {}; $("bm-provider").value = c.provider || "arcgis_online"; $("bm-layer").value = c.layer || "World_Imagery";
     $("bm-url").value = c.url || ""; $("bm-token").value = c.token || ""; $("bm-insecure").checked = c.insecure !== false; bmDialogRows();
   }
-  function bmDialogRows() { const p = $("bm-provider").value; $("bm-layer-row").hidden = p !== "arcgis_online"; $("bm-ms-rows").hidden = !(p === "mapserver" || p === "mapserver_tiles"); }
+  function bmDialogRows() { const p = $("bm-provider").value; $("bm-layer-row").hidden = p !== "arcgis_online"; $("bm-ms-rows").hidden = !(p === "mapserver" || p === "mapserver_tiles" || p === "vectortiles"); }
   $("bm-provider").addEventListener("change", bmDialogRows);
   $("btn-bm").addEventListener("click", () => { bmDialogFill(); $("bm-dlg").hidden = !$("bm-dlg").hidden; });
   $("bm-close").addEventListener("click", () => { $("bm-dlg").hidden = true; });

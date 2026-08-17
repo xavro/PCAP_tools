@@ -185,3 +185,5 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 #cot.tabpage.on > .body { overflow: auto; }         /* onglet CoT : tableau + détail défilent ensemble */
 #inv, #gmti, #cot { flex: 1 1 auto !important; min-height: 0; }   /* onglets : prendre toute la hauteur (écrase les anciennes règles de panneaux) */
 #stream { display: none; }                                         /* choix vidéo : par clic dans l'onglet FMV */
+
+.leaflet-gl-layer, .maplibregl-canvas { pointer-events: none; }   /* couche vectorielle en fond : la carte Leaflet garde la souris */

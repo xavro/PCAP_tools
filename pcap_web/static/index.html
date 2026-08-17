@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Console pcap — web</title>
 <link rel="stylesheet" href="/static/leaflet.css">
+<link rel="stylesheet" href="/static/maplibre-gl.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -100,7 +101,8 @@
         <h3>Fond de carte</h3>
         <label>Source <select id="bm-provider">
           <option value="arcgis_online">ArcGIS Online (internet)</option>
-          <option value="mapserver_tiles">Tuiles ArcGIS Server — Tile Layer / cache (réseau local, via proxy)</option>
+          <option value="vectortiles">Tuiles vectorielles ArcGIS — VectorTileServer (réseau local, via proxy)</option>
+          <option value="mapserver_tiles">Tuiles ArcGIS Server — Tile Layer raster / cache (réseau local, via proxy)</option>
           <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
           <option value="none">Aucun</option></select></label>
         <label id="bm-layer-row">Couche <select id="bm-layer">
@@ -109,8 +111,8 @@
           <option value="World_Street_Map">Rues</option>
           <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
         <div id="bm-ms-rows">
-          <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/server/rest/services/Hosted/Open_Basemap_Streets/MapServer"></label>
-          <div class="muted" style="font-size:11px">Tile Layer du portail : page de l'item → « URL » (se termine par /MapServer). Cache Web Mercator (schéma standard Esri) requis pour le mode tuiles.</div>
+          <label>URL du service <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/Hosted/Open_Vector_Basemap/VectorTileServer"></label>
+          <div class="muted" style="font-size:11px">Page de l'item du portail → « URL » : …/VectorTileServer (tuiles vectorielles, style Esri rendu par MapLibre) ou …/MapServer (cache raster / export). Web Mercator.</div>
           <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
           <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
         </div>
@@ -153,6 +155,8 @@
   </footer>
 </div>
 <script src="/static/leaflet.js"></script>
+<script src="/static/maplibre-gl.js"></script>
+<script src="/static/leaflet-maplibre-gl.js"></script>
 <script src="/static/mpegts.js"></script>
 <script src="/static/klv0601.js"></script>
 <script src="/static/app.js"></script>
