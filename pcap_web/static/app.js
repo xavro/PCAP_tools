@@ -17,9 +17,17 @@
     const j = await r.json(); if (j.error) throw new Error(j.error); return j;
   };
 
-  // panneaux repliables
-  document.querySelectorAll(".panel h2").forEach(h => h.addEventListener("click", e => {
+  // panneaux repliables (Rejeu) + onglets par source
+  document.querySelectorAll("#left .panel h2").forEach(h => h.addEventListener("click", e => {
     if (e.target.closest("button,select,input")) return; h.parentElement.classList.toggle("collapsed"); }));
+  const TAB_ID = { fmv: "inv", gmti: "gmti", cot: "cot" };
+  function showTab(name) {
+    document.querySelectorAll(".tabbar button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+    Object.entries(TAB_ID).forEach(([k, id]) => $(id).classList.toggle("on", k === name));
+    localStorage.setItem("tab", name);
+  }
+  document.querySelectorAll(".tabbar button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+  showTab(localStorage.getItem("tab") || "fmv");
 
   // ── Carte (EPSG:3857 : tuiles ArcGIS Online ; export MapServer demandé en 3857) ─
   const map = L.map("map", { attributionControl: true, zoomSnap: 0.25, preferCanvas: true }).setView([46, 2], 5);
@@ -118,7 +126,7 @@
   const ETAT_COL = { confirmee: "#00c8ff", coasting: "#ffd54f", tentative: "#8a8f98" };
   function trackColor(t) { return t.is_air ? "#ff9f43" : t.is_rotator ? "#e58cff" : (ETAT_COL[t.etat] || "#00c8ff"); }
   async function gmtiDecode() {
-    $("gmti-status").textContent = "décodage GMTI…";
+    showTab("gmti"); $("gmti-status").textContent = "décodage GMTI…";
     try { gs.decoded = await api(`/api/gmti/decode?pcap=${encodeURIComponent(state.pcap)}${limQ()}`); }
     catch (e) { return $("gmti-status").textContent = "erreur : " + e.message; }
     const d = gs.decoded;
@@ -168,7 +176,7 @@
   // ── Analyse statique CoT : objets, traces, inventaire des types, XML ─────────
   const cs = { data: null, sel: null };
   async function cotScan() {
-    $("cot-status").textContent = "analyse CoT…";
+    showTab("cot"); $("cot-status").textContent = "analyse CoT…";
     const flt = $("cot-filter").value.trim();
     try { cs.data = await api(`/api/cot/scan?pcap=${encodeURIComponent(state.pcap)}&filter=${encodeURIComponent(flt)}`); }
     catch (e) { return $("cot-status").textContent = "erreur : " + e.message; }
@@ -345,7 +353,7 @@
 
   async function selectStream(dport) {
     state.cur = state.streams.find(s => s.dport === Number(dport));
-    renderInventory(); markTapRow();
+    renderInventory(); markTapRow(); showTab("fmv");
     document.querySelectorAll("#flows-body tr.tap .fl-on").forEach(cb => { cb.checked = true; });   // flux vidéo choisi → coché (IHM seule si cible vide)
     stopPlayer();
     if (state.cur.first_klv) renderTable(state.cur.first_klv.map(f => ({ tag: f.tag, name: f.name, value: f.value, unit: "" })), false);

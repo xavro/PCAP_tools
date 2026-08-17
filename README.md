@@ -144,8 +144,10 @@ python pcap_web.py ../Captures/capture.pcap [--limit N] [--port 8765]   # ouvre 
 #   ?autoplay=file|replay pour démarrer directement (démo)
 ```
 
-Une **carte unique** (Leaflet, couches vidéo/KLV · CoT · GMTI commutables) et des panneaux
-repliables à gauche :
+Une **carte unique** (Leaflet, couches vidéo/KLV · CoT · GMTI commutables), la vidéo avec le
+tableau **KLV MISB 0601** à sa droite (2/3 – 1/3), et à gauche le panneau **Rejeu — routage**
+suivi d'**onglets par source** — FMV 4609 · GMTI 4607 · CoT — sélectionnés automatiquement
+selon l'action (résumé vivant dans chaque onglet) :
 
 - **Rejeu — routage** : flux applicatifs (`pcap_analyze`). **Coché = rejoué** : émis en
   UDP/TCP vers `IP[:port]` (virgule = fan-out) si une cible est renseignée, sinon seulement

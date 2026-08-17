@@ -46,9 +46,20 @@
         <pre id="replay-log"></pre>
       </div>
     </section>
-    <section class="panel" id="gmti">
-      <h2><span class="tgl">▾</span> GMTI 4607 → pistes <span class="right" id="gmti-sum">—</span></h2>
-      <div class="body">
+    <div id="tabs">
+      <div class="tabbar">
+        <button data-tab="fmv" class="on">FMV 4609 <span class="tsum" id="inv-sum"></span></button>
+        <button data-tab="gmti">GMTI 4607 <span class="tsum" id="gmti-sum"></span></button>
+        <button data-tab="cot">CoT <span class="tsum" id="cot-sum"></span></button>
+      </div>
+      <div class="tabpage on" id="inv">
+        <div class="body">
+          <div class="hint">Flux MPEG-TS/4609 de la capture : PID, codecs, KLV, continuité. Cliquer un flux = vidéo affichée (le tableau KLV MISB 0601 est à droite de la vidéo).</div>
+          <div id="inv-body">Choisir un pcap puis « Analyser ».</div>
+        </div>
+      </div>
+      <div class="tabpage" id="gmti">
+        <div class="body">
         <div class="row">
           <button id="gmti-decode">1. Décoder GMTI</button>
           <label class="chk">profil <select id="gmti-profile"></select></label>
@@ -65,23 +76,15 @@
         <div id="gmti-body"><span class="muted">plots reçus au fil du rejeu (dwells, vitesse radiale, SNR, classes)</span></div>
         <pre id="gmti-inv" hidden></pre>
       </div>
-    </section>
-    <section class="panel" id="cot">
-      <h2><span class="tgl">▾</span> CoT <span class="right" id="cot-sum">—</span></h2>
-      <div class="body">
+      </div>
+      <div class="tabpage" id="cot">
+        <div class="body">
         <div class="row"><button id="cot-scan">Analyser CoT</button><input id="cot-filter" type="text" placeholder="filtre type (ex. a-h)" style="width:120px"><span id="cot-status" class="muted mono"></span></div>
         <table class="cot"><thead><tr><th>uid</th><th>type</th><th>aff</th><th>callsign</th><th>maj.</th></tr></thead><tbody id="cot-body"></tbody></table>
         <pre id="cot-detail" hidden></pre>
       </div>
-    </section>
-    <section class="panel collapsed" id="inv">
-      <h2><span class="tgl">▾</span> Inventaire TS <span class="right" id="inv-sum"></span></h2>
-      <div class="body" id="inv-body">Choisir un pcap puis « Analyser ».</div>
-    </section>
-    <section class="panel" id="klv">
-      <h2><span class="tgl">▾</span> KLV MISB 0601 <span class="right" id="klv-sum">—</span></h2>
-      <div class="body"><table class="klv"><tbody id="klv-body"></tbody></table></div>
-    </section>
+      </div>
+    </div>
   </div>
 
   <div id="gutter" title="glisser pour redimensionner · double-clic = largeur par défaut"></div>
@@ -121,9 +124,15 @@
         <i style="background:#7cff6b;border-radius:0"></i>plots GMTI &nbsp; <i style="background:transparent;border:1px solid #7cff6b;border-radius:0"></i>dwell &nbsp; <i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</div>
     </div>
     <div id="video-wrap">
-      <video id="video" controls muted playsinline></video>
-      <div class="overlay" id="mode-badge">FICHIER</div>
-      <div class="hud" id="hud"></div>
+      <div id="video-col">
+        <video id="video" controls muted playsinline></video>
+        <div class="overlay" id="mode-badge">FICHIER</div>
+        <div class="hud" id="hud"></div>
+      </div>
+      <section class="panel" id="klv">
+        <h2>KLV MISB 0601 <span class="right" id="klv-sum">—</span></h2>
+        <div class="body"><table class="klv"><tbody id="klv-body"></tbody></table></div>
+      </section>
     </div>
   </div>
 

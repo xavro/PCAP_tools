@@ -48,8 +48,10 @@ table.klv td.val { text-align: right; color: var(--fg); }
 table.klv td.unit { color: var(--muted); width: 36px; }
 table.klv tr.hl td.val { color: var(--accent); }
 #map { background: #0b0f14; min-height: 0; }
-#video-wrap { position: relative; background: #000; border-top: 1px solid var(--border); min-height: 0; }
+#video-wrap { display: grid; grid-template-columns: 2fr 1fr; background: #000; border-top: 1px solid var(--border); min-height: 0; }
+#video-col { position: relative; min-width: 0; min-height: 0; }
 #video-wrap video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+#video-wrap #klv { border-left: 1px solid var(--border); background: var(--panel); min-height: 0; }
 #video-wrap .overlay { position: absolute; left: 8px; top: 8px; font-family: var(--mono); font-size: 12px;
   color: var(--ok); background: rgba(0,0,0,.45); padding: 3px 6px; border-radius: 4px; pointer-events: none; }
 #video-wrap .overlay.live { color: var(--danger); }
@@ -135,3 +137,19 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 #bd-list li.dir { color: var(--accent); } #bd-list li.file { color: var(--fg); }
 #bd-list li .sz { margin-left: auto; color: var(--muted); }
 .bd-foot { padding: 6px 12px; border-top: 1px solid var(--border); font-size: 12px; }
+
+/* ── onglets par source (colonne gauche) ── */
+#replay { flex: 0 0 auto; max-height: 55%; }
+#tabs { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.tabbar { display: flex; background: var(--panel); border-bottom: 1px solid var(--border); }
+.tabbar button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 7px 6px; font-size: 13px;
+  text-transform: uppercase; letter-spacing: .05em; border-bottom: 2px solid transparent; }
+.tabbar button:hover { color: var(--fg); }
+.tabbar button.on { color: var(--accent); border-bottom-color: var(--accent); }
+.tabbar .tsum { display: block; text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--muted); font-family: var(--mono); min-height: 14px; }
+.tabpage { display: none; flex: 1 1 auto; min-height: 0; overflow: auto; }
+.tabpage.on { display: flex; flex-direction: column; }
+.tabpage > .body { padding: 6px 10px; }
+#inv, #gmti, #cot { max-height: none; }
+#cot .body { padding: 0 0 6px; }
+#klv .body { flex: 1; overflow: auto; }
