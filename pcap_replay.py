@@ -412,10 +412,14 @@ def targets_for(table, proto, dport, default_target, default_port):
     return tg
 
 
-def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=print):
+def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=print,
+                     on_packet=None):
     """Rejeu routé. `should_stop()` -> bool (arrêt propre, pour une GUI),
     `on_progress(sent, passes)` (statut live), `log(msg)` (sortie). Sans ces
-    callbacks, comportement CLI identique (print, pas d'arrêt externe)."""
+    callbacks, comportement CLI identique (print, pas d'arrêt externe).
+    `on_packet(ts, proto, dport, payload, targets)` : hook appelé pour CHAQUE paquet
+    applicatif après cadencement (targets vide = non routé) — permet à une IHM de
+    « voir » le flux rejoué (vidéo, CoT…) sans second lecteur pcap."""
     default_target = None if args.drop_unmatched else args.target
     log("Rejeu ROUTÉ (tout le pcap, timing global) :")
     for (proto, port), tgts in table.items():
@@ -458,9 +462,9 @@ def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=
                 if not pl:
                     continue
                 tgts = targets_for(table, proto, dport, default_target, args.target_port)
-                if not tgts:
+                if not tgts and on_packet is None:
                     continue
-                if rebaser is not None:
+                if rebaser is not None and tgts:
                     pl = rebaser.rebase(pl)
                 # Cadence sur l'horloge GLOBALE de capture (multiplex préservé).
                 if args.speed and args.speed > 0:
@@ -473,6 +477,10 @@ def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=
                         udp_sock.sendto(pl, (ip, tport))
                     else:
                         tcp_send(ip, tport, pl)
+                if on_packet is not None:
+                    on_packet(ts, proto, dport, pl, tgts)
+                if not tgts:
+                    continue
                 sent += 1
                 if on_progress is not None:
                     on_progress(sent, passes)

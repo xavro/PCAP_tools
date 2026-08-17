@@ -42,11 +42,12 @@ def load_config(script_dir):
     return cfg
 
 
-def export_url(root, lonmin, latmin, lonmax, latmax, w, h, token=None):
-    """URL de l'opération export (image PNG de la bbox lon/lat, en EPSG:4326)."""
+def export_url(root, lonmin, latmin, lonmax, latmax, w, h, token=None, sr=4326):
+    """URL de l'opération export (image PNG de la bbox, EPSG `sr` : 4326 par défaut
+    pour le canvas ENU de la console Tkinter, 3857 pour la carte web Leaflet)."""
     params = {
         "bbox": "%f,%f,%f,%f" % (lonmin, latmin, lonmax, latmax),
-        "bboxSR": "4326", "imageSR": "4326",
+        "bboxSR": str(sr), "imageSR": str(sr),
         "size": "%d,%d" % (int(w), int(h)),
         "format": "png", "transparent": "false", "f": "image",
     }

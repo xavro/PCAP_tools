@@ -132,6 +132,49 @@ Bouton **« Extraire .ts + ouvrir »** : écrit le flux réassemblé et l'ouvre 
 
 Les trois décodeurs marchent aussi en ligne de commande :
 
+## `pcap_web.py` — console **web** (navigateur + backend Python stdlib)
+
+Portage complet de la console dans le navigateur, avec en plus la vidéo synchronisée et
+le rejeu « live ». **Aucune dépendance** côté serveur (stdlib ; le tracker charge numpy +
+scipy en lazy comme la console Tkinter) ; libs JS vendorées dans `pcap_web/static`
+(`mpegts.js` 1.8.2 Apache-2.0, `leaflet` 1.9.4 BSD-2) → hors ligne sauf tuiles ArcGIS Online.
+
+```bash
+python pcap_web.py ../Captures/capture.pcap [--limit N] [--port 8765]   # ouvre http://127.0.0.1:8765/
+#   ?autoplay=file|replay pour démarrer directement (démo)
+```
+
+Une **carte unique** (Leaflet, couches vidéo/KLV · CoT · GMTI commutables) et des panneaux
+repliables à gauche :
+
+- **Rejeu — routage** : flux applicatifs (`pcap_analyze`), cocher = émettre en UDP/TCP vers
+  `IP[:port]` (virgule = fan-out), vitesse ×1…max, boucle, recalage d'heure CoT. *Un moteur
+  unique* (`pcap_replay.do_routed_replay` + hook `on_packet`) émet **et** alimente l'IHM par
+  WebSocket (serveur RFC 6455 stdlib) : `/ws/video` (TS binaire du flux vidéo « tapé » →
+  mpegts.js, *ce que voit le client*) et `/ws/events` (JSON : progression, compteurs par flux,
+  journal, lots CoT/GMTI décodés — même pour les flux non routés).
+- **GMTI 4607 → pistes** : 1. Décoder (extracteur complet ≤ 700 Mo, sinon streaming),
+  **inventaire 4607** (segments, champs, plages, classifications, job def, porteur), 2. Tracker
+  par **profil** de tuning (defaut, maritime, routier, convoi, personnel, aérien, routier_zone),
+  pistes colorées (état / aérien / rotateur), plots bruts, lissage RTS, zone job, trajet porteur.
+  En rejeu : plots 4607 au fil de l'eau (couche canvas, capteur, classes).
+- **CoT** : analyse statique (`cot_extract`) — objets colorés par affiliation MIL-STD-2525,
+  traces par uid, tableau, inventaire des types, **XML du dernier event** au clic ; en rejeu :
+  objets/traces vivants (fraîcheur), même code couleur.
+- **Vidéo 4609 + KLV MISB 0601** : inventaire TS (PID, codecs, continuité), lecture H.264 dans
+  le navigateur (`mpegts.js`, MSE — pas de ffmpeg), **KLV décodés côté navigateur** à partir du
+  même TS avec PTS recalé (écart mesuré < 10 ms), capteur / empreinte / centre image / trace,
+  HUD, timeline (densité KLV, seek), suivi caméra, téléchargement du `.ts`.
+- **Fusion / export** : toutes les sources sur la même carte ; bouton **GeoJSON fusion**
+  (pistes GMTI LineString, objets CoT Point + traces, trace capteur vidéo — WGS84).
+- **Fond de carte** (⚙) : ArcGIS Online (internet, défaut : imagerie / topo / rues / gris
+  foncé) ou MapServer ArcGIS local via proxy (`/basemap`, EPSG:3857, certificat auto-signé),
+  enregistré dans `basemap.json` (hors dépôt).
+
+Notes : Chrome gèle le média d'un onglet masqué/occulté — garder l'onglet visible pendant
+un rejeu live ; H.265 n'est pas lu en MSE par tous les navigateurs (les flux ISRBOX sont H.264).
+La console Tkinter `pcap_console.py` reste disponible (mêmes modules métier).
+
 ```bash
 python video4609.py capture.pcap --limit 200000        # inventaire TS + KLV
 python cot_extract.py capture.pcap                      # events.xml + tracks.csv + types.csv

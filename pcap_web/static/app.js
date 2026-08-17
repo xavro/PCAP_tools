@@ -1,0 +1,530 @@
+/* app.js — console web : vidéo 4609 (mpegts.js) + KLV 0601 synchronisés + carte Leaflet
+   + rejeu UDP réel (moteur pcap_replay) piloté en HTTP, événements par WebSocket. */
+(function () {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const video = $("video");
+  const WS = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+  const state = { cfg: null, pcap: "", streams: [], cur: null, track: null, player: null,
+    mode: "file", sets: [], applied: -1, tableAt: 0, flows: [], flowsDur: 0, replay: null,
+    bmLayer: null, bmOverlay: null, bmCfg: null, evws: null, log: [], retries: 0 };
+
+  const status = (msg, warn) => { const s = $("status"); s.textContent = msg; s.style.color = warn ? "var(--warn)" : ""; };
+  const fmt = (v, d = 5) => (v == null || isNaN(v)) ? "—" : Number(v).toFixed(d);
+  const utc = us => us ? new Date(us / 1000).toISOString().replace("T", " ").replace("Z", "") : "—";
+  const api = async (url, body) => {
+    const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
+    const j = await r.json(); if (j.error) throw new Error(j.error); return j;
+  };
+
+  // panneaux repliables
+  document.querySelectorAll(".panel h2").forEach(h => h.addEventListener("click", e => {
+    if (e.target.closest("button,select,input")) return; h.parentElement.classList.toggle("collapsed"); }));
+
+  // ── Carte (EPSG:3857 : tuiles ArcGIS Online ; export MapServer demandé en 3857) ─
+  const map = L.map("map", { attributionControl: true, zoomSnap: 0.25, preferCanvas: true }).setView([46, 2], 5);
+  const lyVideo = L.layerGroup().addTo(map), lyCot = L.layerGroup().addTo(map), lyGmti = L.layerGroup().addTo(map);
+  const canvasR = L.canvas({ padding: 0.3 });
+  map.attributionControl.setPrefix("");
+  L.control.scale({ imperial: false }).addTo(map);
+  const fullTrack = L.polyline([], { color: "#00c8ff", weight: 1, opacity: .35, dashArray: "3 5" }).addTo(lyVideo);
+  const trace = L.polyline([], { color: "#00c8ff", weight: 2, opacity: .9 }).addTo(lyVideo);
+  const footprint = L.polygon([], { color: "#ffd54f", weight: 1.5, fillOpacity: .12 }).addTo(lyVideo);
+  const los = L.polyline([], { color: "#ffd54f", weight: 1, dashArray: "4 4", opacity: .7 }).addTo(lyVideo);
+  const sensor = L.circleMarker([0, 0], { radius: 6, color: "#00c8ff", fillColor: "#00c8ff", fillOpacity: 1, weight: 1 }).addTo(lyVideo);
+  const center = L.circleMarker([0, 0], { radius: 4, color: "#ff5252", fillColor: "#ff5252", fillOpacity: 1, weight: 1 }).addTo(lyVideo);
+  sensor.bindTooltip("", { permanent: false, direction: "top" });
+  $("cot-labels").addEventListener("change", () => $("map").classList.toggle("no-cot-lbl", !$("cot-labels").checked));
+  [["ly-video", lyVideo], ["ly-cot", lyCot], ["ly-gmti", lyGmti]].forEach(([id, g]) =>
+    $(id).addEventListener("change", () => $(id).checked ? g.addTo(map) : g.remove()));
+
+  // ── CoT : un marqueur + traîne par uid, coloré par affiliation (MIL-STD-2525) ─
+  const AFF = { FRIEND: "#00c8ff", ASSUMED_FRIEND: "#00c8ff", JOKER: "#00c8ff", HOSTILE: "#ff5252", SUSPECT: "#ff5252",
+    FAKER: "#ff5252", NEUTRAL: "#7cff6b", UNKNOWN: "#ffd54f", PENDING: "#ffd54f" };
+  const cot = { rows: new Map(), tableAt: 0, total: 0 };            // uid -> {ev, marker, trail, pts, t}
+  function onCotBatch(b) {
+    cot.total = b.total;
+    b.events.forEach(ev => {
+      const key = ev.uid || "(sans uid)"; let r = cot.rows.get(key);
+      const col = AFF[ev.aff] || "#8a8f98";
+      if (!r) {
+        r = { ev, pts: [], t: 0 };
+        r.marker = L.circleMarker([0, 0], { radius: 5, color: col, fillColor: col, fillOpacity: .9, weight: 1.5, renderer: canvasR });
+        r.trail = L.polyline([], { color: col, weight: 1, opacity: .55, renderer: canvasR });
+        r.marker.bindTooltip("", { permanent: true, direction: "right", offset: [6, 0], className: "cot-lbl" });
+        cot.rows.set(key, r);
+      }
+      r.ev = ev; r.t = b.t;
+      if (ev.lat != null && ev.lon != null && !(ev.lat === 0 && ev.lon === 0)) {
+        if (!r.marker._map) { r.trail.addTo(lyCot); r.marker.addTo(lyCot); }
+        r.marker.setLatLng([ev.lat, ev.lon]);
+        r.marker.setStyle({ color: col, fillColor: col });
+        r.marker.setTooltipContent((ev.callsign || ev.uid || "?") + (ev.speed != null ? " · " + ev.speed.toFixed(0) + " m/s" : ""));
+        const last = r.pts[r.pts.length - 1];
+        if (!last || last[0] !== ev.lat || last[1] !== ev.lon) { r.pts.push([ev.lat, ev.lon]); if (r.pts.length > 400) r.pts.shift(); r.trail.setLatLngs(r.pts); }
+      }
+    });
+    if (performance.now() - cot.tableAt > 300) { renderCot(b.t); cot.tableAt = performance.now(); }
+  }
+  function renderCot(tnow) {
+    const rows = Array.from(cot.rows.values()).sort((a, b) => b.t - a.t).slice(0, 300);
+    $("cot-body").innerHTML = rows.map(r => { const e = r.ev, col = AFF[e.aff] || "#8a8f98";
+      const age = r.t < 0 ? "—" : (tnow - r.t).toFixed(0) + " s";
+      return `<tr data-uid="${e.uid || "(sans uid)"}" class="${r.t >= 0 && tnow - r.t > 60 ? "stale" : ""}${cs.sel === (e.uid || "(sans uid)") ? " sel" : ""}" style="color:${col}"><td title="${e.uid}">${e.uid || "—"}</td><td title="${e.type}">${e.type}</td><td>${e.aff || ""}</td><td>${e.callsign || ""}</td><td>${age}</td></tr>`; }).join("");
+    $("cot-sum").textContent = `${cot.rows.size} objets · ${cot.total} events`;
+  }
+  function resetCot() { cot.rows.clear(); cot.total = 0; lyCot.clearLayers(); $("cot-body").innerHTML = ""; $("cot-sum").textContent = "—"; }
+
+  // ── GMTI : plots (canvas, tampon glissant) + capteur ─────────────────────────
+  const gmti = { stats: { pkts: 0, plots: 0, cls: {} }, dots: [] };
+  const gmtiSensor = L.circleMarker([0, 0], { radius: 6, color: "#7cff6b", fillColor: "#7cff6b", fillOpacity: .9, weight: 1, renderer: canvasR });
+  gmtiSensor.bindTooltip("capteur GMTI", { direction: "top" });
+  const GMTI_MAX = 6000;
+  function onGmtiBatch(b) {
+    gmti.stats.pkts = b.total_pkts; gmti.stats.plots = b.total_plots;
+    b.plots.forEach(p => {
+      const v = p[2] || 0, col = v > 0 ? "#7cff6b" : "#ffb347";                    // signe de la vitesse radiale
+      const d = L.circleMarker([p[0], p[1]], { radius: 2, color: col, fillColor: col, fillOpacity: .9, weight: 0, renderer: canvasR }).addTo(lyGmti);
+      gmti.dots.push(d); const c = p[4] == null ? "?" : p[4]; gmti.stats.cls[c] = (gmti.stats.cls[c] || 0) + 1;
+    });
+    while (gmti.dots.length > GMTI_MAX) lyGmti.removeLayer(gmti.dots.shift());
+    if (b.sensor && b.sensor[0] != null) { gmtiSensor.setLatLng(b.sensor); if (!gmtiSensor._map) gmtiSensor.addTo(lyGmti); }
+    const cls = Object.entries(gmti.stats.cls).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `cls ${k}: <b>${v}</b>`).join(" · ");
+    $("gmti-body").innerHTML = `paquets 4607 <b>${gmti.stats.pkts}</b> · plots <b>${gmti.stats.plots}</b> (affichés ${gmti.dots.length}) · t=<b>${b.t.toFixed(1)}</b> s<br>` +
+      (b.sensor ? `capteur <b>${b.sensor[0].toFixed(4)} ${b.sensor[1].toFixed(4)}</b><br>` : "") + cls;
+    $("gmti-sum").textContent = `${gmti.stats.plots} plots`;
+  }
+  function resetGmti() { gmti.dots.forEach(d => lyGmti.removeLayer(d)); gmti.dots = []; gmti.stats = { pkts: 0, plots: 0, cls: {} }; if (gmtiSensor._map) lyGmti.removeLayer(gmtiSensor); }
+  let fitOnce = false;
+
+  // ── Analyse statique GMTI : décodage + tracker (profil) ─────────────────────
+  const lyTracks = L.layerGroup().addTo(lyGmti);       // pistes / plots bruts / zone / porteur (statique)
+  const gs = { decoded: null, res: null };
+  const ETAT_COL = { confirmee: "#00c8ff", coasting: "#ffd54f", tentative: "#8a8f98" };
+  function trackColor(t) { return t.is_air ? "#ff9f43" : t.is_rotator ? "#e58cff" : (ETAT_COL[t.etat] || "#00c8ff"); }
+  async function gmtiDecode() {
+    $("gmti-status").textContent = "décodage GMTI…";
+    try { gs.decoded = await api(`/api/gmti/decode?pcap=${encodeURIComponent(state.pcap)}${limQ()}`); }
+    catch (e) { return $("gmti-status").textContent = "erreur : " + e.message; }
+    const d = gs.decoded;
+    if (!d.decoded) { $("gmti-status").textContent = d.error || "aucun GMTI"; return; }
+    const sel = $("gmti-profile"); if (!sel.options.length) (d.profiles || []).forEach(pn => { const o = document.createElement("option"); o.value = o.textContent = pn; sel.appendChild(o); });
+    if (!sel.value && d.profiles && d.profiles.length) sel.value = d.profiles.includes("maritime") ? "maritime" : d.profiles[0];
+    $("gmti-status").textContent = `GMTI décodé (${d.mode}) : ${d.n_plots} plots, ${d.dwells || "?"} dwells · tracker ${d.tracker} — choisir un profil puis 2. Tracker`;
+    $("gmti-inv").textContent = d.rapport || "(inventaire indisponible en mode streaming)";
+    $("gmti-sum").textContent = `${d.n_plots} plots décodés`;
+    return d;
+  }
+  async function gmtiTrack() {
+    if (!gs.decoded || !gs.decoded.decoded) { const d = await gmtiDecode(); if (!d || !d.decoded) return; }
+    const profile = $("gmti-profile").value || "defaut";
+    $("gmti-status").textContent = `tracker en cours (profil ${profile})…`;
+    try { gs.res = await api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${limQ()}`); }
+    catch (e) { return $("gmti-status").textContent = "tracker : " + e.message; }
+    drawTracks(); fitTracks();
+    const r = gs.res;
+    $("gmti-status").textContent = `profil ${profile} : ${r.n_kept} pistes, ${r.n_rejected} rejetées (${r.n_raw} plots)` +
+      (r.zone.length ? " · zone job" : "") + (r.porteur.length ? ` · porteur ${r.porteur.length} pos` : "");
+    $("gmti-sum").textContent = `${r.n_kept} pistes · profil ${profile}`;
+  }
+  function drawTracks() {
+    lyTracks.clearLayers(); const r = gs.res; if (!r) return;
+    if ($("gmti-ovl").checked) {
+      if (r.zone.length) L.polygon(r.zone, { color: "#8a8f98", weight: 1, dashArray: "6 4", fill: false }).addTo(lyTracks);
+      if (r.porteur.length) L.polyline(r.porteur, { color: "#e6edf3", weight: 1, opacity: .6, dashArray: "2 6" }).addTo(lyTracks);
+    }
+    if ($("gmti-raw").checked) r.raw.forEach(pt => L.circleMarker([pt[0], pt[1]], { radius: 1.5, weight: 0, fillOpacity: .55, fillColor: "#7cff6b", renderer: canvasR }).addTo(lyTracks));
+    const smooth = $("gmti-smooth").checked;
+    r.tracks.forEach(t => {
+      const pts = smooth && t.smooth.length ? t.smooth : t.pts; if (pts.length < 2) return;
+      const col = trackColor(t);
+      const pl = L.polyline(pts, { color: col, weight: 2, opacity: .95, renderer: canvasR }).addTo(lyTracks);
+      pl.bindTooltip(`piste ${t.id} · ${t.hits} hits · ${t.etat}${t.is_air ? " · aérien" : ""}${t.is_rotator ? " · rotateur" : ""}`, { sticky: true });
+      L.circleMarker(pts[pts.length - 1], { radius: 3, color: col, fillColor: col, fillOpacity: 1, weight: 1, renderer: canvasR }).addTo(lyTracks);
+    });
+  }
+  function fitTracks() { const r = gs.res; if (!r) return; const pts = []; r.tracks.forEach(t => pts.push(...t.pts)); if (!pts.length) r.raw.slice(0, 2000).forEach(p => pts.push([p[0], p[1]])); if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.1)); }
+  const limQ = () => state.cfg && state.cfg.default_limit ? `&limit=${state.cfg.default_limit}` : "";
+  $("gmti-decode").addEventListener("click", gmtiDecode);
+  $("gmti-track").addEventListener("click", gmtiTrack);
+  ["gmti-raw", "gmti-smooth", "gmti-ovl"].forEach(id => $(id).addEventListener("change", drawTracks));
+  $("gmti-inv-btn").addEventListener("click", () => { $("gmti-inv").hidden = !$("gmti-inv").hidden; });
+
+  // ── Analyse statique CoT : objets, traces, inventaire des types, XML ─────────
+  const cs = { data: null, sel: null };
+  async function cotScan() {
+    $("cot-status").textContent = "analyse CoT…";
+    const flt = $("cot-filter").value.trim();
+    try { cs.data = await api(`/api/cot/scan?pcap=${encodeURIComponent(state.pcap)}&filter=${encodeURIComponent(flt)}`); }
+    catch (e) { return $("cot-status").textContent = "erreur : " + e.message; }
+    resetCot(); const d = cs.data;
+    d.rows.forEach(row => {
+      const ev = { uid: row.uid, type: row.type, aff: row.affiliation, callsign: row.callsign, lat: +row.lat, lon: +row.lon, speed: row.speed != null ? +row.speed : null };
+      const key = ev.uid || "(sans uid)"; const col = AFF[ev.aff] || "#8a8f98";
+      const r = { ev, pts: (d.tracks[row.uid] || []).slice(-400), t: -1 };
+      r.marker = L.circleMarker([0, 0], { radius: 5, color: col, fillColor: col, fillOpacity: .9, weight: 1.5, renderer: canvasR });
+      r.trail = L.polyline(r.pts, { color: col, weight: 1, opacity: .55, renderer: canvasR });
+      r.marker.bindTooltip((ev.callsign || ev.uid || "?"), { permanent: true, direction: "right", offset: [6, 0], className: "cot-lbl" });
+      if (!isNaN(ev.lat) && !isNaN(ev.lon) && !(ev.lat === 0 && ev.lon === 0)) { r.marker.setLatLng([ev.lat, ev.lon]); r.trail.addTo(lyCot); r.marker.addTo(lyCot); }
+      r.marker.on("click", () => cotSelect(key));
+      cot.rows.set(key, r);
+    });
+    cot.total = d.kept; renderCot(-1);
+    $("cot-status").textContent = `${d.kept} events · ${d.types.length} types · ${d.rows.length} objets · malformés ${d.malformed}` + (d.tcp_recovered ? ` · TCP réassemblés ${d.tcp_recovered}` : "");
+    const inv = [`INVENTAIRE CoT — ${d.kept} events, ${d.types.length} types, ${d.rows.length} objets (malformés ${d.malformed})`, "",
+      "type".padEnd(24) + "count".padStart(6) + "  " + "affiliation".padEnd(14) + "dim"];
+    d.types.forEach(t => inv.push(t.type.padEnd(24) + String(t.n).padStart(6) + "  " + (t.affiliation || "").padEnd(14) + t.dimension));
+    $("cot-detail").textContent = inv.join("\n"); $("cot-detail").hidden = false;
+    fitView();
+  }
+  async function cotSelect(key) {
+    cs.sel = key; document.querySelectorAll("#cot-body tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === key));
+    const r = cot.rows.get(key); if (r && r.marker._map) map.panTo(r.marker.getLatLng());
+    try {
+      const flt = $("cot-filter").value.trim();
+      const e = await api(`/api/cot/event?pcap=${encodeURIComponent(state.pcap)}&uid=${encodeURIComponent(key)}&filter=${encodeURIComponent(flt)}`);
+      $("cot-detail").textContent = (e.xml || "(event non disponible — analyser CoT d'abord)").replace(/></g, ">\n<"); $("cot-detail").hidden = false;
+    } catch (err) { $("cot-detail").textContent = "erreur : " + err.message; }
+  }
+  $("cot-scan").addEventListener("click", cotScan);
+  $("cot-filter").addEventListener("keydown", e => { if (e.key === "Enter") cotScan(); });
+  $("cot-body").addEventListener("click", e => { const tr = e.target.closest("tr"); if (tr && tr.dataset.uid != null) cotSelect(tr.dataset.uid); });
+
+  // ── Exports ─────────────────────────────────────────────────────────────────
+  $("btn-geojson").addEventListener("click", () => {
+    if (!state.pcap) return status("analyser un pcap d'abord", true);
+    const profile = $("gmti-profile").value || "defaut";
+    status("export GeoJSON (fusion GMTI + CoT + vidéo)… peut prendre quelques secondes");
+    const a = document.createElement("a"); a.href = `/api/fused/export.geojson?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${limQ()}`; a.download = "fusion.geojson"; a.click();
+  });
+  $("btn-ts").addEventListener("click", () => {
+    if (!state.cur) return status("pas de flux vidéo sélectionné", true);
+    const a = document.createElement("a"); a.href = `/video.ts?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}&download=1`; a.download = `flux_${state.cur.dport}.ts`; a.click();
+  });
+
+  const AGOL = "https://server.arcgisonline.com/ArcGIS/rest/services/{layer}/MapServer/tile/{z}/{y}/{x}";
+  function applyBasemap() {
+    if (state.bmLayer) { state.bmLayer.remove(); state.bmLayer = null; }
+    if (state.bmOverlay) { state.bmOverlay.remove(); state.bmOverlay = null; }
+    const cfg = state.bmCfg; if (!cfg || !$("basemap").checked || cfg.provider === "none") return;
+    if (cfg.provider === "arcgis_online") {
+      state.bmLayer = L.tileLayer(AGOL.replace("{layer}", cfg.layer || "World_Imagery"), { maxZoom: 19, attribution: "Esri, Maxar, Earthstar Geographics — ArcGIS Online" }).addTo(map);
+      state.bmLayer.on("tileerror", () => status("tuiles ArcGIS Online injoignables (internet ?)", true));
+      state.bmLayer.bringToBack();
+    } else if (cfg.provider === "mapserver") refreshExport();
+  }
+  function refreshExport() {
+    const cfg = state.bmCfg; if (!cfg || cfg.provider !== "mapserver" || !$("basemap").checked) return;
+    const b = map.getBounds(), sz = map.getSize();
+    const sw = L.CRS.EPSG3857.project(b.getSouthWest()), ne = L.CRS.EPSG3857.project(b.getNorthEast());
+    const url = `/basemap?bbox=${sw.x},${sw.y},${ne.x},${ne.y}&w=${sz.x}&h=${sz.y}&sr=3857&_=${Date.now()}`;
+    const img = new Image();
+    img.onload = () => {
+      const ov = L.imageOverlay(url, [[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]], { opacity: .95 }).addTo(map);
+      ov.bringToBack(); if (state.bmOverlay) state.bmOverlay.remove(); state.bmOverlay = ov;
+    };
+    img.onerror = () => status("MapServer injoignable — vérifier ⚙ fond de carte", true);
+    img.src = url;
+  }
+  let bmTimer = null;
+  map.on("moveend", () => { clearTimeout(bmTimer); bmTimer = setTimeout(refreshExport, 250); });
+  $("basemap").addEventListener("change", applyBasemap);
+  $("fulltrack").addEventListener("change", () => fullTrack.setStyle({ opacity: $("fulltrack").checked ? .35 : 0 }));
+  $("btn-fit").addEventListener("click", fitView);
+
+  // dialogue fond de carte
+  function bmDialogFill() {
+    const c = state.bmCfg || {}; $("bm-provider").value = c.provider || "arcgis_online"; $("bm-layer").value = c.layer || "World_Imagery";
+    $("bm-url").value = c.url || ""; $("bm-token").value = c.token || ""; $("bm-insecure").checked = c.insecure !== false; bmDialogRows();
+  }
+  function bmDialogRows() { const p = $("bm-provider").value; $("bm-layer-row").hidden = p !== "arcgis_online"; $("bm-ms-rows").hidden = p !== "mapserver"; }
+  $("bm-provider").addEventListener("change", bmDialogRows);
+  $("btn-bm").addEventListener("click", () => { bmDialogFill(); $("bm-dlg").hidden = !$("bm-dlg").hidden; });
+  $("bm-close").addEventListener("click", () => { $("bm-dlg").hidden = true; });
+  $("bm-save").addEventListener("click", async () => {
+    const cfg = { provider: $("bm-provider").value, layer: $("bm-layer").value, url: $("bm-url").value.trim(),
+      token: $("bm-token").value.trim() || null, insecure: $("bm-insecure").checked };
+    try { state.bmCfg = await api("/api/basemap", cfg); $("bm-msg").textContent = "enregistré (basemap.json)"; applyBasemap(); }
+    catch (e) { $("bm-msg").textContent = "erreur : " + e.message; }
+  });
+
+  function fitView() {
+    const pts = [];
+    cot.rows.forEach(r => { if (r.pts.length) pts.push(r.pts[r.pts.length - 1]); else if (r.marker._map) pts.push(r.marker.getLatLng()); }); gmti.dots.slice(-500).forEach(d => pts.push(d.getLatLng()));
+    if (gs.res) gs.res.tracks.forEach(t => pts.push(...t.pts.slice(0, 50)));
+    (state.track ? state.track.sets : []).forEach(s => { pts.push([s.lat, s.lon]); if (s.corners) s.corners.forEach(c => pts.push(c)); });
+    state.sets.forEach(s => { if (s.num.lat != null) pts.push([s.num.lat, s.num.lon]); if (s.num.corners) s.num.corners.forEach(c => pts.push(c)); });
+    if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15));
+  }
+
+  // ── Analyse : flux applicatifs (routage) + flux TS (vidéo) ──────────────────
+  async function load() {
+    state.pcap = $("pcap").value.trim();
+    if (!state.pcap) return status("indiquer un pcap", true);
+    status("analyse du pcap…");
+    let r, f;
+    try {
+      const lim = state.cfg && state.cfg.default_limit ? `&limit=${state.cfg.default_limit}` : "";
+      [r, f] = await Promise.all([api(`/api/streams?pcap=${encodeURIComponent(state.pcap)}${lim}`),
+                                  api(`/api/flows?pcap=${encodeURIComponent(state.pcap)}${lim}`)]);
+    } catch (e) { return status("erreur : " + e.message, true); }
+    state.streams = r.streams; state.flows = f.flows; state.flowsDur = f.duration_s;
+    gs.decoded = null; gs.res = null; lyTracks.clearLayers(); $("gmti-status").textContent = "Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning)."; $("gmti-inv").hidden = true;
+    cs.data = null; resetCot(); $("cot-detail").hidden = true; $("cot-status").textContent = "";
+    const sel = $("stream"); sel.innerHTML = "";
+    r.streams.forEach(s => { const o = document.createElement("option"); o.value = s.dport;
+      o.textContent = `vidéo ${s.dst}:${s.dport} · ${(s.bytes / 1e6).toFixed(1)} Mo`; sel.appendChild(o); });
+    renderInventory(); renderFlows();
+    $("inv-sum").textContent = `${r.streams.length} flux TS`;
+    $("replay-sum").textContent = `${f.flows.length} flux · ${f.duration_s.toFixed(1)} s`;
+    $("video-wrap").hidden = !r.streams.length; $("right").style.gridTemplateRows = r.streams.length ? "" : "1fr"; setTimeout(() => map.invalidateSize(), 50);
+    if (r.streams.length) selectStream(r.streams[0].dport); else { state.cur = null; status("aucun flux MPEG-TS (rejeu possible, pas de vidéo)", true); }
+  }
+
+  const isApp = fl => !/^(binaire|vide|gzip|JSON)$/.test(fl.dominant);
+  function renderFlows() {
+    const body = $("flows-body"); body.innerHTML = "";
+    const all = $("flows-all").checked;
+    const order = state.flows.map((fl, i) => i).sort((a, b) => (isApp(state.flows[b]) - isApp(state.flows[a])) || (state.flows[b].bytes - state.flows[a].bytes));
+    let hidden = 0;
+    order.forEach(i => {
+      const fl = state.flows[i];
+      if (!all && !isApp(fl)) { hidden++; return; }
+      const tr = document.createElement("tr"); tr.dataset.i = i;
+      const dst = fl.dsts && fl.dsts.length ? fl.dsts[0] : "";
+      tr.innerHTML = `<td><input type="checkbox" class="fl-on"></td><td class="name">${fl.proto.toLowerCase()}/${fl.dport} ${fl.dominant}</td>` +
+        `<td class="cnt">${fl.pkts}</td><td class="tg"><input type="text" class="fl-tg" placeholder="IP[:port], IP2[:port]" value="${dst}"></td>`;
+      body.appendChild(tr);
+    });
+    if (hidden) { const tr = document.createElement("tr"); tr.innerHTML = `<td colspan="4" class="muted">… ${hidden} flux non applicatifs masqués (binaire/vide) — cocher « tout »</td>`; body.appendChild(tr); }
+    markTapRow();
+  }
+  $("flows-all").addEventListener("change", renderFlows);
+  function markTapRow() {
+    document.querySelectorAll("#flows-body tr[data-i]").forEach(tr => {
+      const fl = state.flows[tr.dataset.i]; tr.classList.toggle("tap", !!(state.cur && fl.proto === "UDP" && fl.dport === state.cur.dport)); });
+  }
+  function routesFromUI() {
+    return Array.from(document.querySelectorAll("#flows-body tr[data-i]")).map(tr => {
+      const fl = state.flows[tr.dataset.i]; if (!tr.querySelector(".fl-on").checked) return null;
+      const targets = tr.querySelector(".fl-tg").value.split(",").map(s => s.trim()).filter(Boolean);
+      return targets.length ? { proto: fl.proto, dport: fl.dport, targets } : null; }).filter(Boolean);
+  }
+
+  function renderInventory() {
+    const body = $("inv-body"); body.innerHTML = "";
+    state.streams.forEach(s => {
+      const d = document.createElement("div"); d.className = "stream" + (state.cur && state.cur.dport === s.dport ? " sel" : "");
+      const els = s.elements.map(e => `<div class="pid">  PID ${e.pid} : ${e.name}${e.pid === s.klv_pid ? " ← KLV 0601" : ""}</div>`).join("");
+      const cc = s.cc_errors ? `<span class="warn">erreurs continuité ${s.cc_errors}</span>` : "continuité OK";
+      d.innerHTML = `<div class="hd">UDP → ${s.dst}:${s.dport}</div>` +
+        `<div>${(s.bytes / 1e6).toFixed(1)} Mo · ${s.datagrams} datagrammes · ${s.duration_s.toFixed(1)} s · ${cc}</div>` + els +
+        (s.klv_pid == null ? `<div class="warn">  pas de KLV</div>` : "");
+      d.onclick = () => { $("stream").value = s.dport; selectStream(s.dport); };
+      body.appendChild(d);
+    });
+  }
+
+  async function selectStream(dport) {
+    state.cur = state.streams.find(s => s.dport === Number(dport));
+    renderInventory(); markTapRow();
+    stopPlayer();
+    if (state.cur.first_klv) renderTable(state.cur.first_klv.map(f => ({ tag: f.tag, name: f.name, value: f.value, unit: "" })), false);
+    status("trace KLV…");
+    try { state.track = await api(`/api/klv?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}`); }
+    catch (e) { state.track = null; return status("erreur KLV : " + e.message, true); }
+    fullTrack.setLatLngs(state.track.sets.map(s => [s.lat, s.lon]));
+    $("klv-sum").textContent = `${state.track.n} sets · ${state.track.n && (state.track.n / state.cur.duration_s).toFixed(1)} Hz`;
+    $("tl-d").textContent = state.cur.duration_s.toFixed(1);
+    fitView();
+    status(`flux ${state.cur.dst}:${state.cur.dport} prêt — ▶ Lire`);
+    drawTimeline();
+  }
+
+  // ── Lecteur mpegts.js (fichier : /video.ts ; rejeu : ws tap) + KLV synchrone ──
+  function startPlayer(url, live) {
+    stopPlayer();
+    if (!mpegts.isSupported()) return status("MSE non supporté par ce navigateur", true);
+    const player = mpegts.createPlayer({ type: "mpegts", isLive: live, url }, {
+      enableWorker: false, lazyLoad: false, enableStashBuffer: !live, stashInitialSize: 128 * 1024,
+      liveBufferLatencyChasing: live, liveBufferLatencyMaxLatency: 1.5, liveBufferLatencyMinRemain: 0.4,
+      autoCleanupSourceBuffer: live, seekType: "range" });
+    player.attachMediaElement(video);
+    player.on(mpegts.Events.SYNCHRONOUS_KLV_METADATA_ARRIVED, onKlv);
+    player.on(mpegts.Events.ASYNCHRONOUS_KLV_METADATA_ARRIVED, onKlv);
+    player.on(mpegts.Events.ERROR, (t, d, i) => {
+      status(`erreur lecteur : ${t} / ${d} ${i && i.msg || ""}`, true);
+      if (live && state.replay && state.replay.running && state.retries < 5) {      // tap live : on se raccroche
+        state.retries++; setTimeout(() => { if (state.replay && state.replay.running) startPlayer(url, true); }, 600);
+      }
+    });
+    player.on(mpegts.Events.MEDIA_INFO, mi => status(`${live ? "LIVE (tap du rejeu)" : "lecture fichier"} — ${mi.videoCodec || ""} ${mi.width || ""}×${mi.height || ""} ${mi.fps ? mi.fps.toFixed(1) + " fps" : ""}`));
+    player.load(); player.play().catch(() => {});
+    state.player = player; state.sets = []; state.applied = -1; trace.setLatLngs([]);
+    if (!live) state.retries = 0;
+    $("mode-badge").textContent = live ? "● LIVE — flux tapé sur le moteur de rejeu" : "FICHIER";
+    $("mode-badge").className = "overlay" + (live ? " live" : "");
+  }
+  function stopPlayer() {
+    if (state.player) { try { state.player.pause(); state.player.unload(); state.player.detachMediaElement(); state.player.destroy(); } catch (e) {} }
+    state.player = null;
+  }
+  video.addEventListener("ended", () => { if (state.mode === "file" && $("loop").checked && state.player) { video.currentTime = 0; video.play(); } });
+
+  async function play() {
+    if (!state.pcap) return status("analyser un pcap d'abord", true);
+    state.mode = $("mode").value;
+    const q = `pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur ? state.cur.dport : 0}`;
+    if (state.mode === "file") {
+      if (!state.cur) return status("pas de flux vidéo", true);
+      $("tl-mode").textContent = "fichier : cliquer la timeline pour se déplacer";
+      return startPlayer(`/video.ts?${q}`, false);
+    }
+    // Rejeu : moteur UDP + tap vidéo. Le lecteur ws est ouvert AVANT le start pour ne rien rater.
+    const routes = routesFromUI();
+    const taps = state.cur ? [state.cur.dport] : [];
+    if (!routes.length && !taps.length) return status("cocher un flux à émettre ou choisir un flux vidéo", true);
+    if (state.cur) startPlayer(`${WS}/ws/video?dport=${state.cur.dport}`, true);
+    state.log = []; $("replay-log").textContent = ""; resetCot(); resetGmti(); fitOnce = false; state.retries = 0;
+    try {
+      await api("/api/replay/start", { pcap: state.pcap, routes, speed: parseFloat($("speed").value), loop: $("loop").checked,
+        rebase: $("rebase").checked, taps });
+      $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ${routes.length} route(s) UDP/TCP` + (taps.length ? " + tap vidéo" : "");
+      status("rejeu démarré");
+    } catch (e) { stopPlayer(); status("rejeu : " + e.message, true); }
+  }
+  async function stopAll() {
+    stopPlayer();
+    try { await api("/api/replay/stop", {}); } catch (e) {}
+    status("arrêté");
+  }
+
+  function onKlv(ev) {
+    const r = KLV0601.decode(ev.data); if (!r) return;
+    const pts = ev.pts != null ? ev.pts : video.currentTime * 1000;
+    state.sets.push({ pts, num: r.num, fields: r.fields });
+    if (state.sets.length > 20000) { state.sets.splice(0, 5000); state.applied = Math.max(-1, state.applied - 5000); }
+    $("tl-n").textContent = state.sets.length;
+  }
+  function indexAt(tms) {
+    const a = state.sets; let lo = 0, hi = a.length - 1, ans = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (a[m].pts <= tms) { ans = m; lo = m + 1; } else hi = m - 1; }
+    return ans;
+  }
+  function apply(idx, tms) {
+    const s = state.sets[idx], n = s.num;
+    if (n.lat != null) { sensor.setLatLng([n.lat, n.lon]); sensor.setTooltipContent(`${fmt(n.lat)} ${fmt(n.lon)} · ${fmt(n.alt, 0)} m · cap ${fmt(n.hdg, 1)}°`); }
+    if (n.fc_lat != null) { center.setLatLng([n.fc_lat, n.fc_lon]); if (n.lat != null) los.setLatLngs([[n.lat, n.lon], [n.fc_lat, n.fc_lon]]); }
+    if (n.corners) footprint.setLatLngs(n.corners);
+    follow(n);
+    if (idx === state.applied + 1) { if (n.lat != null) trace.addLatLng([n.lat, n.lon]); }
+    else trace.setLatLngs(state.sets.slice(0, idx + 1).filter((x, i) => x.num.lat != null && (i % 3 === 0 || i === idx)).map(x => [x.num.lat, x.num.lon]));
+    $("hud").textContent = `capteur ${fmt(n.lat)} ${fmt(n.lon)}  alt ${fmt(n.alt, 0)} m\ncap ${fmt(n.hdg, 1)}°  tang ${fmt(n.pitch, 1)}°  roul ${fmt(n.roll, 1)}°\nFOV ${fmt(n.hfov, 2)}°×${fmt(n.vfov, 2)}°  portée ${fmt(n.slant, 0)} m\ncentre ${fmt(n.fc_lat)} ${fmt(n.fc_lon)}`;
+    $("tl-utc").textContent = utc(n.ts_us);
+    $("tl-lag").textContent = (tms - s.pts).toFixed(0);
+    if (performance.now() - state.tableAt > 120) { renderTable(s.fields, true); state.tableAt = performance.now(); }
+    state.applied = idx;
+  }
+  function follow(n) {
+    const m = $("follow").value; if (m === "none") return;
+    const inner = map.getBounds().pad(-0.3);
+    if (m === "sensor" && n.lat != null && !inner.contains([n.lat, n.lon])) map.panTo([n.lat, n.lon], { animate: true, duration: .3 });
+    else if (m === "center" && n.fc_lat != null && !inner.contains([n.fc_lat, n.fc_lon])) map.panTo([n.fc_lat, n.fc_lon], { animate: true, duration: .3 });
+    else if (m === "both" && n.lat != null && n.fc_lat != null) {
+      const b = L.latLngBounds([[n.lat, n.lon], [n.fc_lat, n.fc_lon]]); if (n.corners) n.corners.forEach(c => b.extend(c));
+      if (!map.getBounds().contains(b)) map.fitBounds(b.pad(0.4), { animate: true, duration: .3 });
+    }
+  }
+  $("follow").addEventListener("change", () => { if (state.applied >= 0) follow(state.sets[state.applied].num); });
+
+  const HL = new Set([2, 5, 13, 14, 15, 16, 17, 21, 23, 24, 25]);
+  function renderTable(fields, live) {
+    $("klv-body").innerHTML = fields.map(f => {
+      let v = f.value; if (typeof v === "number") v = Number.isInteger(v) ? String(v) : v.toFixed(Math.abs(v) < 10 ? 4 : 3);
+      return `<tr class="${HL.has(f.tag) ? "hl" : ""}"><td class="tag">${f.tag}</td><td class="name" title="${f.name}">${f.name}</td><td class="val">${v}</td><td class="unit">${f.unit || ""}</td></tr>`;
+    }).join("");
+    if (!live) $("klv-sum").textContent = "1er set (statique)";
+  }
+
+  // ── WebSocket d'événements (moteur de rejeu) ─────────────────────────────────
+  function connectEvents() {
+    const ws = new WebSocket(`${WS}/ws/events`); state.evws = ws;
+    ws.onmessage = e => { const ev = JSON.parse(e.data); onEvent(ev); };
+    ws.onclose = () => { state.evws = null; setTimeout(connectEvents, 2000); };
+    ws.onerror = () => ws.close();
+  }
+  function onEvent(ev) {
+    if (ev.type === "hello") { state.replay = ev.replay; renderReplay(); }
+    else if (ev.type === "replay") { state.replay = ev; renderReplay(); }
+    else if (ev.type === "log") { state.log.push(ev.msg); if (state.log.length > 200) state.log.shift();
+      const el = $("replay-log"); el.textContent = state.log.slice(-40).join("\n"); el.scrollTop = el.scrollHeight; }
+    else if (ev.type === "cot") { onCotBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
+    else if (ev.type === "gmti") { onGmtiBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
+    else if (ev.type === "end") { status(ev.stopped ? "rejeu arrêté" : "rejeu terminé"); if (state.mode === "replay") stopPlayer(); state.replay = { running: false }; renderReplay(); }
+  }
+  function renderReplay() {
+    const r = state.replay || {};
+    if (!r.running) { $("replay-sum").textContent = state.flows.length ? `${state.flows.length} flux · moteur arrêté` : "moteur arrêté"; $("tl-replay").textContent = ""; $("replay-stats").innerHTML = r.sent ? `dernier rejeu : <b>${r.sent}</b> msg · passe ${r.passes || 1}` : ""; return; }
+    const pps = r.wall ? (r.sent / r.wall).toFixed(0) : "—";
+    $("replay-sum").textContent = `● en cours ×${r.speed || "max"} — t=${(r.t || 0).toFixed(1)} s`;
+    const flows = Object.entries(r.flows || {}).map(([k, v]) => `${k}: <b>${v}</b>`).join(" · ");
+    $("replay-stats").innerHTML = `émis <b>${r.sent || 0}</b> msg · <b>${((r.bytes || 0) / 1e6).toFixed(1)}</b> Mo · <b>${pps}</b> msg/s · passe <b>${r.passes || 1}</b><br>${flows || "<span class=muted>aucune route (tap IHM seul)</span>"}`;
+    $("tl-replay").innerHTML = `rejeu : t=<b>${(r.t || 0).toFixed(1)}</b> s · <b>${r.sent || 0}</b> émis`;
+  }
+
+  // ── Timeline ────────────────────────────────────────────────────────────────
+  const tl = $("timeline"), ctx = tl.getContext("2d");
+  function duration() {
+    if (state.mode === "replay") return Math.max(state.flowsDur || 0, (state.replay && state.replay.t) || 0, video.currentTime);
+    return (isFinite(video.duration) && video.duration > 0) ? video.duration : (state.cur ? state.cur.duration_s : 0);
+  }
+  function drawTimeline() {
+    const W = tl.clientWidth || 800; if (tl.width !== W) tl.width = W; const H = tl.height;
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = "#0e1216"; ctx.fillRect(0, 0, W, H);
+    const D = duration(); if (!D) return;
+    const x = t => t / D * W;
+    if (state.track && state.track.sets.length && state.mode === "file") {
+      ctx.fillStyle = "rgba(255,213,79,.55)";
+      const bins = new Float32Array(W); state.track.sets.forEach(s => { const i = Math.floor(x(s.t)); if (i >= 0 && i < W) bins[i]++; });
+      const mx = Math.max(1, ...bins);
+      for (let i = 0; i < W; i++) if (bins[i]) { const h = 4 + 14 * bins[i] / mx; ctx.fillRect(i, H - 12 - h, 1, h); }
+    }
+    ctx.fillStyle = "rgba(0,200,255,.18)";
+    for (let i = 0; i < video.buffered.length; i++) ctx.fillRect(x(video.buffered.start(i)), H - 10, x(video.buffered.end(i)) - x(video.buffered.start(i)), 6);
+    if (state.mode === "replay") {
+      ctx.fillStyle = "rgba(255,213,79,.7)"; state.sets.forEach(s => ctx.fillRect(x(s.pts / 1000), H - 30, 1, 10));
+      if (state.replay && state.replay.running) { ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(state.replay.t || 0) - 1, 0, 2, H); ctx.fillText("rejeu", x(state.replay.t || 0) + 4, H - 2); }
+    }
+    ctx.fillStyle = "#8a9098"; ctx.font = "10px Consolas"; const step = D > 600 ? 120 : D > 120 ? 30 : D > 30 ? 10 : 5;
+    for (let t = 0; t <= D; t += step) { ctx.fillRect(x(t), 0, 1, 6); ctx.fillText(t + "s", x(t) + 2, 12); }
+    ctx.fillStyle = "#00c8ff"; ctx.fillRect(x(video.currentTime) - 1, 0, 2, H);
+  }
+  tl.addEventListener("click", ev => {
+    if (state.mode !== "file" || !state.player) return;
+    const D = duration(); if (!D) return; video.currentTime = (ev.offsetX / tl.clientWidth) * D;
+  });
+  function frame() {
+    const tms = video.currentTime * 1000;
+    if (state.sets.length) { const idx = indexAt(tms + 20); if (idx >= 0 && idx !== state.applied) apply(idx, tms); }
+    $("tl-t").textContent = video.currentTime.toFixed(3);
+    if (state.mode === "file" && isFinite(video.duration)) $("tl-d").textContent = video.duration.toFixed(1);
+    drawTimeline();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  window.addEventListener("resize", () => { map.invalidateSize(); drawTimeline(); });
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+  $("btn-load").addEventListener("click", load);
+  $("pcap").addEventListener("keydown", e => { if (e.key === "Enter") load(); });
+  $("stream").addEventListener("change", e => selectStream(e.target.value));
+  $("btn-play").addEventListener("click", play);
+  $("btn-stop").addEventListener("click", stopAll);
+  $("mode").addEventListener("change", () => { state.mode = $("mode").value; drawTimeline(); });
+  api("/api/config").then(c => {
+    state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();
+    const auto = new URLSearchParams(location.search).get("autoplay");   // ?autoplay=file|replay (démo/tests)
+    if (c.default_pcap) { $("pcap").value = c.default_pcap; load().then(() => { if (auto) { $("mode").value = auto; setTimeout(play, 800); } }); }
+  });
+  connectEvents();
+})();

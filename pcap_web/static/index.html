@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Console pcap — web</title>
+<link rel="stylesheet" href="/static/leaflet.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div><span class="title">◉ Console pcap</span><span class="sub">console web · analyse 4607 / 4609 / CoT · rejeu UDP · ISRBOX / 33e ESRA</span></div>
+    <input id="pcap" type="text" placeholder="chemin du pcap (…\Captures\xxx.pcap)">
+    <button id="btn-load">Analyser</button>
+    <select id="stream" title="flux vidéo TS affiché"></select>
+    <select id="mode" title="mode de lecture">
+      <option value="file">Fichier (seek)</option>
+      <option value="replay">Rejeu (UDP + live)</option>
+    </select>
+    <select id="speed" title="vitesse (mode rejeu)">
+      <option value="1">×1</option><option value="2">×2</option><option value="5">×5</option><option value="10">×10</option><option value="0">max</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="loop"> boucle</label>
+    <button id="btn-play" class="accent">▶ Lire</button>
+    <button id="btn-stop" class="danger">■ Stop</button>
+    <span id="status">prêt</span>
+  </header>
+
+  <div id="left">
+    <section class="panel" id="replay">
+      <h2><span class="tgl">▾</span> Rejeu — routage <span class="right" id="replay-sum">moteur arrêté</span></h2>
+      <div class="body">
+        <div class="hint">Cocher = émettre en UDP/TCP vers <b>IP[:port]</b> (virgule = fan-out). Le flux vidéo sélectionné est toujours « tapé » vers l'IHM ; CoT et GMTI sont décodés pour la carte même non routés.
+          <label class="chk" style="float:right"><input type="checkbox" id="flows-all"> tout</label></div>
+        <table class="flows"><tbody id="flows-body"><tr><td class="muted">Analyser un pcap.</td></tr></tbody></table>
+        <div class="row"><label class="chk"><input type="checkbox" id="rebase"> recaler l'heure CoT (time/start/stale → maintenant)</label></div>
+        <div class="row" id="replay-stats"></div>
+        <pre id="replay-log"></pre>
+      </div>
+    </section>
+    <section class="panel" id="gmti">
+      <h2><span class="tgl">▾</span> GMTI 4607 → pistes <span class="right" id="gmti-sum">—</span></h2>
+      <div class="body">
+        <div class="row">
+          <button id="gmti-decode">1. Décoder GMTI</button>
+          <label class="chk">profil <select id="gmti-profile"></select></label>
+          <button id="gmti-track" class="accent">2. Tracker</button>
+        </div>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="gmti-raw" checked> plots bruts</label>
+          <label class="chk"><input type="checkbox" id="gmti-smooth"> lissage RTS</label>
+          <label class="chk"><input type="checkbox" id="gmti-ovl" checked> zone job / porteur</label>
+          <button id="gmti-inv-btn" style="padding:2px 8px">☰ inventaire 4607</button>
+        </div>
+        <div id="gmti-status" class="mono muted">Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning).</div>
+        <div id="gmti-body"><span class="muted">plots reçus au fil du rejeu (dwells, vitesse radiale, SNR, classes)</span></div>
+        <pre id="gmti-inv" hidden></pre>
+      </div>
+    </section>
+    <section class="panel" id="cot">
+      <h2><span class="tgl">▾</span> CoT <span class="right" id="cot-sum">—</span></h2>
+      <div class="body">
+        <div class="row"><button id="cot-scan">Analyser CoT</button><input id="cot-filter" type="text" placeholder="filtre type (ex. a-h)" style="width:120px"><span id="cot-status" class="muted mono"></span></div>
+        <table class="cot"><thead><tr><th>uid</th><th>type</th><th>aff</th><th>callsign</th><th>maj.</th></tr></thead><tbody id="cot-body"></tbody></table>
+        <pre id="cot-detail" hidden></pre>
+      </div>
+    </section>
+    <section class="panel collapsed" id="inv">
+      <h2><span class="tgl">▾</span> Inventaire TS <span class="right" id="inv-sum"></span></h2>
+      <div class="body" id="inv-body">Choisir un pcap puis « Analyser ».</div>
+    </section>
+    <section class="panel" id="klv">
+      <h2><span class="tgl">▾</span> KLV MISB 0601 <span class="right" id="klv-sum">—</span></h2>
+      <div class="body"><table class="klv"><tbody id="klv-body"></tbody></table></div>
+    </section>
+  </div>
+
+  <div id="right">
+    <div id="map" style="position:relative">
+      <div class="map-ctl">
+        <label class="chk">suivre <select id="follow" style="padding:1px 4px"><option value="sensor">le capteur</option><option value="center">le centre image</option><option value="both">capteur + empreinte</option><option value="none">rien</option></select></label>
+        <label class="chk"><input type="checkbox" id="basemap" checked> fond de carte</label>
+        <label class="chk"><input type="checkbox" id="fulltrack" checked> trace complète</label>
+        <div class="row" style="margin:0;gap:6px"><label class="chk"><input type="checkbox" id="ly-video" checked> vidéo/KLV</label>
+          <label class="chk"><input type="checkbox" id="ly-cot" checked> CoT</label>
+          <label class="chk"><input type="checkbox" id="ly-gmti" checked> GMTI</label>
+          <label class="chk"><input type="checkbox" id="cot-labels" checked> étiq.</label></div>
+        <div style="display:flex;gap:4px"><button id="btn-fit" style="padding:2px 8px;flex:1">Ajuster la vue</button><button id="btn-bm" title="configurer le fond de carte" style="padding:2px 8px">⚙</button></div>
+        <div style="display:flex;gap:4px"><button id="btn-geojson" style="padding:2px 8px;flex:1" title="pistes GMTI + objets/traces CoT + trace capteur vidéo (WGS84)">⤓ GeoJSON fusion</button><button id="btn-ts" style="padding:2px 8px" title="télécharger le TS du flux vidéo sélectionné">⤓ .ts</button></div>
+      </div>
+      <div class="bm-dlg" id="bm-dlg" hidden>
+        <h3>Fond de carte</h3>
+        <label>Source <select id="bm-provider">
+          <option value="arcgis_online">ArcGIS Online (internet)</option>
+          <option value="mapserver">MapServer ArcGIS (réseau local, via proxy)</option>
+          <option value="none">Aucun</option></select></label>
+        <label id="bm-layer-row">Couche <select id="bm-layer">
+          <option value="World_Imagery">Imagerie</option>
+          <option value="World_Topo_Map">Topographique</option>
+          <option value="World_Street_Map">Rues</option>
+          <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
+        <div id="bm-ms-rows">
+          <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
+          <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
+          <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
+        </div>
+        <div class="row"><button id="bm-save" class="accent">Appliquer &amp; enregistrer</button><button id="bm-close">Fermer</button><span id="bm-msg" class="muted"></span></div>
+      </div>
+      <div class="legend"><i style="background:#00c8ff"></i>plateforme / trace &nbsp;
+        <i style="background:#ffd54f"></i>empreinte capteur &nbsp; <i style="background:#ff5252"></i>centre image &nbsp;
+        <i style="background:#7cff6b;border-radius:0"></i>plots GMTI &nbsp; <i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</div>
+    </div>
+    <div id="video-wrap">
+      <video id="video" controls muted playsinline></video>
+      <div class="overlay" id="mode-badge">FICHIER</div>
+      <div class="hud" id="hud"></div>
+    </div>
+  </div>
+
+  <footer>
+    <canvas id="timeline" height="44"></canvas>
+    <div id="tl-info">
+      <span>vidéo t = <b id="tl-t">0.000</b> s / <b id="tl-d">—</b> s</span>
+      <span>UTC KLV : <b id="tl-utc">—</b></span>
+      <span>sets KLV : <b id="tl-n">0</b></span>
+      <span>écart vidéo↔KLV : <b id="tl-lag">—</b> ms</span>
+      <span id="tl-replay"></span>
+      <span id="tl-mode"></span>
+    </div>
+  </footer>
+</div>
+<script src="/static/leaflet.js"></script>
+<script src="/static/mpegts.js"></script>
+<script src="/static/klv0601.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
