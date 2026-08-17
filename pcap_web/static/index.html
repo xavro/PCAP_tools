@@ -10,7 +10,9 @@
 <div id="app">
   <header>
     <div><span class="title">◉ Console pcap</span><span class="sub">console web · analyse 4607 / 4609 / CoT · rejeu UDP · ISRBOX / 33e ESRA</span></div>
-    <input id="pcap" type="text" placeholder="chemin du pcap (…\Captures\xxx.pcap)">
+    <input id="pcap" type="text" list="recent" placeholder="chemin du pcap (…\Captures\xxx.pcap)">
+    <datalist id="recent"></datalist>
+    <button id="btn-browse" title="parcourir les captures (explorateur côté serveur)">Parcourir…</button>
     <button id="btn-load">Analyser</button>
     <select id="stream" title="flux vidéo TS affiché"></select>
     <select id="mode" title="mode de lecture">
@@ -24,7 +26,13 @@
     <button id="btn-play" class="accent">▶ Lire</button>
     <button id="btn-stop" class="danger">■ Stop</button>
     <span id="status">prêt</span>
+    <span class="fs-ctl" title="taille du texte des panneaux"><button id="fs-minus">A−</button><button id="fs-plus">A+</button></span>
   </header>
+  <div class="browse-dlg" id="browse-dlg" hidden>
+    <div class="bd-head"><b>Choisir une capture</b><span id="bd-dir" class="mono muted"></span><button id="bd-close">✕</button></div>
+    <div class="bd-body"><ul id="bd-list"></ul></div>
+    <div class="bd-foot muted">Dossiers en premier ; fichiers .pcap / .pcapng / .cap. Le chemin choisi est mémorisé (récents dans le champ).</div>
+  </div>
 
   <div id="left">
     <section class="panel" id="replay">

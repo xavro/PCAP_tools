@@ -269,6 +269,7 @@
                                   api(`/api/flows?pcap=${encodeURIComponent(state.pcap)}${lim}`)]);
     } catch (e) { return status("erreur : " + e.message, true); }
     state.streams = r.streams; state.flows = f.flows; state.flowsDur = f.duration_s;
+    api("/api/settings").then(st => fillRecent(st.recent)).catch(() => {});
     gs.decoded = null; gs.res = null; lyTracks.clearLayers(); $("gmti-status").textContent = "Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning)."; $("gmti-inv").hidden = true;
     cs.data = null; resetCot(); $("cot-detail").hidden = true; $("cot-status").textContent = "";
     const sel = $("stream"); sel.innerHTML = "";
@@ -526,12 +527,36 @@
   // ── Poignée : largeur de la colonne gauche (mémorisée) ─────────────────────
   const app = $("app"), gutter = $("gutter");
   const setLeft = w => { w = Math.max(240, Math.min(w, window.innerWidth * 0.6)); app.style.gridTemplateColumns = `${w}px 6px 1fr`; localStorage.setItem("leftw", w); };
-  setLeft(parseInt(localStorage.getItem("leftw") || "330", 10));
+  setLeft(parseInt(localStorage.getItem("leftw") || "420", 10));
   gutter.addEventListener("mousedown", e => {
     e.preventDefault(); const move = ev => setLeft(ev.clientX); const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); map.invalidateSize(); drawTimeline(); };
     document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
   });
-  gutter.addEventListener("dblclick", () => { setLeft(330); map.invalidateSize(); });
+  gutter.addEventListener("dblclick", () => { setLeft(420); map.invalidateSize(); });
+
+  // ── Taille du texte des panneaux (A− / A+, mémorisée) ─────────────────────────
+  let panelZoom = parseFloat(localStorage.getItem("panelZoom") || "1");
+  const applyZoom = () => { document.documentElement.style.setProperty("--panel-zoom", panelZoom); localStorage.setItem("panelZoom", panelZoom); setTimeout(() => { map.invalidateSize(); drawTimeline(); }, 50); };
+  $("fs-minus").addEventListener("click", () => { panelZoom = Math.max(0.8, +(panelZoom - 0.1).toFixed(2)); applyZoom(); });
+  $("fs-plus").addEventListener("click", () => { panelZoom = Math.min(1.6, +(panelZoom + 0.1).toFixed(2)); applyZoom(); });
+  applyZoom();
+
+  // ── Parcourir… : explorateur côté serveur, chemin mémorisé (récents) ──────────
+  const fmtSize = n => n > 1e9 ? (n / 1e9).toFixed(2) + " Go" : n > 1e6 ? (n / 1e6).toFixed(1) + " Mo" : (n / 1e3).toFixed(0) + " Ko";
+  async function browseTo(dir) {
+    let r; try { r = await api(`/api/browse${dir != null ? "?dir=" + encodeURIComponent(dir) : ""}`); } catch (e) { return status("parcourir : " + e.message, true); }
+    $("bd-dir").textContent = r.dir === "::drives" ? "Lecteurs" : r.dir; $("bd-dir").title = r.dir;
+    const ul = $("bd-list"); ul.innerHTML = "";
+    if (r.parent != null) { const li = document.createElement("li"); li.className = "dir"; li.textContent = "⬑ .."; li.onclick = () => browseTo(r.parent); ul.appendChild(li); }
+    r.dirs.forEach(d => { const li = document.createElement("li"); li.className = "dir"; li.textContent = "📁 " + d; li.onclick = () => browseTo(r.dir === "::drives" ? d : r.dir.replace(/[\\/]$/, "") + (r.dir.includes("\\") || /^[A-Z]:/.test(r.dir) ? "\\" : "/") + d); ul.appendChild(li); });
+    r.files.forEach(f => { const li = document.createElement("li"); li.className = "file"; li.innerHTML = `<span>📄 ${f.name}</span><span class="sz">${fmtSize(f.size)} · ${new Date(f.mtime * 1000).toLocaleString()}</span>`;
+      li.onclick = () => { const sep = /^[A-Z]:/.test(r.dir) || r.dir.includes("\\") ? "\\" : "/"; $("pcap").value = r.dir.replace(/[\\/]$/, "") + sep + f.name; $("browse-dlg").hidden = true; load(); }; ul.appendChild(li); });
+    $("browse-dlg").hidden = false;
+  }
+  $("btn-browse").addEventListener("click", () => browseTo(null));
+  $("bd-close").addEventListener("click", () => { $("browse-dlg").hidden = true; });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") $("browse-dlg").hidden = true; });
+  function fillRecent(list) { const dl = $("recent"); dl.innerHTML = ""; (list || []).forEach(r => { const o = document.createElement("option"); o.value = r; dl.appendChild(o); }); }
 
   // ── Init ─────────────────────────────────────────────────────────────────────
   $("btn-load").addEventListener("click", load);
@@ -542,6 +567,7 @@
   $("mode").addEventListener("change", () => { state.mode = $("mode").value; drawTimeline(); });
   api("/api/config").then(c => {
     state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();
+    fillRecent(c.settings && c.settings.recent);
     const auto = new URLSearchParams(location.search).get("autoplay");   // ?autoplay=file|replay (démo/tests)
     if (c.default_pcap) { $("pcap").value = c.default_pcap; load().then(() => { if (auto) { $("mode").value = auto; setTimeout(play, 800); } }); }
   });

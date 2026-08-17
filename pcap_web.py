@@ -33,6 +33,8 @@ API :
   WS  /ws/events                événements JSON (replay/log/end)
   WS  /ws/video?dport=          TS binaire du flux tapé (mpegts.js WebSocket loader)
   GET/POST /api/basemap         config fond de carte (basemap.json)
+  GET/POST /api/settings        réglages (dernier pcap, récents, IHM) — pcap_web_settings.json
+  GET /api/browse?dir=          explorateur de fichiers côté serveur (dossiers + captures)
   GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export)
   GET /api/gmti/decode?pcap=    décodage GMTI (extracteur complet | streaming) + inventaire 4607
   GET /api/gmti/track?pcap=&profile=  tracker (profil) → pistes / plots bruts / zone job / porteur (lat/lon)
@@ -480,6 +482,65 @@ def fused_geojson(path, profile, limit=0):
             "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}}, "features": feats}
 
 
+# ── Réglages persistants (dernier pcap, récents, IHM) + explorateur de fichiers ─
+SETTINGS_PATH = os.path.join(HERE, "pcap_web_settings.json")
+PCAP_EXT = (".pcap", ".pcapng", ".cap")
+
+
+def settings_load():
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def settings_save(patch):
+    cur = settings_load()
+    cur.update({k: v for k, v in patch.items() if v is not None})
+    if "last_pcap" in patch and patch["last_pcap"]:
+        rec = [patch["last_pcap"]] + [r for r in cur.get("recent", []) if r != patch["last_pcap"]]
+        cur["recent"] = [r for r in rec if os.path.isfile(r)][:12]
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(cur, f, indent=2, ensure_ascii=False)
+    return cur
+
+
+def browse(d=None):
+    """Liste un dossier (sous-dossiers + captures). Défaut : dossier du dernier pcap,
+    sinon ../Captures, sinon le dossier des outils. Windows : `d=""` liste les lecteurs."""
+    if d is None or d == "":
+        st = settings_load()
+        last = st.get("last_pcap")
+        cand = [os.path.dirname(last) if last else None, os.path.join(os.path.dirname(HERE), "Captures"), HERE]
+        d = next((c for c in cand if c and os.path.isdir(c)), HERE)
+    if d == "::drives" or (d == "/" and os.name == "nt"):
+        drives = ["%s:\\" % c for c in "CDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.isdir("%s:\\" % c)]
+        return {"dir": "::drives", "parent": None, "dirs": drives, "files": []}
+    d = os.path.abspath(d)
+    if not os.path.isdir(d):
+        raise FileNotFoundError("dossier introuvable : %r" % d)
+    dirs, files = [], []
+    try:
+        for name in sorted(os.listdir(d), key=str.lower):
+            full = os.path.join(d, name)
+            try:
+                if os.path.isdir(full):
+                    if not name.startswith((".", "$")):
+                        dirs.append(name)
+                elif name.lower().endswith(PCAP_EXT):
+                    stt = os.stat(full)
+                    files.append({"name": name, "size": stt.st_size, "mtime": int(stt.st_mtime)})
+            except OSError:
+                continue
+    except PermissionError:
+        raise FileNotFoundError("accès refusé : %s" % d)
+    parent = os.path.dirname(d)
+    if parent == d:
+        parent = "::drives" if os.name == "nt" else None
+    return {"dir": d, "parent": parent, "dirs": dirs, "files": files}
+
+
 # ── WebSocket serveur minimal (RFC 6455, stdlib) ─────────────────────────────
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -844,8 +905,14 @@ class Handler(BaseHTTPRequestHandler):
             if u.path.startswith("/static/"):
                 return self._static(u.path[len("/static/"):])
             if u.path == "/api/config":
-                return self._json({"default_pcap": self.default_pcap, "default_limit": self.default_limit,
-                                   "basemap": basemap_load(), "replay": ENGINE.status()})
+                st = settings_load()
+                default = self.default_pcap or (st.get("last_pcap") if st.get("last_pcap") and os.path.isfile(st["last_pcap"]) else None)
+                return self._json({"default_pcap": default, "default_limit": self.default_limit,
+                                   "basemap": basemap_load(), "replay": ENGINE.status(), "settings": st})
+            if u.path == "/api/settings":
+                return self._json(settings_load())
+            if u.path == "/api/browse":
+                return self._json(browse(q.get("dir", [None])[0]))
             if u.path == "/api/basemap":
                 return self._json(basemap_load())
             if u.path == "/api/flows":
@@ -883,6 +950,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/streams":
                 path = self._pcap(q)
                 limit = int(q.get("limit", ["0"])[0] or 0)
+                settings_save({"last_pcap": os.path.abspath(path)})
                 streams = scan(path, limit)
                 return self._json({"pcap": path, "streams": sorted(
                     (stream_summary(s) for s in streams.values()), key=lambda d: -d["bytes"])})
@@ -918,6 +986,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/replay/stop":
                 ENGINE.stop()
                 return self._json({"ok": True})
+            if u.path == "/api/settings":
+                return self._json(settings_save(body))
             if u.path == "/api/basemap":
                 cfg = basemap_save(body)
                 self.__class__.basemap_cfg = cfg

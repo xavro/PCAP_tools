@@ -26,6 +26,7 @@ venv/
 
 # Config locale du fond de carte (URL serveur / token — par poste)
 basemap.json
+pcap_web_settings.json
 basemap_test.png
 
 # OS / IDE

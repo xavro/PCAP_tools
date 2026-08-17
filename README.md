@@ -154,7 +154,10 @@ repliables à gauche :
   `on_packet`) émet **et** alimente l'IHM par WebSocket (serveur RFC 6455 stdlib) :
   `/ws/video` (TS binaire du flux vidéo → mpegts.js, *ce que voit le client*) et
   `/ws/events` (JSON : progression, compteurs par flux, journal, lots CoT/GMTI décodés).
-  Colonne de gauche redimensionnable (poignée, double-clic = largeur par défaut).
+  Colonne de gauche redimensionnable (poignée, double-clic = largeur par défaut), taille du
+  texte A− / A+ (mémorisée). **Parcourir…** ouvre un explorateur côté serveur (dossiers,
+  captures) ; le dernier pcap et les récents sont mémorisés dans `pcap_web_settings.json`
+  (hors dépôt) et rechargés au démarrage.
 - **GMTI 4607 → pistes** : 1. Décoder (extracteur complet ≤ 700 Mo, sinon streaming),
   **inventaire 4607** (segments, champs, plages, classifications, job def, porteur), 2. Tracker
   par **profil** de tuning (defaut, maritime, routier, convoi, personnel, aérien, routier_zone),
