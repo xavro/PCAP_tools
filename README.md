@@ -7,6 +7,21 @@ vidéo STANAG 4609, GMTI STANAG 4607.
 > ⚠️ Les **captures** (`.pcap`, `.pcapng`, médias) et les **sorties générées**
 > (CSV/PNG) sont hors dépôt (cf. `.gitignore`) — certaines pèsent plusieurs Go.
 
+## Vue d'ensemble
+
+| Besoin | Outil | Dépendances |
+|---|---|---|
+| Savoir ce qu'il y a dans une capture (ports, protocoles, flux) | `pcap_analyze.py` | stdlib |
+| Rejouer une capture vers un banc (routage, fan-out, vitesse, boucle, recalage CoT) | `pcap_replay.py` | stdlib |
+| **Tout piloter en cliquant** : analyse, routage/rejeu, GMTI → pistes, inventaire 4607, CoT, vidéo 4609, carte fusionnée | **`pcap_console.py`** (Tkinter) | stdlib ; tracker en lazy (numpy + scipy) ; thème sombre optionnel `sv-ttk` |
+| La même console **dans le navigateur**, avec vidéo H.264 + KLV synchronisés et rejeu « live » | **`pcap_web.py`** — branche [`web-console`](https://github.com/xavro/PCAP_tools/tree/web-console) | stdlib (libs JS vendorées) |
+| Décoder le GMTI STANAG 4607 en plots CSV | `gmti_pcap_to_csv.py`, `prototype_tracker_gmti_v8.1/stanag4607_extract.py` | stdlib |
+| Pister les plots (ID persistant, profils de tuning) | `prototype_tracker_gmti_v8.1/tracker.py`, `track_run.py`, `demo.py` | numpy, scipy (matplotlib pour demo) |
+| Analyser le CoT XML (objets, types, traces) | `cot_extract.py` | stdlib |
+| Inspecter la vidéo STANAG 4609 (TS, PID, KLV MISB 0601, extraction .ts) | `video4609.py` | stdlib |
+| Fond de carte ArcGIS pour les consoles | `arcgis_basemap.py` + `basemap.json` (local) | stdlib |
+| POC CoT / SITAC / Delta Suite (génération, écoute, relais, passerelles) | `cot_*`, `deltasuite_*`, `loadtest.py`… | stdlib |
+
 ## Chaîne GMTI en un coup d'œil
 
 ```
@@ -14,18 +29,25 @@ capture.pcap ──pcap_analyze.py──► quel port ? quel protocole ?
              ──pcap_replay.py───► rejeu vers GeoEvent (temps réel/accéléré)
              ──gmti_pcap_to_csv.py──► plots.csv ──demo.py/tracker.py──► pistes
 
-pcap_console.py ──► interface graphique (analyse + routage + rejeu, en cliquant)
+pcap_console.py ──► interface graphique (analyse + routage + rejeu + pistes + CoT + vidéo)
+pcap_web.py     ──► idem dans le navigateur (+ vidéo synchronisée KLV, rejeu live) — branche web-console
 ```
 
 ## `pcap_console.py` — console graphique (Tkinter, zéro install)
 
-Application desktop à **deux onglets**. Tkinter est fourni avec Python : l'onglet
+Application desktop à **six onglets**. Tkinter est fourni avec Python : l'onglet
 *Rejeu* ne dépend de rien. L'onglet *GMTI → Pistes* charge le tracker
 (numpy + scipy) **en lazy** — s'ils manquent, seul cet onglet est indisponible.
 
 ```bash
 python pcap_console.py
 ```
+
+**Interface sombre** (optionnel) : `pip install sv-ttk` active le thème *Sun Valley*
+(look Windows 11, fond anthracite) ; sans lui, un thème sombre `ttk` intégré prend le
+relais — la console reste « zéro install ». **F2** (ou le bouton ☾/☀ du bandeau)
+bascule sombre ↔ clair. Dans l'onglet CoT, les lignes sont colorées par affiliation
+comme les symboles de la carte (ami cyan, hostile rouge, inconnu jaune).
 
 **Onglet « Vue d'ensemble »** — un clic *Analyser le pcap* liste les
 **protocoles présents et leur port** (GMTI / CoT / vidéo…) ; **double-clic** sur
@@ -37,7 +59,9 @@ analyse automatique → **cocher les flux**, saisir la cible `IP[:port]`,
 **« + client »** (fan-out) → **Start / Stop**, vitesse, boucle, statut live. La
 GUI ne fait qu'appeler `pcap_analyze` et `pcap_replay`.
 
-**Onglet « GMTI → Pistes »** — la chaîne d'exploitation, tout en cliquant :
+**Onglet « GMTI → Pistes »** — **écran partagé** (comme l'onglet CoT) : à gauche
+l'**inventaire 4607** du flux, à droite la **carte du tracker** (plots + pistes).
+La chaîne d'exploitation, tout en cliquant :
 
 1. **Décoder GMTI** → plots MTI. Décodeur **complet** (`stanag4607_extract`,
    hauteur + zone job + porteur + classification) sur pcap classique de taille
@@ -74,7 +98,8 @@ Python), et un **fond de carte raster ArcGIS Server** optionnel (case
 *(Un VectorTileServer ne convient pas : tuiles vectorielles à rendre côté client
 — il faut un MapServer raster / ImageServer.)*
 
-**Onglet « Inventaire 4607 »** — *ce que le vecteur émet réellement* : lance
+**Volet « Inventaire 4607 »** (gauche de l'onglet GMTI) — *ce que le vecteur émet
+réellement* : lance
 `stanag4607_extract` et affiche segments reçus, **présence de chaque champ (%)**,
 plages min/méd/max, **classifications**, **Job Definition** (radar mode,
 incertitudes nominales, bounding area), positions porteur. Outil de validation
@@ -126,6 +151,8 @@ python prototype_tracker_gmti_v8.1/stanag4607_extract.py capture.pcap --rapport 
 |---|---|
 | `pcap_analyze.py`, `pcap_replay.py`, `gmti_pcap_to_csv.py` | **rien** — bibliothèque standard Python 3 (≥ 3.7) |
 | `prototype_tracker_gmti_v8.1/demo.py` + `tracker.py` | `numpy`, `scipy` (≥ 1.13), `matplotlib` (≥ 3.8) — versions compatibles numpy 2.x |
+| `pcap_console.py` | **rien** (Tkinter livré avec Python) ; onglet GMTI → `numpy`, `scipy` ; thème sombre Windows 11 → `sv-ttk` (optionnel) |
+| `pcap_web.py` (branche `web-console`) | **rien** côté serveur ; navigateur moderne (MSE) ; tracker → `numpy`, `scipy` |
 
 ```bash
 pip install scipy matplotlib          # numpy est tiré en dépendance
@@ -312,8 +339,23 @@ présente), déroule le tracker, puis écrit :
 
 ---
 
+## Console web (`pcap_web.py`, branche `web-console`)
+
+Portage de la console dans le navigateur — même backend Python (stdlib) et mêmes modules
+métier, plus : **vidéo H.264 lue dans le navigateur** (mpegts.js, sans ffmpeg) avec les
+**KLV MISB 0601 synchronisés** (< 10 ms), **rejeu UDP live** vu depuis l'IHM (moteur
+unique + WebSocket), tracker par profil, CoT vivant/statique, export GeoJSON, fond de
+carte ArcGIS Online ou MapServer local configurable. Voir le README de la branche
+[`web-console`](https://github.com/xavro/PCAP_tools/tree/web-console) :
+
+```bash
+git checkout web-console
+python pcap_web.py ../Captures/capture.pcap      # ouvre http://127.0.0.1:8765/
+```
+
 ## Autres outils
 
 `cot_*` (génération / écoute / relais / catalogue CoT), `deltasuite_*` (bus Delta
 Suite : sonde, injection, passerelle GeoJSON), `loadtest.py`, `check_seq.py`,
 `patch_cot_jar.py`, `gen_cot_definition.py` — utilitaires du POC CoT/SITAC.
+`pcap_frames.py` : lecteur pcap/pcapng commun ; `mgrs_lite.py` : conversion MGRS légère.
