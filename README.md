@@ -14,7 +14,7 @@ vidéo STANAG 4609, GMTI STANAG 4607.
 | Savoir ce qu'il y a dans une capture (ports, protocoles, flux) | `pcap_analyze.py` | stdlib |
 | Rejouer une capture vers un banc (routage, fan-out, vitesse, boucle, recalage CoT) | `pcap_replay.py` | stdlib |
 | **Tout piloter en cliquant** : analyse, routage/rejeu, GMTI → pistes, inventaire 4607, CoT, vidéo 4609, carte fusionnée | **`pcap_console.py`** (Tkinter) | stdlib ; tracker en lazy (numpy + scipy) ; thème sombre optionnel `sv-ttk` |
-| La même console **dans le navigateur**, avec vidéo H.264 + KLV synchronisés et rejeu « live » | **`pcap_web.py`** — branche [`web-console`](https://github.com/xavro/PCAP_tools/tree/web-console) | stdlib (libs JS vendorées) |
+| La même console **dans le navigateur**, avec vidéo H.264 + KLV synchronisés et rejeu « live » | **`pcap_web.py`** (cette branche `web-console`) | stdlib (libs JS vendorées) |
 | Décoder le GMTI STANAG 4607 en plots CSV | `gmti_pcap_to_csv.py`, `prototype_tracker_gmti_v8.1/stanag4607_extract.py` | stdlib |
 | Pister les plots (ID persistant, profils de tuning) | `prototype_tracker_gmti_v8.1/tracker.py`, `track_run.py`, `demo.py` | numpy, scipy (matplotlib pour demo) |
 | Analyser le CoT XML (objets, types, traces) | `cot_extract.py` | stdlib |
@@ -381,20 +381,6 @@ présente), déroule le tracker, puis écrit :
 *(Nécessite `numpy`, `scipy`, `matplotlib`.)*
 
 ---
-
-## Console web (`pcap_web.py`, branche `web-console`)
-
-Portage de la console dans le navigateur — même backend Python (stdlib) et mêmes modules
-métier, plus : **vidéo H.264 lue dans le navigateur** (mpegts.js, sans ffmpeg) avec les
-**KLV MISB 0601 synchronisés** (< 10 ms), **rejeu UDP live** vu depuis l'IHM (moteur
-unique + WebSocket), tracker par profil, CoT vivant/statique, export GeoJSON, fond de
-carte ArcGIS Online ou MapServer local configurable. Voir le README de la branche
-[`web-console`](https://github.com/xavro/PCAP_tools/tree/web-console) :
-
-```bash
-git checkout web-console
-python pcap_web.py ../Captures/capture.pcap      # ouvre http://127.0.0.1:8765/
-```
 
 ## Autres outils
 
