@@ -147,11 +147,52 @@ def decode_packet_rows(b):
 
 
 def _decode_dwell(b, seg):
+    return _decode_dwell_full(b, seg)[1]
+
+
+def decode_packet_dwells(b):
+    """Comme decode_packet_rows mais renvoie la liste des DWELLS :
+    [{"time","revisit","dwell","sensor":(lat,lon,alt_m|None),"center":(lat,lon)|None,
+      "range_he_km","angle_he_deg","rows":[…]}] — pour dessiner la zone balayée."""
+    out = []
+    n = len(b)
+    off = 0
+    while off + PKT_HDR + 5 <= n:
+        if not (32 <= b[off] < 127 and 32 <= b[off + 1] < 127):
+            break
+        try:
+            pkt_size = _u32(b, off + 2)
+        except Exception:
+            break
+        if pkt_size < PKT_HDR:
+            break
+        limit = min(off + pkt_size, n)
+        idx = off + PKT_HDR
+        try:
+            while idx + 5 <= limit:
+                seg_type = _u8(b, idx)
+                seg_size = _u32(b, idx + 1)
+                if seg_size < 5 or idx + seg_size > limit:
+                    break
+                if seg_type == SEG_DWELL:
+                    d, rows = _decode_dwell_full(b, idx)
+                    out.append({"time": d["time"], "revisit": d["revisit"], "dwell": d["dwell"],
+                                "sensor": (d["slat"], _norm_lon(d["slon"]) if d["slon"] is not None else None, d["salt"]),
+                                "center": (d["clat"], _norm_lon(d["clon"])) if d["clat"] is not None and d["clon"] is not None else None,
+                                "range_he_km": d["range_he"], "angle_he_deg": d["angle_he"], "rows": rows})
+                idx += seg_size
+        except Exception:
+            break
+        off += pkt_size
+    return out
+
+
+def _decode_dwell_full(b, seg):
     mask = b[seg + 5:seg + 13]
     p = seg + 13
     d = {"revisit": None, "dwell": None, "trc": 0, "time": None,
-         "slat": None, "slon": None, "clat": None, "clon": None,
-         "scale_lat": None, "scale_lon": None}
+         "slat": None, "slon": None, "salt": None, "clat": None, "clon": None,
+         "scale_lat": None, "scale_lon": None, "range_he": None, "angle_he": None}
     for bit in range(0, 30):
         if not _mask_bit(mask, bit):
             continue
@@ -161,10 +202,13 @@ def _decode_dwell(b, seg):
         elif bit == 4: d["time"] = _u32(b, p)
         elif bit == 5: d["slat"] = _sa32(b, p)
         elif bit == 6: d["slon"] = _ba32(b, p)
+        elif bit == 7: d["salt"] = _s32(b, p) / 100.0                 # cm -> m
         elif bit == 8: d["scale_lat"] = _sa32(b, p)
         elif bit == 9: d["scale_lon"] = _ba32(b, p)
         elif bit == 22: d["clat"] = _sa32(b, p)
         elif bit == 23: d["clon"] = _ba32(b, p)
+        elif bit == 24: d["range_he"] = _u16(b, p) / 256.0             # B16 : km, 8 bits fractionnaires
+        elif bit == 25: d["angle_he"] = _u16(b, p) * (360.0 / 65536.0)  # BA16 : degrés
         p += FIELD_SIZE[bit]
 
     rows = []
@@ -213,7 +257,7 @@ def _decode_dwell(b, seg):
             "sensor_lat": d["slat"],
             "sensor_lon": _norm_lon(d["slon"]),
         })
-    return rows
+    return d, rows
 
 
 # --------------------------------------------------------------------------

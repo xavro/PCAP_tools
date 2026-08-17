@@ -58,6 +58,7 @@
           <label class="chk"><input type="checkbox" id="gmti-raw" checked> plots bruts</label>
           <label class="chk"><input type="checkbox" id="gmti-smooth"> lissage RTS</label>
           <label class="chk"><input type="checkbox" id="gmti-ovl" checked> zone job / porteur</label>
+          <label class="chk" title="rejeu : zone balayée par chaque dwell (D22-25) avec fondu"><input type="checkbox" id="gmti-dwell" checked> dwells (rejeu)</label>
           <button id="gmti-inv-btn" style="padding:2px 8px">☰ inventaire 4607</button>
         </div>
         <div id="gmti-status" class="mono muted">Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning).</div>
@@ -117,7 +118,7 @@
       </div>
       <div class="legend"><i style="background:#00c8ff"></i>plateforme / trace &nbsp;
         <i style="background:#ffd54f"></i>empreinte capteur &nbsp; <i style="background:#ff5252"></i>centre image &nbsp;
-        <i style="background:#7cff6b;border-radius:0"></i>plots GMTI &nbsp; <i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</div>
+        <i style="background:#7cff6b;border-radius:0"></i>plots GMTI &nbsp; <i style="background:transparent;border:1px solid #7cff6b;border-radius:0"></i>dwell &nbsp; <i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</div>
     </div>
     <div id="video-wrap">
       <video id="video" controls muted playsinline></video>

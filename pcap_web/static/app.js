@@ -79,9 +79,24 @@
   const gmti = { stats: { pkts: 0, plots: 0, cls: {} }, dots: [] };
   const gmtiSensor = L.circleMarker([0, 0], { radius: 6, color: "#7cff6b", fillColor: "#7cff6b", fillOpacity: .9, weight: 1, renderer: canvasR });
   gmtiSensor.bindTooltip("capteur GMTI", { direction: "top" });
-  const GMTI_MAX = 6000;
+  const GMTI_MAX = 6000, DWELL_KEEP = 12;
+  gmti.dwells = [];                                    // polygones des dernières dwells (fondu)
+  const dwellLine = L.polyline([], { color: "#7cff6b", weight: 1, dashArray: "3 5", opacity: .7, renderer: canvasR });
   function onGmtiBatch(b) {
-    gmti.stats.pkts = b.total_pkts; gmti.stats.plots = b.total_plots;
+    gmti.stats.pkts = b.total_pkts; gmti.stats.plots = b.total_plots; gmti.stats.dwells = b.total_dwells || 0;
+    if ($("gmti-dwell").checked && b.dwells && b.dwells.length) {
+      b.dwells.forEach(d => {
+        let ly;
+        if (d.poly) ly = L.polygon(d.poly, { color: "#7cff6b", weight: 1.2, fillColor: "#7cff6b", fillOpacity: .10, opacity: .9, renderer: canvasR });
+        else ly = L.circleMarker(d.center, { radius: 5, color: "#7cff6b", weight: 1, fill: false, renderer: canvasR });
+        ly.addTo(lyGmti); ly.bindTooltip(`dwell ${d.dwell != null ? d.dwell : ""} · revisit ${d.revisit != null ? d.revisit : ""} · ${d.n} cible(s)` +
+          (d.range_he_km != null ? ` · ±${d.range_he_km.toFixed(2)} km / ±${(d.angle_he_deg || 0).toFixed(2)}°` : ""), { sticky: true });
+        gmti.dwells.push(ly);
+        if (b.sensor && d.center) { dwellLine.setLatLngs([b.sensor, d.center]); if (!dwellLine._map) dwellLine.addTo(lyGmti); }
+      });
+      while (gmti.dwells.length > DWELL_KEEP) lyGmti.removeLayer(gmti.dwells.shift());
+      gmti.dwells.forEach((ly, i) => { const k = (i + 1) / gmti.dwells.length; ly.setStyle({ opacity: .25 + .65 * k, fillOpacity: ly instanceof L.Polygon ? .03 + .10 * k : 0 }); });
+    }
     b.plots.forEach(p => {
       const v = p[2] || 0, col = v > 0 ? "#7cff6b" : "#ffb347";                    // signe de la vitesse radiale
       const d = L.circleMarker([p[0], p[1]], { radius: 2, color: col, fillColor: col, fillOpacity: .9, weight: 0, renderer: canvasR }).addTo(lyGmti);
@@ -90,11 +105,11 @@
     while (gmti.dots.length > GMTI_MAX) lyGmti.removeLayer(gmti.dots.shift());
     if (b.sensor && b.sensor[0] != null) { gmtiSensor.setLatLng(b.sensor); if (!gmtiSensor._map) gmtiSensor.addTo(lyGmti); }
     const cls = Object.entries(gmti.stats.cls).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `cls ${k}: <b>${v}</b>`).join(" · ");
-    $("gmti-body").innerHTML = `paquets 4607 <b>${gmti.stats.pkts}</b> · plots <b>${gmti.stats.plots}</b> (affichés ${gmti.dots.length}) · t=<b>${b.t.toFixed(1)}</b> s<br>` +
+    $("gmti-body").innerHTML = `paquets 4607 <b>${gmti.stats.pkts}</b> · dwells <b>${gmti.stats.dwells}</b> · plots <b>${gmti.stats.plots}</b> (affichés ${gmti.dots.length}) · t=<b>${b.t.toFixed(1)}</b> s<br>` +
       (b.sensor ? `capteur <b>${b.sensor[0].toFixed(4)} ${b.sensor[1].toFixed(4)}</b><br>` : "") + cls;
     $("gmti-sum").textContent = `${gmti.stats.plots} plots`;
   }
-  function resetGmti() { gmti.dots.forEach(d => lyGmti.removeLayer(d)); gmti.dots = []; gmti.stats = { pkts: 0, plots: 0, cls: {} }; if (gmtiSensor._map) lyGmti.removeLayer(gmtiSensor); }
+  function resetGmti() { gmti.dots.forEach(d => lyGmti.removeLayer(d)); gmti.dots = []; gmti.dwells.forEach(d => lyGmti.removeLayer(d)); gmti.dwells = []; if (dwellLine._map) lyGmti.removeLayer(dwellLine); gmti.stats = { pkts: 0, plots: 0, dwells: 0, cls: {} }; if (gmtiSensor._map) lyGmti.removeLayer(gmtiSensor); }
   let fitOnce = false;
 
   // ── Analyse statique GMTI : décodage + tracker (profil) ─────────────────────

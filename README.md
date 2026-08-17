@@ -162,7 +162,9 @@ repliables à gauche :
   **inventaire 4607** (segments, champs, plages, classifications, job def, porteur), 2. Tracker
   par **profil** de tuning (defaut, maritime, routier, convoi, personnel, aérien, routier_zone),
   pistes colorées (état / aérien / rotateur), plots bruts, lissage RTS, zone job, trajet porteur.
-  En rejeu : plots 4607 au fil de l'eau (couche canvas, capteur, classes).
+  En rejeu (temps réel, même cadence que l'émission UDP) : plots 4607 au fil de l'eau (couche
+  canvas, capteur, classes) et **zone balayée de chaque dwell** (secteur capteur → centre,
+  ± étendue distance/angle D24/D25, fondu des dernières dwells, ligne capteur → centre).
 - **CoT** : analyse statique (`cot_extract`) — objets colorés par affiliation MIL-STD-2525,
   traces par uid, tableau, inventaire des types, **XML du dernier event** au clic ; en rejeu :
   objets/traces vivants (fraîcheur), même code couleur.

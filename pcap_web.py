@@ -47,6 +47,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import queue
 import socket
@@ -661,17 +662,67 @@ def decode_cot(pl):
             "time": el.get("time"), "stale": el.get("stale"), "how": el.get("how")}
 
 
+def _dest(lat, lon, bearing_deg, dist_m):
+    """Point à `dist_m` mètres dans la direction `bearing_deg` (sphère, R = 6371 km)."""
+    R = 6371000.0
+    la1, lo1, br = math.radians(lat), math.radians(lon), math.radians(bearing_deg)
+    dr = dist_m / R
+    la2 = math.asin(math.sin(la1) * math.cos(dr) + math.cos(la1) * math.sin(dr) * math.cos(br))
+    lo2 = lo1 + math.atan2(math.sin(br) * math.sin(dr) * math.cos(la1), math.cos(dr) - math.sin(la1) * math.sin(la2))
+    return [round(math.degrees(la2), 6), round(math.degrees(lo2), 6)]
+
+
+def _dist_bearing(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    d = 2 * R * math.asin(math.sqrt(a))
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return d, (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def dwell_area(sensor, center, range_he_km, angle_he_deg):
+    """Polygone (secteur annulaire) de la zone de dwell : centre C vu du capteur S à
+    distance R et gisement θ ; coins à R ± ΔR et θ ± Δθ (D24/D25). None si incomplet."""
+    if not sensor or not center or sensor[0] is None or center[0] is None:
+        return None
+    if range_he_km is None or angle_he_deg is None or range_he_km <= 0:
+        return None
+    R, th = _dist_bearing(sensor[0], sensor[1], center[0], center[1])
+    dr = range_he_km * 1000.0
+    r1, r2 = max(0.0, R - dr), R + dr
+    a1, a2 = th - angle_he_deg, th + angle_he_deg
+    poly = [_dest(sensor[0], sensor[1], a1, r1)]
+    for k in range(9):                                       # arc extérieur
+        poly.append(_dest(sensor[0], sensor[1], a1 + (a2 - a1) * k / 8, r2))
+    poly.append(_dest(sensor[0], sensor[1], a2, r1))
+    for k in range(9):                                       # arc intérieur (retour)
+        poly.append(_dest(sensor[0], sensor[1], a2 - (a2 - a1) * k / 8, r1))
+    return poly
+
+
 def decode_gmti(pl):
-    """Paquet(s) 4607 → (plots [[lat, lon, vel_los_cms, snr, cls]…], sensor [lat, lon] | None)."""
+    """Paquet(s) 4607 → (plots [[lat, lon, vel_los_cms, snr, cls]…], sensor [lat, lon] | None,
+    dwells [{"center":[lat,lon], "poly":[[lat,lon]…]|None, "n":n_targets, "range_he_km", "angle_he_deg"}])."""
     if gmti_pcap_to_csv is None or not gmti_pcap_to_csv.looks_like_4607(pl):
         return None
-    rows = gmti_pcap_to_csv.decode_packet_rows(pl)
-    if not rows:
-        return [], None
-    plots = [[round(r["lat"], 6), round(r["lon"], 6), r["vel_los_cms"], r["snr_db"], r["classification"]] for r in rows]
-    r0 = rows[-1]
-    sensor = [r0["sensor_lat"], r0["sensor_lon"]] if r0["sensor_lat"] is not None else None
-    return plots, sensor
+    dwells = gmti_pcap_to_csv.decode_packet_dwells(pl)
+    plots, sensor, dw = [], None, []
+    for d in dwells:
+        for r in d["rows"]:
+            plots.append([round(r["lat"], 6), round(r["lon"], 6), r["vel_los_cms"], r["snr_db"], r["classification"]])
+        sl = d["sensor"]
+        if sl and sl[0] is not None and sl[1] is not None:
+            sensor = [round(sl[0], 6), round(sl[1], 6)]
+        c = d["center"]
+        if c and c[0] is not None:
+            dw.append({"center": [round(c[0], 6), round(c[1], 6)], "n": len(d["rows"]),
+                       "range_he_km": d["range_he_km"], "angle_he_deg": d["angle_he_deg"],
+                       "poly": dwell_area(sensor, c, d["range_he_km"], d["angle_he_deg"]),
+                       "t_ms": d["time"], "revisit": d["revisit"], "dwell": d["dwell"]})
+    return plots, sensor, dw
 
 
 class ReplayEngine:
@@ -733,9 +784,9 @@ class ReplayEngine:
 
         t_rel = [0.0]
 
-        cot_batch, gmti_batch = {}, {"plots": [], "sensor": None, "pkts": 0}
+        cot_batch, gmti_batch = {}, {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
         app_batch_at = [time.perf_counter()]
-        totals = {"cot": 0, "gmti_plots": 0, "gmti_pkts": 0}
+        totals = {"cot": 0, "gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0}
 
         def flush_app(force=False):
             now = time.perf_counter()
@@ -751,8 +802,10 @@ class ReplayEngine:
                 if len(plots) > 4000:                          # décimation d'affichage
                     plots = plots[::len(plots) // 4000 + 1]
                 EVENTS.publish({"type": "gmti", "t": round(t_rel[0], 3), "plots": plots, "sensor": gmti_batch["sensor"],
-                                "pkts": gmti_batch["pkts"], "total_plots": totals["gmti_plots"], "total_pkts": totals["gmti_pkts"]})
-                gmti_batch.update({"plots": [], "sensor": None, "pkts": 0})
+                                "dwells": gmti_batch["dwells"][-40:], "pkts": gmti_batch["pkts"],
+                                "total_plots": totals["gmti_plots"], "total_pkts": totals["gmti_pkts"],
+                                "total_dwells": totals["gmti_dwells"]})
+                gmti_batch.update({"plots": [], "sensor": None, "pkts": 0, "dwells": []})
 
         def on_packet(ts, proto, dport, pl, tgts):
             if t_cap0[0] is None:
@@ -776,11 +829,12 @@ class ReplayEngine:
             elif len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
                 g = decode_gmti(pl)
                 if g is not None:
-                    plots, sensor = g
+                    plots, sensor, dw = g
                     gmti_batch["plots"].extend(plots); gmti_batch["pkts"] += 1
+                    gmti_batch["dwells"].extend(dw)
                     if sensor:
                         gmti_batch["sensor"] = sensor
-                    totals["gmti_plots"] += len(plots); totals["gmti_pkts"] += 1
+                    totals["gmti_plots"] += len(plots); totals["gmti_pkts"] += 1; totals["gmti_dwells"] += len(dw)
             flush_app()
             publish()
 
