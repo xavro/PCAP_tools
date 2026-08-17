@@ -36,8 +36,6 @@ API :
   GET/POST /api/settings        réglages (dernier pcap, récents, IHM) — pcap_web_settings.json
   GET /api/browse?dir=          explorateur de fichiers côté serveur (dossiers + captures)
   GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export dynamique)
-  GET /tile?z=&y=&x=            tuile (proxy ArcGIS MapServer tuilé / cache Web Mercator)
-  GET /vts/style.json, /vts/*   proxy VectorTileServer (style Esri réécrit, tuiles PBF, sprites, glyphes)
   GET /api/gmti/decode?pcap=    décodage GMTI (extracteur complet | streaming) + inventaire 4607
   GET /api/gmti/track?pcap=&profile=  tracker (profil) → pistes / plots bruts / zone job / porteur (lat/lon)
   GET /api/cot/scan?pcap=&filter=     analyse CoT statique (objets, traces, inventaire des types)
@@ -1018,10 +1016,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._video(self._stream(q))
             if u.path == "/live.ts":
                 return self._live(self._stream(q), q)
-            if u.path == "/tile":
-                return self._tile(q)
-            if u.path.startswith("/vts/"):
-                return self._vts(u.path[len("/vts/"):], q)
             if u.path == "/basemap":
                 return self._basemap(q)
             self._err(404, "route inconnue")
@@ -1189,113 +1183,6 @@ class Handler(BaseHTTPRequestHandler):
             if not loop:
                 break
         self.wfile.write(b"0\r\n\r\n")
-
-    _TILE_CACHE = {}
-    _TILE_LOCK = threading.Lock()
-
-    # ── Proxy VectorTileServer (tuiles vectorielles PBF + style Esri/MapLibre) ────
-    @staticmethod
-    def _fetch(url, insecure=True, timeout=20):
-        """GET générique (octets, content-type) ; certificat auto-signé accepté si `insecure`."""
-        import ssl
-        ctx = None
-        if insecure and url.lower().startswith("https"):
-            ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={"User-Agent": "pcap_web"})
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-            return r.read(), r.headers.get("Content-Type", "application/octet-stream")
-
-    def _vts_root(self, cfg):
-        u = (cfg.get("url") or "").rstrip("/")
-        i = u.find("/VectorTileServer")
-        return u[:i + len("/VectorTileServer")] if i >= 0 else u
-
-    def _vts(self, sub, q):
-        cfg = basemap_load()
-        root = self._vts_root(cfg)
-        if not root:
-            return self._err(503, "VectorTileServer non configuré")
-        tok = ("?token=" + urllib.parse.quote(cfg["token"])) if cfg.get("token") else ""
-        base = "http://%s/vts/" % self.headers.get("Host", "127.0.0.1")
-        try:
-            if sub == "style.json":
-                style_raw, _ = self._fetch(root + "/resources/styles/root.json" + tok, cfg.get("insecure", True))
-                style = json.loads(style_raw)
-                svc = {}
-                try:
-                    svc = json.loads(self._fetch(root + ("?f=json&token=%s" % urllib.parse.quote(cfg["token"]) if cfg.get("token") else "?f=json"),
-                                                 cfg.get("insecure", True))[0])
-                except Exception:
-                    pass
-                lods = (svc.get("tileInfo") or {}).get("lods") or []
-                maxzoom = max((l.get("level", 0) for l in lods), default=22)
-                for name, src in (style.get("sources") or {}).items():
-                    if src.get("type") == "vector":
-                        src.pop("url", None)
-                        src["tiles"] = [base + "tile/{z}/{y}/{x}.pbf"]
-                        src.setdefault("minzoom", 0); src["maxzoom"] = min(int(src.get("maxzoom", maxzoom)), maxzoom)
-                if "sprite" in style:
-                    style["sprite"] = base + "resources/sprites/sprite"
-                if "glyphs" in style:
-                    style["glyphs"] = base + "resources/fonts/{fontstack}/{range}.pbf"
-                return self._json(style)
-            key = ("vts", root, sub)
-            with self._TILE_LOCK:
-                hit = self._TILE_CACHE.get(key)
-            if hit is None:
-                data, ctype = self._fetch(root + "/" + sub + tok, cfg.get("insecure", True))
-                if sub.endswith(".pbf"):
-                    ctype = "application/x-protobuf"
-                elif sub.endswith(".json"):
-                    ctype = "application/json"
-                elif sub.endswith(".png"):
-                    ctype = "image/png"
-                hit = (data, ctype)
-                with self._TILE_LOCK:
-                    if len(self._TILE_CACHE) > 6000:
-                        self._TILE_CACHE.clear()
-                    self._TILE_CACHE[key] = hit
-            data, ctype = hit
-        except urllib.error.HTTPError as e:
-            self.send_response(e.code); self.send_header("Content-Length", "0"); self.end_headers(); return
-        except Exception as e:
-            sys.stderr.write("[web] VTS %s : %r\n" % (sub, e))
-            return self._err(502, "VectorTileServer injoignable : %s" % e)
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "max-age=86400")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _tile(self, q):
-        """Proxy de tuiles ArcGIS Server (cache Web Mercator) : /tile?z=&y=&x= →
-        <MapServer>/tile/{z}/{y}/{x}[?token=] ; certificat auto-signé accepté ; LRU mémoire."""
-        cfg = basemap_load()
-        if not (arcgis_basemap and cfg.get("url")):
-            return self._err(503, "MapServer non configuré")
-        z, y, x = int(q["z"][0]), int(q["y"][0]), int(q["x"][0])
-        key = (cfg["url"], z, y, x)
-        with self._TILE_LOCK:
-            data = self._TILE_CACHE.get(key)
-        if data is None:
-            url = "%s/tile/%d/%d/%d" % (arcgis_basemap.mapserver_root(cfg["url"]).rstrip("/"), z, y, x)
-            if cfg.get("token"):
-                url += "?token=" + urllib.parse.quote(cfg["token"])
-            try:
-                data = arcgis_basemap.fetch_png(url, insecure=cfg.get("insecure", True))
-            except Exception as e:
-                return self._err(502, "tuile injoignable : %s" % e)
-            with self._TILE_LOCK:
-                if len(self._TILE_CACHE) > 4000:
-                    self._TILE_CACHE.clear()
-                self._TILE_CACHE[key] = data
-        self.send_response(200)
-        self.send_header("Content-Type", "image/png" if data[:8] == bytes.fromhex("89504e470d0a1a0a") else "image/jpeg")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "max-age=86400")
-        self.end_headers()
-        self.wfile.write(data)
 
     def _basemap(self, q):
         cfg = basemap_load()

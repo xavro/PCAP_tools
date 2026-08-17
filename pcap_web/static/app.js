@@ -246,15 +246,6 @@
       state.bmLayer = L.tileLayer(AGOL.replace("{layer}", cfg.layer || "World_Imagery"), { maxZoom: 19, attribution: "Esri, Maxar, Earthstar Geographics — ArcGIS Online" }).addTo(map);
       state.bmLayer.on("tileerror", () => status("tuiles ArcGIS Online injoignables (internet ?)", true));
       state.bmLayer.bringToBack();
-    } else if (cfg.provider === "vectortiles") {
-      if (!window.maplibregl || !L.maplibreGL) return status("MapLibre indisponible (WebGL ?)", true);
-      state.bmLayer = L.maplibreGL({ style: `/vts/style.json?_=${Date.now()}`, attribution: "ArcGIS VectorTileServer — style Esri (MapLibre)", interactive: false }).addTo(map);
-      try { state.bmLayer.getMaplibreMap().on("error", e => { if (e && e.error && /style|Failed to fetch|403|404/i.test(String(e.error.message))) status("tuiles vectorielles : " + e.error.message + " — vérifier ⚙ (URL, token, certificat)", true); }); } catch (e) {}
-      state.bmLayer.bringToBack && state.bmLayer.bringToBack();
-    } else if (cfg.provider === "mapserver_tiles") {
-      state.bmLayer = L.tileLayer("/tile?z={z}&y={y}&x={x}", { maxZoom: 22, maxNativeZoom: 19, attribution: "ArcGIS Server (tuiles)" }).addTo(map);
-      state.bmLayer.on("tileerror", () => status("tuiles ArcGIS Server injoignables — vérifier ⚙ (URL, token, certificat)", true));
-      state.bmLayer.bringToBack();
     } else if (cfg.provider === "mapserver") refreshExport();
   }
   function refreshExport() {
@@ -281,7 +272,7 @@
     const c = state.bmCfg || {}; $("bm-provider").value = c.provider || "arcgis_online"; $("bm-layer").value = c.layer || "World_Imagery";
     $("bm-url").value = c.url || ""; $("bm-token").value = c.token || ""; $("bm-insecure").checked = c.insecure !== false; bmDialogRows();
   }
-  function bmDialogRows() { const p = $("bm-provider").value; $("bm-layer-row").hidden = p !== "arcgis_online"; $("bm-ms-rows").hidden = !(p === "mapserver" || p === "mapserver_tiles" || p === "vectortiles"); }
+  function bmDialogRows() { const p = $("bm-provider").value; $("bm-layer-row").hidden = p !== "arcgis_online"; $("bm-ms-rows").hidden = p !== "mapserver"; }
   $("bm-provider").addEventListener("change", bmDialogRows);
   $("btn-bm").addEventListener("click", () => { bmDialogFill(); $("bm-dlg").hidden = !$("bm-dlg").hidden; });
   $("bm-close").addEventListener("click", () => { $("bm-dlg").hidden = true; });
@@ -578,6 +569,48 @@
     document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
   });
   gutter.addEventListener("dblclick", () => { setLeft(420); map.invalidateSize(); });
+
+  // ── Coordonnées au survol (MGRS + lat/lon) ─────────────────────────────────
+  let lastMgrs = "";
+  map.on("mousemove", e => {
+    const m = MGRS.toMGRS(e.latlng.lat, e.latlng.lng, 5);
+    lastMgrs = m || ""; $("c-mgrs").textContent = m ? m.replace(/^(\d+[A-Z])([A-Z]{2})(\d{5})(\d{5})$/, "$1 $2 $3 $4") : "hors zone UTM";
+    $("c-ll").textContent = `${e.latlng.lat.toFixed(5)}  ${e.latlng.lng.toFixed(5)}`;
+  });
+  $("coords").addEventListener("click", () => { if (lastMgrs && navigator.clipboard) navigator.clipboard.writeText(lastMgrs).then(() => status("MGRS copié : " + lastMgrs)); });
+
+  // ── Mesure de distance (clics successifs, double-clic / Échap = fin) ────────
+  const meas = { on: false, pts: [], line: null, tmp: null, marks: [], done: [] };
+  const fmtDist = d => d >= 1000 ? (d / 1000).toFixed(d >= 10000 ? 1 : 2) + " km" : d.toFixed(0) + " m";
+  function measStart() {
+    meas.on = true; meas.pts = []; $("btn-measure").classList.add("on"); $("map").classList.add("measuring"); map.doubleClickZoom.disable();
+    meas.line = L.polyline([], { color: "#ffd54f", weight: 2, dashArray: "6 4" }).addTo(map);
+    meas.tmp = L.polyline([], { color: "#ffd54f", weight: 1, dashArray: "2 6", opacity: .7 }).addTo(map);
+    status("mesure : cliquer les points, double-clic ou Échap pour terminer");
+  }
+  function measStop() {
+    if (!meas.on) return; meas.on = false; $("btn-measure").classList.remove("on"); $("map").classList.remove("measuring"); map.doubleClickZoom.enable();
+    if (meas.tmp) { meas.tmp.remove(); meas.tmp = null; }
+    if (meas.pts.length < 2 && meas.line) meas.line.remove(); else if (meas.line) meas.done.push(meas.line);
+    meas.line = null;
+  }
+  function measClear() { measStop(); meas.done.forEach(l => l.remove()); meas.done = []; meas.marks.forEach(m => m.remove()); meas.marks = []; }
+  function measTotal(pts) { let t = 0; for (let i = 1; i < pts.length; i++) t += MGRS.distBearing(pts[i - 1].lat, pts[i - 1].lng, pts[i].lat, pts[i].lng).d; return t; }
+  map.on("click", e => {
+    if (!meas.on) return;
+    const p = e.latlng, prev = meas.pts[meas.pts.length - 1];
+    meas.pts.push(p); meas.line.setLatLngs(meas.pts);
+    let txt = "départ";
+    if (prev) { const db = MGRS.distBearing(prev.lat, prev.lng, p.lat, p.lng); txt = `${fmtDist(db.d)} · ${db.bearing.toFixed(0)}°` + (meas.pts.length > 2 ? ` · Σ ${fmtDist(measTotal(meas.pts))}` : ""); }
+    const mk = L.circleMarker(p, { radius: 4, color: "#ffd54f", fillColor: "#ffd54f", fillOpacity: 1, weight: 1 }).addTo(map);
+    mk.bindTooltip(txt, { permanent: true, direction: "right", offset: [6, 0], className: "measure-lbl" }); meas.marks.push(mk);
+  });
+  map.on("mousemove", e => { if (meas.on && meas.pts.length) { const prev = meas.pts[meas.pts.length - 1]; meas.tmp.setLatLngs([prev, e.latlng]);
+    const db = MGRS.distBearing(prev.lat, prev.lng, e.latlng.lat, e.latlng.lng); $("c-ll").textContent += `   ↔ ${fmtDist(db.d)} · ${db.bearing.toFixed(0)}°`; } });
+  map.on("dblclick", () => { if (meas.on) measStop(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && meas.on) measStop(); });
+  $("btn-measure").addEventListener("click", () => meas.on ? measStop() : measStart());
+  $("btn-measure-clear").addEventListener("click", measClear);
 
   // ── Taille du texte des panneaux (A− / A+, mémorisée) ─────────────────────────
   let panelZoom = parseFloat(localStorage.getItem("panelZoom") || "1");

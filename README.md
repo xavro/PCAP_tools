@@ -137,7 +137,7 @@ Les trois décodeurs marchent aussi en ligne de commande :
 Portage complet de la console dans le navigateur, avec en plus la vidéo synchronisée et
 le rejeu « live ». **Aucune dépendance** côté serveur (stdlib ; le tracker charge numpy +
 scipy en lazy comme la console Tkinter) ; libs JS vendorées dans `pcap_web/static`
-(`mpegts.js` 1.8.2 Apache-2.0, `leaflet` 1.9.4 BSD-2, `maplibre-gl` 4.7.1 BSD-3 + plugin Leaflet) → hors ligne sauf tuiles ArcGIS Online.
+(`mpegts.js` 1.8.2 Apache-2.0, `leaflet` 1.9.4 BSD-2) → hors ligne sauf tuiles ArcGIS Online.
 
 ```bash
 python pcap_web.py ../Captures/capture.pcap [--limit N] [--port 8765]   # ouvre http://127.0.0.1:8765/
@@ -178,11 +178,11 @@ selon l'action (résumé vivant dans chaque onglet) :
 - **Fusion / export** : toutes les sources sur la même carte ; bouton **GeoJSON fusion**
   (pistes GMTI LineString, objets CoT Point + traces, trace capteur vidéo — WGS84).
 - **Fond de carte** (⚙) : ArcGIS Online (internet, défaut : imagerie / topo / rues / gris
-  foncé) ; **tuiles vectorielles d'un ArcGIS Server / Enterprise** (*expérimental* — `…/VectorTileServer`, ex.
-  les « Open Vector Basemap » du portail : style Esri rendu par MapLibre GL — vendoré —, style /
-  sprites / glyphes / tuiles PBF via le proxy `/vts/*`, URL réécrites, token et certificat
-  auto-signé gérés) ; **cache raster** (`…/MapServer` tuilé, proxy `/tile`) ; ou MapServer
-  dynamique via `/basemap` (export EPSG:3857) ; enregistré dans `basemap.json` (hors dépôt).
+  foncé) ou MapServer ArcGIS local via proxy (`/basemap`, export EPSG:3857, token, certificat
+  auto-signé), enregistré dans `basemap.json` (hors dépôt).
+- **Outils carte** : position du pointeur en **MGRS** (port JS de `mgrs_lite`, clic = copie) et
+  lat/lon ; **mesure de distance** (📏 : clics successifs, distance et gisement par segment,
+  cumul, double-clic / Échap pour terminer, ✕ pour effacer).
 
 Notes : Chrome gèle le média d'un onglet masqué/occulté — garder l'onglet visible pendant
 un rejeu live ; H.265 n'est pas lu en MSE par tous les navigateurs (les flux ISRBOX sont H.264).

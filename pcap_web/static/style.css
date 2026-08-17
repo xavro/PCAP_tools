@@ -186,5 +186,13 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 #inv, #gmti, #cot { flex: 1 1 auto !important; min-height: 0; }   /* onglets : prendre toute la hauteur (écrase les anciennes règles de panneaux) */
 #stream { display: none; }                                         /* choix vidéo : par clic dans l'onglet FMV */
 
-.leaflet-gl-layer, .maplibregl-canvas { pointer-events: none; }   /* couche vectorielle en fond : la carte Leaflet garde la souris */
-.leaflet-gl-layer { position: absolute; }   /* conteneur MapLibre positionné par le plugin dans le tilePane */
+
+/* ── coordonnées au survol + mesure ── */
+.coords { position: absolute; z-index: 800; right: 10px; bottom: 24px; background: rgba(14,18,22,.85); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 8px; font-family: var(--mono); font-size: 13px; color: var(--muted); cursor: copy; text-align: right; }
+.coords b { color: var(--fg); font-weight: normal; letter-spacing: .04em; }
+.coords span { display: block; font-size: 11px; }
+#map.measuring { cursor: crosshair; }
+#btn-measure.on { color: var(--accent); border-color: var(--accent); }
+.measure-lbl { background: rgba(0,0,0,.65); border: 0; color: #ffd54f; font: 12px Consolas, monospace; padding: 1px 4px; border-radius: 3px; white-space: nowrap; }
+.measure-lbl::before { display: none; }

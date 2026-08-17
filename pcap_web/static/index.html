@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <title>Console pcap — web</title>
 <link rel="stylesheet" href="/static/leaflet.css">
-<link rel="stylesheet" href="/static/maplibre-gl.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -96,13 +95,12 @@
         <label class="chk"><input type="checkbox" id="fulltrack" checked> trace complète</label>
         <div style="display:flex;gap:4px"><button id="btn-fit" style="padding:2px 8px;flex:1">Ajuster la vue</button><button id="btn-bm" title="configurer le fond de carte" style="padding:2px 8px">⚙</button></div>
         <div style="display:flex;gap:4px"><button id="btn-geojson" style="padding:2px 8px;flex:1" title="pistes GMTI + objets/traces CoT + trace capteur vidéo (WGS84)">⤓ GeoJSON fusion</button><button id="btn-ts" style="padding:2px 8px" title="télécharger le TS du flux vidéo sélectionné">⤓ .ts</button></div>
+        <div style="display:flex;gap:4px"><button id="btn-measure" style="padding:2px 8px;flex:1" title="mesurer : cliquer les points sur la carte, double-clic ou Échap pour terminer">📏 Mesurer</button><button id="btn-measure-clear" style="padding:2px 8px" title="effacer les mesures">✕</button></div>
       </div>
       <div class="bm-dlg" id="bm-dlg" hidden>
         <h3>Fond de carte</h3>
         <label>Source <select id="bm-provider">
           <option value="arcgis_online">ArcGIS Online (internet)</option>
-          <option value="vectortiles">Tuiles vectorielles ArcGIS — VectorTileServer (expérimental, via proxy)</option>
-          <option value="mapserver_tiles">Tuiles ArcGIS Server — Tile Layer raster / cache (réseau local, via proxy)</option>
           <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
           <option value="none">Aucun</option></select></label>
         <label id="bm-layer-row">Couche <select id="bm-layer">
@@ -111,13 +109,13 @@
           <option value="World_Street_Map">Rues</option>
           <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
         <div id="bm-ms-rows">
-          <label>URL du service <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/Hosted/Open_Vector_Basemap/VectorTileServer"></label>
-          <div class="muted" style="font-size:11px">Page de l'item du portail → « URL » : …/VectorTileServer (tuiles vectorielles, style Esri rendu par MapLibre) ou …/MapServer (cache raster / export). Web Mercator.</div>
+          <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
           <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
           <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
         </div>
         <div class="row"><button id="bm-save" class="accent">Appliquer &amp; enregistrer</button><button id="bm-close">Fermer</button><span id="bm-msg" class="muted"></span></div>
       </div>
+      <div class="coords" id="coords" title="position du pointeur — cliquer pour copier le MGRS"><b id="c-mgrs">—</b><span id="c-ll"></span></div>
       <div class="legend" title="cliquer une entrée pour masquer / afficher la couche">
         <span data-ly="trace"><i style="background:#00c8ff"></i>plateforme / trace</span>
         <span data-ly="foot"><i style="background:#ffd54f"></i>empreinte capteur</span>
@@ -155,8 +153,7 @@
   </footer>
 </div>
 <script src="/static/leaflet.js"></script>
-<script src="/static/maplibre-gl.js"></script>
-<script src="/static/leaflet-maplibre-gl.js"></script>
+<script src="/static/mgrs_lite.js"></script>
 <script src="/static/mpegts.js"></script>
 <script src="/static/klv0601.js"></script>
 <script src="/static/app.js"></script>
