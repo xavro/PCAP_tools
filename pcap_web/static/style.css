@@ -196,3 +196,20 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 #btn-measure.on { color: var(--accent); border-color: var(--accent); }
 .measure-lbl { background: rgba(0,0,0,.65); border: 0; color: #ffd54f; font: 12px Consolas, monospace; padding: 1px 4px; border-radius: 3px; white-space: nowrap; }
 .measure-lbl::before { display: none; }
+
+/* ── éditeur de profil GMTI + métriques ── */
+#gmti-editor { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 4px 0; background: var(--bg); }
+#gmti-editor .grp { margin: 4px 0; }
+#gmti-editor .grp h4 { margin: 4px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: normal; }
+#gmti-editor .prm { display: grid; grid-template-columns: 1fr 90px 44px; gap: 2px 8px; align-items: center; font-family: var(--mono); font-size: 12px; }
+#gmti-editor .prm label { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+#gmti-editor .prm input[type=text], #gmti-editor .prm input[type=number] { padding: 1px 6px; font-family: var(--mono); font-size: 12px; text-align: right; }
+#gmti-editor .prm .u { color: var(--muted); font-size: 11px; }
+#gmti-editor .prm .mod { color: var(--warn); border-color: var(--warn); }
+#gmti-metrics { margin-top: 4px; }
+table.met { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+table.met th, table.met td { padding: 1px 6px; border-bottom: 1px solid #1f262f; text-align: right; white-space: nowrap; }
+table.met th { color: var(--muted); font-weight: normal; }
+table.met td:first-child, table.met th:first-child { text-align: left; color: var(--muted); }
+table.met td.a { color: var(--accent); } table.met td.b { color: #ff5cf0; }
+table.met tr.better-a td.a, table.met tr.better-b td.b { font-weight: bold; }

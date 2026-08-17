@@ -37,7 +37,9 @@ API :
   GET /api/browse?dir=          explorateur de fichiers côté serveur (dossiers + captures)
   GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export dynamique)
   GET /api/gmti/decode?pcap=    décodage GMTI (extracteur complet | streaming) + inventaire 4607
-  GET /api/gmti/track?pcap=&profile=  tracker (profil) → pistes / plots bruts / zone job / porteur (lat/lon)
+  GET /api/gmti/track?pcap=&profile=&overrides={json}  tracker (profil + surcharges, noms Java) → pistes,
+                                plots bruts, zone job, porteur, contacts (fusion), métriques, config effective
+  GET/POST /api/gmti/profiles   profils du tracker (source unique gmti_profiles.json, partagée avec le Java)
   GET /api/cot/scan?pcap=&filter=     analyse CoT statique (objets, traces, inventaire des types)
   GET /api/cot/event?pcap=&uid=       dernier event XML d'un uid
   GET /api/fused/export.geojson?pcap=&profile=  fusion GMTI + CoT + capteur vidéo (WGS84)
@@ -389,14 +391,57 @@ def gmti_summary(entry):
          "profiles": list(load_track_run().PROFILES.keys()) if _tracker_dir() else []}
 
 
-def gmti_track(entry, profile):
-    """Déroule le tracker (profil) sur le CSV décodé → pistes/plots en lat/lon."""
+def gmti_profiles():
+    """Profils (source unique gmti_profiles.json) : defaults, profiles, params (doc), config effective."""
+    tr = load_track_run()
+    data = tr.load_profiles()
+    names = list((data.get("profiles") or {}).keys()) or list(tr.PROFILES.keys())
+    return {"path": tr.PROFILES_JSON, "defaults": data.get("defaults") or {}, "profiles": data.get("profiles") or {},
+            "params": data.get("params") or {}, "names": names,
+            "effective": {n: tr.java_config(n) for n in names}}
+
+
+def gmti_profile_save(name, params):
+    """Enregistre/écrase un profil dans gmti_profiles.json (écarts par rapport aux defaults)."""
+    tr = load_track_run()
+    data = tr.load_profiles()
+    name = (name or "").strip()
+    if not name or not all(c.isalnum() or c in "_-" for c in name):
+        raise ValueError("nom de profil invalide (lettres, chiffres, _ -)")
+    if params is None:                                  # suppression
+        if name in ("defaut",):
+            raise ValueError("le profil « defaut » ne peut pas être supprimé")
+        (data.get("profiles") or {}).pop(name, None)
+        with open(tr.PROFILES_JSON, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        tr.load_profiles()
+        return gmti_profiles()
+    defaults = data.get("defaults") or {}
+    prof = {}
+    for k, v in (params or {}).items():
+        if k not in defaults and k != "deleteSec":
+            continue
+        if v != defaults.get(k):
+            prof[k] = v
+    data.setdefault("profiles", {})[name] = prof
+    with open(tr.PROFILES_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    tr.load_profiles()
+    with _ALOCK:                                        # les runs en cache dépendent des profils
+        for e in _GMTI.values():
+            e["tracks"].clear()
+    return gmti_profiles()
+
+
+def gmti_track(entry, profile, overrides=None):
+    """Déroule le tracker (profil + surcharges, noms Java) sur le CSV décodé → pistes/plots en lat/lon."""
     if entry["csv"] is None:
         raise ValueError(entry["error"] or "GMTI non décodé")
-    if profile in entry["tracks"]:
-        return entry["tracks"][profile]
+    key = profile + "|" + json.dumps(overrides or {}, sort_keys=True)
+    if key in entry["tracks"]:
+        return entry["tracks"][key]
     tr = load_track_run()
-    res = tr.run_tracking(entry["csv"], profile)
+    res = tr.run_tracking(entry["csv"], profile, overrides or None)
     fr = res.get("frame")
     if fr is None:
         raise ValueError("tracker : aucun plot exploitable")
@@ -410,9 +455,15 @@ def gmti_track(entry, profile):
         raw = [[a, b, None] for a, b in ll(res["raw"])]
     if len(raw) > MAX_DISPLAY_PLOTS:
         raw = raw[::len(raw) // MAX_DISPLAY_PLOTS + 1]
-    out = {"profile": profile, "n_kept": res["n_kept"], "n_rejected": res["n_rejected"], "tracks": tracks,
-           "raw": raw, "n_raw": len(raw), "zone": entry["zone"], "porteur": entry["porteur"]}
-    entry["tracks"][profile] = out
+    contacts = None
+    if res.get("contacts") is not None:
+        # Affichage : contacts issus d'une vraie fusion (n_max > 1) ou persistants (≥ 3 dwells), plafonnés.
+        sel = sorted((c for c in res["contacts"] if c["n_max"] > 1 or len(c["pts"]) >= 3), key=lambda c: -len(c["pts"]))[:2000]
+        contacts = [{"id": c["id"], "pts": ll(c["pts"]), "n_max": c["n_max"], "hits": c["hits"], "members": c["members"]} for c in sel]
+    out = {"profile": profile, "overrides": overrides or {}, "config": res.get("config"), "metrics": res.get("metrics"),
+           "n_kept": res["n_kept"], "n_rejected": res["n_rejected"], "tracks": tracks,
+           "raw": raw, "n_raw": len(raw), "zone": entry["zone"], "porteur": entry["porteur"], "contacts": contacts}
+    entry["tracks"][key] = out
     return out
 
 
@@ -980,7 +1031,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/gmti/track":
                 path = self._pcap(q); limit = int(q.get("limit", ["0"])[0] or 0)
                 profile = q.get("profile", ["defaut"])[0]
-                return self._json(gmti_track(gmti_decode(path, limit), profile))
+                ov = json.loads(q.get("overrides", ["{}"])[0] or "{}")
+                return self._json(gmti_track(gmti_decode(path, limit), profile, ov))
+            if u.path == "/api/gmti/profiles":
+                return self._json(gmti_profiles())
             if u.path == "/api/cot/scan":
                 path = self._pcap(q)
                 return self._json(cot_summary(cot_scan(path, q.get("filter", [""])[0])))
@@ -1044,6 +1098,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if u.path == "/api/settings":
                 return self._json(settings_save(body))
+            if u.path == "/api/gmti/profiles":
+                return self._json(gmti_profile_save(body.get("name"), body.get("params")))
             if u.path == "/api/basemap":
                 cfg = basemap_save(body)
                 self.__class__.basemap_cfg = cfg

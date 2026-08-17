@@ -23,6 +23,17 @@ Incertitudes et position capteur optionnelles (défauts appliqués, mais forteme
 recommandées : elles orientent l'ellipse d'erreur de chaque plot via
 `covariance_from_4607`).
 
+## Profils — source unique `gmti_profiles.json`
+
+Les profils (defaut, maritime, routier, convoi, personnel, aerien, routier_zone) sont lus par
+`track_run.py` depuis `../gmti_profiles.json` (racine Tools ; variable `GMTI_PROFILES` pour un
+autre chemin), avec les **noms de champs Java** de `TrackerConfig` (traduits vers `Params` par
+`JAVA2PY`). Le même fichier est destiné au processor Java → plus de duplication. `run_tracking`
+accepte des surcharges (noms Java ou Params), applique le déclutter (minSnrDb, classFilter) et la
+fusion `TrackMerger` (port de TrackMerger.java), et renvoie `config`, `contacts`, `metrics`.
+Les défauts de `Params` (profil « defaut ») sont alignés sur `TrackerConfig.java` : Q_ACCEL 3,
+V_INIT_STD 20, DELETE_MISSES 8, GATE_MAX_M 300, R_POS_DEFAULT 30.
+
 ## Paramètres à tuner (classe `Params`, tracker.py)
 
 | Paramètre       | Défaut | Rôle |

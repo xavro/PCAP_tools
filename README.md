@@ -165,6 +165,16 @@ selon l'action (résumé vivant dans chaque onglet) :
   **inventaire 4607** (segments, champs, plages, classifications, job def, porteur), 2. Tracker
   par **profil** de tuning (defaut, maritime, routier, convoi, personnel, aérien, routier_zone),
   pistes colorées (état / aérien / rotateur), plots bruts, lissage RTS, zone job, trajet porteur.
+  **Banc de réglage** : ⚙ paramètres = éditeur des 28 réglages (gate & cinématique, confirmation
+  & suppression, aérien/rotateur, fusion de pistes, filtres processor) avec surcharges → Relancer
+  (~3 s), Enregistrer comme profil, Exporter JSON ; **métriques** par run (pistes, rejetées, hits,
+  durée, longueur, part de coasting, états, contacts…) et **A/B** entre deux profils (tracé
+  magenta pointillé, métriques côte à côte, meilleur en gras). Les profils vivent dans
+  **`gmti_profiles.json`** (racine du dépôt) — **source unique** partagée avec le processor Java
+  (`Receiver4607-geoevent-adapter` : noms `TrackerConfig`), lue par `track_run.py`
+  (`load_profiles`, `java_config`, `apply_profile` accepte noms Java ou `Params`). Le banc
+  reproduit aussi les étages processor : déclutter (minSnrDb, classFilter) et fusion
+  `TrackMerger` (« 1 contact = 1 piste », port Python de `TrackMerger.java`).
   En rejeu (temps réel, même cadence que l'émission UDP) : plots 4607 au fil de l'eau (couche
   canvas, capteur, classes) et **zone balayée de chaque dwell** (secteur capteur → centre,
   ± étendue distance/angle D24/D25, fondu des dernières dwells, ligne capteur → centre).

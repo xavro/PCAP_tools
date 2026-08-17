@@ -10,11 +10,35 @@ en plus des mécanismes grande zone v6-v7). Dépendances : numpy + scipy (via
 """
 import csv
 import itertools
+import json
+import math
+import os
 from collections import defaultdict
 
 import tracker as T
 
-# Profils de tuning par environnement (alignés sur demo.py v8).
+# ── Profils : SOURCE UNIQUE = gmti_profiles.json (racine Tools), partagée avec le
+# processor Java (TrackerConfig/Profiles). Noms de champs Java ; traduits vers Params.
+JAVA2PY = {
+    "gateChi2": "GATE_CHI2", "gateMaxM": "GATE_MAX_M", "gateGrowMps": "GATE_GROW_MPS",
+    "accelStd": "Q_ACCEL", "initVelStd": "V_INIT_STD", "measPosStd": "R_POS_DEFAULT",
+    "confirmM": "CONFIRM_M", "confirmN": "CONFIRM_N", "confirmByHits": "CONFIRM_BY_HITS",
+    "deleteMisses": "DELETE_MISSES", "deleteSec": "DELETE_SEC", "solidHits": "SOLID_HITS",
+    "airSpeedMps": "AIR_SPEED_MPS", "airVlosMps": "AIR_VLOS_MPS", "airConfirm": "AIR_CONFIRM",
+    "airQAccel": "AIR_Q_ACCEL", "airGateMaxM": "AIR_GATE_MAX_M", "airMinGround": "AIR_MIN_GROUND",
+    "rotMaxGround": "ROT_MAX_GROUND",
+}
+PY2JAVA = {v: k for k, v in JAVA2PY.items()}
+# Paramètres « processor » (hors noyau Kalman) : déclutter, fusion, affichage — portés ici
+# pour que le banc de réglage reflète la prod. Défauts = TrackerConfig.java.
+PROC_DEFAULTS = {"mergeMaxDistM": 0.0, "mergeMaxDvMps": 2.0, "mergeMaxHeadingDeg": 30.0, "mergeSlowMps": 3.0,
+                 "minSnrDb": 0, "minTrackSpeedMps": 0.0, "classFilter": [],
+                 "measPosStdMin": 5.0, "measPosStdMax": 200.0}
+PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                                              "gmti_profiles.json")
+CURRENT = {}          # config effective (noms Java) du dernier apply_profile — lue par run_tracking
+
+# Profils de tuning par environnement (repli si gmti_profiles.json absent ; alignés sur demo.py v8).
 PROFILES = {
     "defaut":    {},
     "maritime":  dict(Q_ACCEL=0.05, V_INIT_STD=4.0, CONFIRM_M=4, CONFIRM_N=6,
@@ -38,15 +62,136 @@ PROFILES = {
 _DEFAULTS = {k: getattr(T.Params, k) for k in dir(T.Params) if k.isupper()}
 
 
+_JSON = {"defaults": {}, "profiles": {}, "params": {}}
+
+
+def load_profiles(path=None):
+    """Charge gmti_profiles.json → met à jour PROFILES (noms Params) et _JSON. Repli sur les
+    profils embarqués si le fichier manque. Renvoie le dict JSON (defaults/profiles/params)."""
+    global _JSON
+    path = path or PROFILES_JSON
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return _JSON
+    _JSON = data
+    PROFILES.clear()
+    for name, prof in (data.get("profiles") or {}).items():
+        PROFILES[name] = {JAVA2PY[k]: v for k, v in prof.items() if k in JAVA2PY}
+    return _JSON
+
+
+def java_config(name, overrides=None):
+    """Config effective en noms Java : defaults(JSON|TrackerConfig) + profil + surcharges."""
+    cfg = dict(PROC_DEFAULTS)
+    cfg.update({PY2JAVA[k]: v for k, v in _DEFAULTS.items() if k in PY2JAVA})
+    cfg.update(_JSON.get("defaults") or {})
+    cfg.update((_JSON.get("profiles") or {}).get(name) or {PY2JAVA[k]: v for k, v in PROFILES.get(name, {}).items() if k in PY2JAVA})
+    for k, v in (overrides or {}).items():
+        if v is None and k != "deleteSec":
+            continue
+        cfg[PY2JAVA.get(k, k)] = v
+    return cfg
+
+
 def apply_profile(name, overrides=None):
+    """Applique un profil (+ surcharges, noms Java OU Params) à la classe globale Params.
+    Les paramètres « processor » restent dans CURRENT (déclutter, fusion, affichage)."""
+    global CURRENT
+    if not _JSON.get("profiles"):
+        load_profiles()
+    cfg = java_config(name, overrides)
     for k, v in _DEFAULTS.items():
         setattr(T.Params, k, v)
-    for k, v in PROFILES.get(name, {}).items():
-        setattr(T.Params, k, v)
-    if overrides:
-        for k, v in overrides.items():
-            if v is not None:
-                setattr(T.Params, k, v)
+    for jk, v in cfg.items():
+        pk = JAVA2PY.get(jk)
+        if pk is not None:
+            setattr(T.Params, pk, v)
+    CURRENT = cfg
+    return cfg
+
+
+class TrackMerger:
+    """Port Python de TrackMerger.java : fusion « 1 contact = 1 piste » des pistes
+    affichables d'un dwell (proches ET co-mobiles), identité de contact stable par
+    proximité. Travaille en coordonnées locales métriques (x, y)."""
+
+    def __init__(self, cfg):
+        self.max_d = float(cfg.get("mergeMaxDistM") or 0.0)
+        self.max_dv = float(cfg.get("mergeMaxDvMps") or 2.0)
+        self.max_hd = float(cfg.get("mergeMaxHeadingDeg") or 30.0)
+        self.slow = float(cfg.get("mergeSlowMps") or 3.0)
+        self.prev = {}                    # contact_id -> (x, y)
+        self.next_id = 1
+
+    def enabled(self):
+        return self.max_d > 0.0
+
+    @staticmethod
+    def _hd(h1, h2):
+        d = abs(h1 - h2) % 360.0
+        return 360.0 - d if d > 180.0 else d
+
+    def _same(self, a, b):
+        if math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= self.max_d:
+            return False
+        if abs(a["speed"] - b["speed"]) >= self.max_dv:
+            return False
+        both_slow = min(a["speed"], b["speed"]) < self.slow
+        return both_slow or self._hd(a["heading"], b["heading"]) < self.max_hd
+
+    def merge(self, outs):
+        """outs : liste de dicts {track_id, x, y, speed, heading, state, hits, is_air, is_rotator}
+        → liste de contacts {id, x, y, speed, heading, state, hits, n, members, is_air, is_rotator}."""
+        if not self.enabled() or not outs:
+            return [dict(o, id=o["track_id"], n=1, members=[o["track_id"]]) for o in outs]
+        n = len(outs)
+        parent = list(range(n))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]; i = parent[i]
+            return i
+        for i in range(n):
+            for j in range(i + 1, n):
+                if self._same(outs[i], outs[j]):
+                    ra, rb = find(i), find(j)
+                    if ra != rb:
+                        parent[max(ra, rb)] = min(ra, rb)
+        groups = defaultdict(list)
+        for i in range(n):
+            groups[find(i)].append(outs[i])
+        rank = {"SOLID": 3, "CONFIRMED": 2, "COASTING": 1}
+        fused = []
+        for g in groups.values():
+            rep = max(g, key=lambda o: o["hits"])
+            fused.append({"x": sum(o["x"] for o in g) / len(g), "y": sum(o["y"] for o in g) / len(g),
+                          "speed": rep["speed"], "heading": rep["heading"],
+                          "state": max((o["state"] for o in g), key=lambda st: rank.get(st, 0)),
+                          "hits": max(o["hits"] for o in g), "n": len(g), "members": [o["track_id"] for o in g],
+                          "is_air": any(o["is_air"] for o in g), "is_rotator": any(o["is_rotator"] for o in g),
+                          "track_id": rep["track_id"]})
+        fused.sort(key=lambda c: -c["hits"])
+        nxt, claimed = {}, set()
+        for c in fused:
+            best, cid = self.max_d, -1
+            for pid, (px, py) in self.prev.items():
+                if pid in claimed:
+                    continue
+                d = math.hypot(c["x"] - px, c["y"] - py)
+                if d < best:
+                    best, cid = d, pid
+            if cid < 0:
+                cid = self.next_id; self.next_id += 1
+            claimed.add(cid); c["id"] = cid; nxt[cid] = (c["x"], c["y"])
+        self.prev = nxt
+        return fused
+
+
+def _state_name(st):
+    return {T.TENTATIVE: "TENTATIVE", T.CONFIRMED: "CONFIRMED", T.SOLID: "SOLID",
+            T.COASTING: "COASTING", T.DEAD: "DEAD"}.get(st, str(st))
 
 
 def csv_dwells(path):
@@ -87,18 +232,47 @@ def csv_dwells(path):
 
 def run_tracking(path, profile="defaut", overrides=None):
     """Décode le CSV et déroule le tracker. Données Python pures prêtes à dessiner :
-      {raw:[(x,y)], tracks:[{id,hits,pts,smooth,is_air,is_rotator}],
-       n_kept, n_rejected, frame}
+      {raw:[(x,y)], tracks:[{id,hits,pts,smooth,is_air,is_rotator,etat,t0,t1}],
+       n_kept, n_rejected, frame, config (noms Java), contacts (fusion, si mergeMaxDistM>0),
+       metrics}
+    Le déclutter (minSnrDb, classFilter) et la fusion TrackMerger reproduisent le processor.
     """
-    apply_profile(profile, overrides)
+    cfg = apply_profile(profile, overrides)
     T.Track._ids = itertools.count(1)
     tk = T.Tracker()
     raw = []
     frame = None
+    min_snr = float(cfg.get("minSnrDb") or 0)
+    cls_filter = set(int(c) for c in (cfg.get("classFilter") or []))
+    min_speed = float(cfg.get("minTrackSpeedMps") or 0.0)
+    merger = TrackMerger(cfg)
+    contacts = defaultdict(lambda: {"pts": [], "n_max": 1, "hits": 0, "members": set()})
+    n_dwells = 0; n_filtered = 0
     for t, plots, fr in csv_dwells(path):
         frame = fr
         raw += [(float(p.x), float(p.y)) for p in plots]
+        if min_snr > 0 or cls_filter:
+            kept_p = [p for p in plots if (min_snr <= 0 or (p.snr is not None and p.snr >= min_snr))
+                      and (not cls_filter or (p.classification not in (None, "") and int(float(p.classification)) in cls_filter))]
+            n_filtered += len(plots) - len(kept_p); plots = kept_p
+        n_dwells += 1
         tk.step(t, plots)
+        if merger.enabled():                                # étage post-pistage (comme le processor)
+            outs = []
+            for tr in tk.tracks:
+                st = tr.state
+                if st not in (T.CONFIRMED, T.SOLID, T.COASTING):
+                    continue
+                sp = tr.speed()
+                if min_speed > 0 and sp < min_speed:
+                    continue
+                outs.append({"track_id": tr.id, "x": float(tr.x[0]), "y": float(tr.x[1]), "speed": sp,
+                             "heading": (math.degrees(math.atan2(tr.x[2], tr.x[3])) + 360.0) % 360.0,
+                             "state": _state_name(st), "hits": tr.hits, "is_air": bool(tr.is_air), "is_rotator": bool(tr.is_rotator)})
+            for c in merger.merge(outs):
+                cc = contacts[c["id"]]
+                cc["pts"].append((t, c["x"], c["y"])); cc["n_max"] = max(cc["n_max"], c["n"]); cc["hits"] = max(cc["hits"], c["hits"])
+                cc["members"].update(c["members"])
 
     all_tracks = tk.archive + tk.tracks
     kept = sorted((tr for tr in all_tracks if tr.confirmed_ever), key=lambda tr: -tr.hits)
@@ -116,5 +290,45 @@ def run_tracking(path, profile="defaut", overrides=None):
             "is_rotator": bool(getattr(tr, "is_rotator", False)),
         })
     n_rejected = sum(1 for tr in all_tracks if not tr.confirmed_ever)
-    return {"raw": raw, "tracks": tracks, "n_kept": len(kept),
-            "n_rejected": n_rejected, "frame": frame}
+    for d, tr in zip(tracks, kept):                          # bornes temporelles (métriques)
+        h = tr.trajectory()
+        d["t0"], d["t1"] = (float(h[0][0]), float(h[-1][0])) if h else (0.0, 0.0)
+        d["n_coast"] = sum(1 for (_t, _x, _y, st, hit) in h if not hit)
+    res = {"raw": raw, "tracks": tracks, "n_kept": len(kept), "n_rejected": n_rejected, "frame": frame,
+           "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered,
+           "contacts": [{"id": cid, "pts": [(float(x), float(y)) for (_t, x, y) in c["pts"]],
+                         "n_max": c["n_max"], "hits": c["hits"], "members": sorted(c["members"])}
+                        for cid, c in contacts.items()] if merger.enabled() else None}
+    res["metrics"] = metrics(res)
+    return res
+
+
+def metrics(res):
+    """Indicateurs de qualité de pistage (indépendants du repère) pour comparer des profils."""
+    tr = res["tracks"]
+    n = len(tr)
+    if not n:
+        return {"n_tracks": 0, "n_rejected": res["n_rejected"], "n_plots": len(res["raw"])}
+    def length(pts):
+        return sum(math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) for i in range(1, len(pts)))
+    hits = [t["hits"] for t in tr]
+    durs = [max(0.0, t["t1"] - t["t0"]) for t in tr]
+    lens = [length(t["pts"]) for t in tr]
+    coast = sum(t.get("n_coast", 0) for t in tr); pts_total = sum(len(t["pts"]) for t in tr)
+    m = {"n_tracks": n, "n_rejected": res["n_rejected"], "n_plots": len(res["raw"]), "n_dwells": res.get("n_dwells", 0),
+         "n_filtered": res.get("n_filtered", 0),
+         "hits_total": sum(hits), "hits_mean": sum(hits) / n, "hits_median": sorted(hits)[n // 2],
+         "solid": sum(1 for t in tr if t["etat"] == T.SOLID), "confirmed": sum(1 for t in tr if t["etat"] == T.CONFIRMED),
+         "coasting_end": sum(1 for t in tr if t["etat"] == T.COASTING),
+         "dur_mean_s": sum(durs) / n, "dur_max_s": max(durs), "len_mean_m": sum(lens) / n,
+         "coast_ratio": (coast / pts_total) if pts_total else 0.0,
+         "plots_per_track": len(res["raw"]) / n, "air": sum(1 for t in tr if t["is_air"]),
+         "rotator": sum(1 for t in tr if t["is_rotator"]),
+         "short_tracks": sum(1 for t in tr if t["hits"] < 5)}
+    if res.get("contacts") is not None:
+        m["contacts"] = len(res["contacts"]); m["contacts_multi"] = sum(1 for c in res["contacts"] if c["n_max"] > 1)
+    return m
+
+
+# Chargement au démarrage : PROFILES reflète gmti_profiles.json si présent.
+load_profiles()

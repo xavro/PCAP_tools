@@ -64,14 +64,32 @@
           <button id="gmti-decode">1. Décoder GMTI</button>
           <label class="chk">profil <select id="gmti-profile"></select></label>
           <button id="gmti-track" class="accent">2. Tracker</button>
+          <button id="gmti-params-btn" title="voir / modifier les paramètres du profil (source unique gmti_profiles.json, partagée avec le processor Java)">⚙ paramètres</button>
         </div>
         <div class="row">
           <label class="chk"><input type="checkbox" id="gmti-raw" checked> plots bruts</label>
           <label class="chk"><input type="checkbox" id="gmti-smooth"> lissage RTS</label>
           <label class="chk"><input type="checkbox" id="gmti-ovl" checked> zone job / porteur</label>
           <label class="chk" title="rejeu : zone balayée par chaque dwell (D22-25) avec fondu"><input type="checkbox" id="gmti-dwell" checked> dwells (rejeu)</label>
+          <label class="chk" title="comparer avec un second profil (tracé magenta pointillé, métriques côte à côte)">A/B <select id="gmti-ab"><option value="">—</option></select></label>
         </div>
         <div id="gmti-status" class="mono muted">Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning).</div>
+        <div id="gmti-editor" hidden>
+          <div class="row" style="justify-content:space-between">
+            <span class="muted">Surcharges du profil <b id="ed-prof"></b> — valeurs en <span style="color:var(--warn)">jaune</span> = modifiées ; « Relancer » = tracker avec ces valeurs.</span>
+          </div>
+          <div id="ed-groups"></div>
+          <div class="row">
+            <button id="ed-run" class="accent">▶ Relancer</button>
+            <button id="ed-reset">↺ Réinitialiser</button>
+            <input id="ed-name" type="text" placeholder="nom du profil" style="width:130px">
+            <button id="ed-save" title="enregistre les valeurs courantes comme profil dans gmti_profiles.json (écrase si existe)">💾 Enregistrer</button>
+            <button id="ed-export" title="télécharger la config effective (JSON, noms Java)">⤓ JSON</button>
+            <button id="ed-del" class="danger" title="supprimer le profil sélectionné de gmti_profiles.json">🗑</button>
+          </div>
+          <div id="ed-msg" class="muted mono"></div>
+        </div>
+        <div id="gmti-metrics" hidden></div>
         <div id="gmti-body"><span class="muted">plots reçus au fil du rejeu (dwells, vitesse radiale, SNR, classes)</span></div>
         <pre id="gmti-inv" hidden></pre>
       </div>
@@ -123,6 +141,8 @@
         <span data-ly="plots"><i style="background:#7cff6b;border-radius:0"></i>plots GMTI</span>
         <span data-ly="dwell"><i style="background:transparent;border:1px solid #7cff6b;border-radius:0"></i>dwell</span>
         <span data-ly="tracks"><i style="background:#00c8ff;border-radius:0;height:3px;width:12px"></i>pistes GMTI</span>
+        <span data-ly="contacts"><i style="background:#e58cff;border-radius:0;height:5px;width:12px;opacity:.7"></i>contacts (fusion)</span>
+        <span data-ly="ab"><i style="background:transparent;border-top:2px dashed #ff5cf0;border-radius:0;height:0;width:12px"></i>A/B</span>
         <span data-ly="cot"><i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</span>
         <span data-ly="labels"><i style="background:transparent;border:1px solid #8a8f98;border-radius:2px;width:12px;height:8px"></i>étiquettes</span>
       </div>

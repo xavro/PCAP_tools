@@ -19,13 +19,13 @@ from scipy.optimize import linear_sum_assignment
 # ----------------------------------------------------------------------
 class Params:
     GATE_CHI2       = 9.21    # khi2 99 %, 2 ddl : seuil de gating Mahalanobis
-    Q_ACCEL         = 1.0     # bruit de process (m/s^2) : agilite supposee des cibles
-    R_POS_DEFAULT   = 40.0    # ecart-type position par defaut (m) si incertitudes absentes
+    Q_ACCEL         = 3.0     # bruit de process (m/s^2) : agilite supposee des cibles (= accelStd Java)
+    R_POS_DEFAULT   = 30.0    # ecart-type position par defaut (m) si incertitudes absentes (= measPosStd Java)
     CONFIRM_M       = 3       # piste confirmee si M associations...
     CONFIRM_N       = 5       # ...sur les N dernieres revisites
-    DELETE_MISSES   = 4       # revisites consecutives sans association -> suppression
+    DELETE_MISSES   = 8       # revisites consecutives sans association -> suppression (= deleteMisses Java)
     SOLID_HITS      = 10      # seuil "Solide" (aligne sur votre expression Arcade)
-    GATE_MAX_M      = 250.0   # plafond du gate en metres (borne le gonflement en coasting)
+    GATE_MAX_M      = 300.0   # plafond du gate en metres (borne le gonflement en coasting) (= gateMaxM Java)
     GATE_GROW_MPS   = 0.0     # croissance du plafond de gate (m/s d'anciennete de MAJ)
     DELETE_SEC      = None    # suppression par ANCIENNETE de derniere MAJ (s) ;
                               # prioritaire sur DELETE_MISSES si defini (scan large zone
@@ -41,7 +41,7 @@ class Params:
     AIR_MIN_GROUND  = 15.0    # vitesse sol min pour que la preuve v_LOS compte (coherence)
     ROT_MAX_GROUND  = 3.0     # vitesse sol max du critere rotateur fixe (eoliennes, etc.)
     MIN_SPEED_INIT  = 0.0     # m/s : filtre optionnel des plots quasi statiques a l'init
-    V_INIT_STD      = 15.0    # ecart-type vitesse a la naissance d'une piste (m/s)
+    V_INIT_STD      = 20.0    # ecart-type vitesse a la naissance d'une piste (m/s) (= initVelStd Java)
 
 
 # ----------------------------------------------------------------------

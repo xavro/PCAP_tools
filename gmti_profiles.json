@@ -1,0 +1,236 @@
+{
+  "_schema": "gmti-tracker-profiles/1",
+  "_doc": "Source UNIQUE des profils du tracker GMTI 4607, partagée par le prototype Python (prototype_tracker_gmti_v8.1/track_run.py) et le processor Java (Receiver4607-geoevent-adapter, TrackerConfig/Profiles). Noms de champs = TrackerConfig.java ; `defaults` = valeurs par défaut de TrackerConfig ; chaque profil ne liste que ses écarts. Unités : m, m/s, m/s², s, dB. classFilter = liste de classes 4607 (vide = toutes).",
+  "defaults": {
+    "gateChi2": 9.21,
+    "gateMaxM": 300.0,
+    "gateGrowMps": 0.0,
+    "confirmM": 3,
+    "confirmN": 5,
+    "confirmByHits": false,
+    "deleteMisses": 8,
+    "deleteSec": null,
+    "solidHits": 10,
+    "accelStd": 3.0,
+    "initVelStd": 20.0,
+    "measPosStd": 30.0,
+    "measPosStdMin": 5.0,
+    "measPosStdMax": 200.0,
+    "airSpeedMps": 42.0,
+    "airVlosMps": 50.0,
+    "airConfirm": 3,
+    "airQAccel": 4.0,
+    "airGateMaxM": 800.0,
+    "airMinGround": 15.0,
+    "rotMaxGround": 3.0,
+    "mergeMaxDistM": 0.0,
+    "mergeMaxDvMps": 2.0,
+    "mergeMaxHeadingDeg": 30.0,
+    "mergeSlowMps": 3.0,
+    "minSnrDb": 0,
+    "minTrackSpeedMps": 0.0,
+    "classFilter": []
+  },
+  "profiles": {
+    "defaut": {},
+    "maritime": {
+      "accelStd": 0.05,
+      "initVelStd": 4.0,
+      "confirmM": 4,
+      "confirmN": 6,
+      "deleteMisses": 12,
+      "gateChi2": 7.0,
+      "gateMaxM": 250.0,
+      "mergeMaxDistM": 300.0
+    },
+    "routier": {
+      "accelStd": 2.0,
+      "initVelStd": 12.0,
+      "confirmM": 3,
+      "confirmN": 5,
+      "deleteMisses": 8,
+      "gateChi2": 9.21,
+      "gateMaxM": 300.0
+    },
+    "convoi": {
+      "accelStd": 0.5,
+      "initVelStd": 10.0,
+      "confirmM": 4,
+      "confirmN": 6,
+      "deleteMisses": 6,
+      "gateChi2": 5.0,
+      "gateMaxM": 150.0
+    },
+    "personnel": {
+      "accelStd": 0.3,
+      "initVelStd": 2.0,
+      "confirmM": 3,
+      "confirmN": 6,
+      "deleteMisses": 15,
+      "gateChi2": 7.0,
+      "gateMaxM": 120.0
+    },
+    "aerien": {
+      "accelStd": 4.0,
+      "initVelStd": 40.0,
+      "confirmM": 3,
+      "confirmN": 5,
+      "deleteMisses": 4,
+      "gateChi2": 9.21,
+      "gateMaxM": 800.0
+    },
+    "routier_zone": {
+      "accelStd": 2.0,
+      "initVelStd": 12.0,
+      "gateChi2": 9.21,
+      "gateMaxM": 250.0,
+      "gateGrowMps": 25.0,
+      "confirmM": 5,
+      "confirmByHits": true,
+      "deleteSec": 60.0,
+      "solidHits": 15
+    }
+  },
+  "params": {
+    "gateChi2": {
+      "group": "gate",
+      "unit": "χ²",
+      "doc": "Seuil de gating de Mahalanobis (2 ddl) : 9,21 ≈ 99 %, 5,99 ≈ 95 %. Baisser → plus strict."
+    },
+    "gateMaxM": {
+      "group": "gate",
+      "unit": "m",
+      "doc": "Plafond euclidien du gate autour de la position prédite."
+    },
+    "gateGrowMps": {
+      "group": "gate",
+      "unit": "m/s",
+      "doc": "Croissance du plafond de gate avec l'ancienneté de la dernière MAJ (scan grande zone)."
+    },
+    "accelStd": {
+      "group": "gate",
+      "unit": "m/s²",
+      "doc": "Bruit d'accélération (agilité supposée des cibles). Monter si fragmentation en virage."
+    },
+    "initVelStd": {
+      "group": "gate",
+      "unit": "m/s",
+      "doc": "Écart-type de vitesse à la naissance d'une piste."
+    },
+    "measPosStd": {
+      "group": "gate",
+      "unit": "m",
+      "doc": "Écart-type position de repli si les incertitudes 4607 sont absentes."
+    },
+    "measPosStdMin": {
+      "group": "gate",
+      "unit": "m",
+      "doc": "Borne basse de l'incertitude adaptative."
+    },
+    "measPosStdMax": {
+      "group": "gate",
+      "unit": "m",
+      "doc": "Borne haute de l'incertitude adaptative."
+    },
+    "confirmM": {
+      "group": "vie",
+      "unit": "",
+      "doc": "Confirmation M-sur-N : M associations…"
+    },
+    "confirmN": {
+      "group": "vie",
+      "unit": "",
+      "doc": "…sur les N dernières revisites."
+    },
+    "confirmByHits": {
+      "group": "vie",
+      "unit": "bool",
+      "doc": "Confirmée dès que hits ≥ confirmM (fenêtre ignorée) — cibles vues par intermittence."
+    },
+    "deleteMisses": {
+      "group": "vie",
+      "unit": "",
+      "doc": "Suppression après ce nombre de revisites consécutives sans association."
+    },
+    "deleteSec": {
+      "group": "vie",
+      "unit": "s",
+      "doc": "Suppression par ancienneté de dernière MAJ (prioritaire si défini ; vide = par deleteMisses)."
+    },
+    "solidHits": {
+      "group": "vie",
+      "unit": "",
+      "doc": "Seuil de l'état « Solide »."
+    },
+    "airSpeedMps": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "Vitesse sol lissée au-delà de laquelle une preuve « aérien » est comptée."
+    },
+    "airVlosMps": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "|vitesse LOS| mesurée au-delà de laquelle la preuve LOS compte."
+    },
+    "airConfirm": {
+      "group": "aerien",
+      "unit": "",
+      "doc": "Nombre de preuves cumulées avant de poser un flag (aérien ou rotateur)."
+    },
+    "airQAccel": {
+      "group": "aerien",
+      "unit": "m/s²",
+      "doc": "Bruit d'accélération adopté par une piste devenue aérienne."
+    },
+    "airGateMaxM": {
+      "group": "aerien",
+      "unit": "m",
+      "doc": "Plafond de gate adopté par une piste aérienne."
+    },
+    "airMinGround": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "Vitesse sol minimale pour que la preuve v_LOS soit cohérente."
+    },
+    "rotMaxGround": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "Vitesse sol max du critère rotateur fixe (éolienne, radar…)."
+    },
+    "mergeMaxDistM": {
+      "group": "fusion",
+      "unit": "m",
+      "doc": "Fusion « 1 contact = 1 piste » : distance max entre pistes co-mobiles (0 = désactivé). Navire ≈ 300 m."
+    },
+    "mergeMaxDvMps": {
+      "group": "fusion",
+      "unit": "m/s",
+      "doc": "|Δvitesse| max pour fusionner."
+    },
+    "mergeMaxHeadingDeg": {
+      "group": "fusion",
+      "unit": "°",
+      "doc": "|Δcap| max pour fusionner (ignoré sous mergeSlowMps)."
+    },
+    "mergeSlowMps": {
+      "group": "fusion",
+      "unit": "m/s",
+      "doc": "Sous cette vitesse le cap n'est pas fiable : critère de cap ignoré."
+    },
+    "minSnrDb": {
+      "group": "filtre",
+      "unit": "dB",
+      "doc": "SNR minimal d'une détection pour entrer dans le tracker (0 = off)."
+    },
+    "minTrackSpeedMps": {
+      "group": "filtre",
+      "unit": "m/s",
+      "doc": "Vitesse sol minimale pour AFFICHER une piste confirmée (0 = off)."
+    },
+    "classFilter": {
+      "group": "filtre",
+      "unit": "liste",
+      "doc": "Classes 4607 pistées (vide = toutes). Ex. 10 = véhicule à roues."
+    }
+  }
+}

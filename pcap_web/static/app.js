@@ -32,7 +32,7 @@
   // ── Carte (EPSG:3857 : tuiles ArcGIS Online ; export MapServer demandé en 3857) ─
   const map = L.map("map", { attributionControl: true, zoomSnap: 0.25, preferCanvas: true }).setView([46, 2], 5);
   const LY = {};                                       // clé légende → groupe de couches
-  ["trace", "foot", "center", "plots", "dwell", "tracks", "cot"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
+  ["trace", "foot", "center", "plots", "dwell", "tracks", "contacts", "ab", "cot"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
   const lyTrace = LY.trace, lyFoot = LY.foot, lyCenter = LY.center, lyPlots = LY.plots, lyDwell = LY.dwell, lyCot = LY.cot;
   const canvasR = L.canvas({ padding: 0.3 });
   map.attributionControl.setPrefix("");
@@ -135,7 +135,7 @@
   // ── Analyse statique GMTI : décodage + tracker (profil) ─────────────────────
   const lyTracks = LY.tracks;                          // pistes + zone job / porteur (statique)
   const lyRawStatic = L.layerGroup().addTo(lyPlots);   // plots bruts du tracker (statique) — sous « plots GMTI »
-  const gs = { decoded: null, res: null };
+  const gs = { decoded: null, res: null, resB: null, prof: null, ov: {}, abProfile: "" };   // prof = /api/gmti/profiles ; ov = surcharges (noms Java)
   const ETAT_COL = { confirmee: "#00c8ff", coasting: "#ffd54f", tentative: "#8a8f98" };
   function trackColor(t) { return t.is_air ? "#ff9f43" : t.is_rotator ? "#e58cff" : (ETAT_COL[t.etat] || "#00c8ff"); }
   async function gmtiDecode() {
@@ -144,8 +144,7 @@
     catch (e) { return $("gmti-status").textContent = "erreur : " + e.message; }
     const d = gs.decoded;
     if (!d.decoded) { $("gmti-status").textContent = d.error || "aucun GMTI"; return; }
-    const sel = $("gmti-profile"); if (!sel.options.length) (d.profiles || []).forEach(pn => { const o = document.createElement("option"); o.value = o.textContent = pn; sel.appendChild(o); });
-    if (!sel.value && d.profiles && d.profiles.length) sel.value = d.profiles.includes("maritime") ? "maritime" : d.profiles[0];
+    await loadProfiles();
     $("gmti-status").textContent = `GMTI décodé (${d.mode}) : ${d.n_plots} plots, ${d.dwells || "?"} dwells · tracker ${d.tracker} — choisir un profil puis 2. Tracker`;
     $("gmti-inv").textContent = d.rapport || "(inventaire indisponible en mode streaming)"; $("gmti-inv").hidden = false;   // inventaire 4607 affiché dès le décodage
     $("gmti-sum").textContent = `${d.n_plots} plots décodés`;
@@ -154,17 +153,118 @@
   async function gmtiTrack() {
     if (!gs.decoded || !gs.decoded.decoded) { const d = await gmtiDecode(); if (!d || !d.decoded) return; }
     const profile = $("gmti-profile").value || "defaut";
-    $("gmti-status").textContent = `tracker en cours (profil ${profile})…`;
-    try { gs.res = await api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${limQ()}`); }
+    const ovq = Object.keys(gs.ov).length ? `&overrides=${encodeURIComponent(JSON.stringify(gs.ov))}` : "";
+    $("gmti-status").textContent = `tracker en cours (profil ${profile}${ovq ? " + surcharges" : ""})…`;
+    try { gs.res = await api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}${limQ()}`); }
     catch (e) { return $("gmti-status").textContent = "tracker : " + e.message; }
-    drawTracks(); fitTracks();
-    const r = gs.res;
-    $("gmti-status").textContent = `profil ${profile} : ${r.n_kept} pistes, ${r.n_rejected} rejetées (${r.n_raw} plots)` +
-      (r.zone.length ? " · zone job" : "") + (r.porteur.length ? ` · porteur ${r.porteur.length} pos` : "");
-    $("gmti-sum").textContent = `${r.n_kept} pistes · profil ${profile}`;
+    gs.resB = null;
+    if (gs.abProfile) {
+      try { gs.resB = await api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${gs.abProfile}${limQ()}`); } catch (e) { status("A/B : " + e.message, true); }
+    }
+    drawTracks(); fitTracks(); renderMetrics();
+    const r = gs.res, m = r.metrics || {};
+    $("gmti-status").textContent = `profil ${profile}${ovq ? " (surchargé)" : ""} : ${r.n_kept} pistes, ${r.n_rejected} rejetées (${r.n_raw} plots)` +
+      (m.contacts != null ? ` · ${m.contacts} contacts (${m.contacts_multi} fusionnés)` : "") + (r.zone.length ? " · zone job" : "") + (r.porteur.length ? ` · porteur ${r.porteur.length} pos` : "");
+    $("gmti-sum").textContent = `${r.n_kept} pistes · profil ${profile}${ovq ? "*" : ""}`;
+  }
+
+  // ── Profils (source unique gmti_profiles.json) + éditeur de paramètres ─────
+  async function loadProfiles() {
+    try { gs.prof = await api("/api/gmti/profiles"); } catch (e) { return status("profils : " + e.message, true); }
+    const sel = $("gmti-profile"), cur = sel.value; sel.innerHTML = "";
+    gs.prof.names.forEach(pn => { const o = document.createElement("option"); o.value = o.textContent = pn; sel.appendChild(o); });
+    sel.value = gs.prof.names.includes(cur) ? cur : (gs.prof.names.includes("maritime") ? "maritime" : gs.prof.names[0]);
+    const ab = $("gmti-ab"), curB = ab.value; ab.innerHTML = '<option value="">—</option>';
+    gs.prof.names.forEach(pn => { const o = document.createElement("option"); o.value = o.textContent = pn; ab.appendChild(o); });
+    ab.value = gs.prof.names.includes(curB) ? curB : "";
+    renderEditor();
+  }
+  const GROUPS = { gate: "Gate & cinématique", vie: "Confirmation & suppression", aerien: "Aérien / rotateur", fusion: "Fusion de pistes (1 contact = 1 piste)", filtre: "Filtres processor" };
+  function effective(profile) { return Object.assign({}, gs.prof.defaults, (gs.prof.effective || {})[profile] || {}); }
+  function renderEditor() {
+    if (!gs.prof) return;
+    const profile = $("gmti-profile").value || "defaut"; $("ed-prof").textContent = profile;
+    const eff = effective(profile), params = gs.prof.params || {}; const box = $("ed-groups"); box.innerHTML = "";
+    const byGroup = {}; Object.keys(params).forEach(k => { (byGroup[params[k].group] = byGroup[params[k].group] || []).push(k); });
+    Object.entries(GROUPS).forEach(([g, title]) => {
+      const keys = byGroup[g]; if (!keys) return;
+      const div = document.createElement("div"); div.className = "grp"; div.innerHTML = `<h4>${title}</h4>`;
+      const grid = document.createElement("div"); grid.className = "prm";
+      keys.forEach(k => {
+        const info = params[k], v = k in gs.ov ? gs.ov[k] : eff[k]; const isMod = k in gs.ov;
+        const lab = document.createElement("label"); lab.textContent = k; lab.title = (info.doc || "") + (isMod ? `\n(profil : ${eff[k]})` : ""); grid.appendChild(lab);
+        let inp;
+        if (info.unit === "bool") { inp = document.createElement("input"); inp.type = "checkbox"; inp.checked = !!v; inp.style.justifySelf = "end"; }
+        else { inp = document.createElement("input"); inp.type = "text"; inp.value = v == null ? "" : (Array.isArray(v) ? v.join(",") : v); }
+        inp.dataset.k = k; if (isMod) inp.classList.add("mod");
+        inp.addEventListener("change", () => onParamChange(k, inp, info, eff[k]));
+        grid.appendChild(inp);
+        const u = document.createElement("span"); u.className = "u"; u.textContent = info.unit === "bool" ? "" : info.unit || ""; grid.appendChild(u);
+      });
+      div.appendChild(grid); box.appendChild(div);
+    });
+    $("ed-name").value = profile;
+  }
+  function onParamChange(k, inp, info, base) {
+    let v;
+    if (info.unit === "bool") v = inp.checked;
+    else if (info.unit === "liste") v = inp.value.split(",").map(x => x.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n));
+    else if (inp.value.trim() === "") v = null;
+    else { v = Number(inp.value.replace(",", ".")); if (isNaN(v)) { inp.value = base == null ? "" : base; return; } }
+    const same = JSON.stringify(v) === JSON.stringify(base == null ? null : base);
+    if (same) { delete gs.ov[k]; inp.classList.remove("mod"); } else { gs.ov[k] = v; inp.classList.add("mod"); }
+    $("ed-msg").textContent = Object.keys(gs.ov).length ? `${Object.keys(gs.ov).length} surcharge(s) : ${Object.keys(gs.ov).join(", ")} — Relancer pour appliquer` : "";
+  }
+  $("gmti-params-btn").addEventListener("click", () => { $("gmti-editor").hidden = !$("gmti-editor").hidden; if (!$("gmti-editor").hidden) renderEditor(); });
+  $("gmti-profile").addEventListener("change", () => { gs.ov = {}; $("ed-msg").textContent = ""; renderEditor(); });
+  $("gmti-ab").addEventListener("change", () => { gs.abProfile = $("gmti-ab").value; if (gs.res) gmtiTrack(); });
+  $("ed-run").addEventListener("click", gmtiTrack);
+  $("ed-reset").addEventListener("click", () => { gs.ov = {}; $("ed-msg").textContent = ""; renderEditor(); });
+  $("ed-save").addEventListener("click", async () => {
+    if (!gs.prof) return; const name = $("ed-name").value.trim(); if (!name) return $("ed-msg").textContent = "nom de profil requis";
+    const params = Object.assign(effective($("gmti-profile").value || "defaut"), gs.ov);
+    try { gs.prof = await api("/api/gmti/profiles", { name, params }); gs.ov = {}; await loadProfiles(); $("gmti-profile").value = name; renderEditor();
+      $("ed-msg").textContent = `profil « ${name} » enregistré dans ${gs.prof.path.split(/[\\/]/).pop()} (lu aussi par le processor Java)`; }
+    catch (e) { $("ed-msg").textContent = "enregistrement : " + e.message; }
+  });
+  $("ed-del").addEventListener("click", async () => {
+    const name = $("gmti-profile").value; if (!name || name === "defaut") return $("ed-msg").textContent = "ce profil ne peut pas être supprimé";
+    if (!confirm(`Supprimer le profil « ${name} » de gmti_profiles.json ?`)) return;
+    try { gs.prof = await api("/api/gmti/profiles", { name, params: null }); gs.ov = {}; await loadProfiles(); renderEditor(); $("ed-msg").textContent = `profil « ${name} » supprimé`; }
+    catch (e) { $("ed-msg").textContent = "suppression : " + e.message; }
+  });
+  $("ed-export").addEventListener("click", () => {
+    if (!gs.prof) return; const profile = $("gmti-profile").value || "defaut";
+    const cfg = Object.assign(effective(profile), gs.ov); const blob = new Blob([JSON.stringify({ profile, config: cfg }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `gmti_profile_${profile}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+
+  // ── Métriques (A et éventuellement B) ───────────────────────────────────────
+  const MET = [["n_tracks", "pistes confirmées", 0, "hi"], ["n_rejected", "pistes rejetées (tentatives)", 0, "lo"], ["n_plots", "plots", 0, ""],
+    ["plots_per_track", "plots / piste", 1, ""], ["hits_mean", "hits moyens", 1, "hi"], ["hits_median", "hits médians", 0, "hi"], ["short_tracks", "pistes < 5 hits", 0, "lo"],
+    ["dur_mean_s", "durée moyenne (s)", 0, "hi"], ["dur_max_s", "durée max (s)", 0, ""], ["len_mean_m", "longueur moyenne (m)", 0, ""],
+    ["coast_ratio", "part de coasting", 2, "lo"], ["solid", "état Solide", 0, ""], ["confirmed", "état Confirmée", 0, ""], ["coasting_end", "finies en coasting", 0, ""],
+    ["air", "aériennes", 0, ""], ["rotator", "rotateurs", 0, ""], ["contacts", "contacts (fusion)", 0, ""], ["contacts_multi", "contacts multi-pistes", 0, ""], ["n_filtered", "plots filtrés (SNR/classe)", 0, ""]];
+  function renderMetrics() {
+    const a = gs.res && gs.res.metrics, b = gs.resB && gs.resB.metrics; const el = $("gmti-metrics");
+    if (!a) { el.hidden = true; return; }
+    const f = (v, d) => v == null ? "—" : (typeof v === "number" ? v.toFixed(d) : v);
+    let h = `<table class="met"><tr><th>métrique</th><th class="a">${gs.res.profile}${Object.keys(gs.res.overrides || {}).length ? "*" : ""}</th>${b ? `<th class="b">${gs.resB.profile}</th>` : ""}</tr>`;
+    MET.forEach(([k, lab, d, pref]) => {
+      if (a[k] == null && !(b && b[k] != null)) return;
+      let cls = ""; if (b && pref && a[k] != null && b[k] != null && a[k] !== b[k]) cls = ((pref === "hi") === (a[k] > b[k])) ? "better-a" : "better-b";
+      h += `<tr class="${cls}"><td>${lab}</td><td class="a">${f(a[k], d)}</td>${b ? `<td class="b">${f(b[k], d)}</td>` : ""}</tr>`;
+    });
+    el.innerHTML = h + "</table>"; el.hidden = false;
   }
   function drawTracks() {
-    lyTracks.clearLayers(); lyRawStatic.clearLayers(); const r = gs.res; if (!r) return;
+    lyTracks.clearLayers(); lyRawStatic.clearLayers(); LY.contacts.clearLayers(); LY.ab.clearLayers(); const r = gs.res; if (!r) return;
+    if (r.contacts) r.contacts.forEach(c => { if (c.pts.length < 2) return;
+      L.polyline(c.pts, { color: "#e58cff", weight: 5, opacity: .35, renderer: canvasR }).addTo(LY.contacts)
+        .bindTooltip(`contact ${c.id} · ${c.n_max} piste(s) max · ${c.hits} hits · pistes ${c.members.slice(0, 6).join(",")}${c.members.length > 6 ? "…" : ""}`, { sticky: true }); });
+    if (gs.resB) gs.resB.tracks.forEach(t => { if (t.pts.length < 2) return;
+      L.polyline(t.pts, { color: "#ff5cf0", weight: 1.5, dashArray: "5 4", opacity: .9, renderer: canvasR }).addTo(LY.ab)
+        .bindTooltip(`B ${gs.resB.profile} · piste ${t.id} · ${t.hits} hits · ${t.etat}`, { sticky: true }); });
     if ($("gmti-ovl").checked) {
       if (r.zone.length) L.polygon(r.zone, { color: "#8a8f98", weight: 1, dashArray: "6 4", fill: false }).addTo(lyTracks);
       if (r.porteur.length) L.polyline(r.porteur, { color: "#e6edf3", weight: 1, opacity: .6, dashArray: "2 6" }).addTo(lyTracks);
@@ -179,8 +279,20 @@
       L.circleMarker(pts[pts.length - 1], { radius: 3, color: col, fillColor: col, fillOpacity: 1, weight: 1, renderer: canvasR }).addTo(lyTracks);
     });
   }
-  function fitTracks() { const r = gs.res; if (!r) return; const pts = []; r.tracks.forEach(t => pts.push(...t.pts)); if (!pts.length) r.raw.slice(0, 2000).forEach(p => pts.push([p[0], p[1]])); if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.1)); }
+  function fitTracks() {
+    const r = gs.res; if (!r) return; let pts = []; r.tracks.forEach(t => pts.push(...t.pts)); if (!pts.length) r.raw.slice(0, 2000).forEach(p => pts.push([p[0], p[1]]));
+    if (!pts.length) return;
+    // robuste aux plots aberrants (sentinelles 0,0 / octets mal décodés) : médiane des PLOTS BRUTS,
+    // puis on ne garde que les points à moins de 3° de cette médiane
+    const med = a => { const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
+    const ref = r.raw.length ? r.raw : pts; const mla = med(ref.map(p => p[0])), mlo = med(ref.map(p => p[1]));
+    const core = pts.filter(p => Math.abs(p[0] - mla) < 3 && Math.abs(p[1] - mlo) < 3);
+    const outliers = r.tracks.filter(t => t.pts.length && (Math.abs(t.pts[0][0] - mla) >= 3 || Math.abs(t.pts[0][1] - mlo) >= 3)).length;
+    if (outliers) status(`${outliers} piste(s) hors zone (plots aberrants : sentinelles 0,0 / octets mal décodés) — non prises dans le cadrage`, true);
+    map.fitBounds(L.latLngBounds(core.length ? core : pts).pad(0.1));
+  }
   const limQ = () => state.cfg && state.cfg.default_limit ? `&limit=${state.cfg.default_limit}` : "";
+  window.__dbg = { state, gs, map, fitTracks, drawTracks };          // accès console (débogage / tests)
   $("gmti-decode").addEventListener("click", gmtiDecode);
   $("gmti-track").addEventListener("click", gmtiTrack);
   ["gmti-raw", "gmti-smooth", "gmti-ovl"].forEach(id => $(id).addEventListener("change", drawTracks));
@@ -305,7 +417,8 @@
     } catch (e) { return status("erreur : " + e.message, true); }
     state.streams = r.streams; state.flows = f.flows; state.flowsDur = f.duration_s;
     api("/api/settings").then(st => fillRecent(st.recent)).catch(() => {});
-    gs.decoded = null; gs.res = null; lyTracks.clearLayers(); lyRawStatic.clearLayers(); $("gmti-status").textContent = "Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning)."; $("gmti-inv").hidden = true;
+    if (!gs.prof) loadProfiles();
+    gs.decoded = null; gs.res = null; gs.resB = null; gs.ov = {}; lyTracks.clearLayers(); lyRawStatic.clearLayers(); LY.contacts.clearLayers(); LY.ab.clearLayers(); $("gmti-metrics").hidden = true; $("gmti-status").textContent = "Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning)."; $("gmti-inv").hidden = true;
     cs.data = null; resetCot(); $("cot-detail").hidden = true; $("cot-status").textContent = "";
     const sel = $("stream"); sel.innerHTML = "";
     r.streams.forEach(s => { const o = document.createElement("option"); o.value = s.dport;
@@ -651,8 +764,12 @@
   api("/api/config").then(c => {
     state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();
     fillRecent(c.settings && c.settings.recent);
-    const auto = new URLSearchParams(location.search).get("autoplay");   // ?autoplay=file|replay (démo/tests)
-    if (c.default_pcap) { $("pcap").value = c.default_pcap; load().then(() => { if (auto) { $("mode").value = auto; setTimeout(play, 800); } }); }
+    const qs = new URLSearchParams(location.search), auto = qs.get("autoplay");   // ?autoplay=file|replay · ?tab=gmti · ?track=<profil>[&ab=<profil>][&editor=1]
+    if (c.default_pcap) { $("pcap").value = c.default_pcap; load().then(async () => {
+      if (qs.get("tab")) showTab(qs.get("tab"));
+      if (qs.get("track")) { await loadProfiles(); $("gmti-profile").value = qs.get("track"); if (qs.get("ab")) { $("gmti-ab").value = qs.get("ab"); gs.abProfile = qs.get("ab"); } await gmtiTrack(); }
+      if (qs.get("editor")) { $("gmti-editor").hidden = false; renderEditor(); }
+      if (auto) { $("mode").value = auto; setTimeout(play, 800); } }); }
   });
   connectEvents();
 })();
