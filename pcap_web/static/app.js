@@ -147,7 +147,7 @@
     const sel = $("gmti-profile"); if (!sel.options.length) (d.profiles || []).forEach(pn => { const o = document.createElement("option"); o.value = o.textContent = pn; sel.appendChild(o); });
     if (!sel.value && d.profiles && d.profiles.length) sel.value = d.profiles.includes("maritime") ? "maritime" : d.profiles[0];
     $("gmti-status").textContent = `GMTI décodé (${d.mode}) : ${d.n_plots} plots, ${d.dwells || "?"} dwells · tracker ${d.tracker} — choisir un profil puis 2. Tracker`;
-    $("gmti-inv").textContent = d.rapport || "(inventaire indisponible en mode streaming)";
+    $("gmti-inv").textContent = d.rapport || "(inventaire indisponible en mode streaming)"; $("gmti-inv").hidden = false;   // inventaire 4607 affiché dès le décodage
     $("gmti-sum").textContent = `${d.n_plots} plots décodés`;
     return d;
   }
@@ -184,7 +184,6 @@
   $("gmti-decode").addEventListener("click", gmtiDecode);
   $("gmti-track").addEventListener("click", gmtiTrack);
   ["gmti-raw", "gmti-smooth", "gmti-ovl"].forEach(id => $(id).addEventListener("change", drawTracks));
-  $("gmti-inv-btn").addEventListener("click", () => { $("gmti-inv").hidden = !$("gmti-inv").hidden; });
 
   // ── Analyse statique CoT : objets, traces, inventaire des types, XML ─────────
   const cs = { data: null, sel: null };
