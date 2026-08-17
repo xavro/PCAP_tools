@@ -570,6 +570,11 @@
   });
   gutter.addEventListener("dblclick", () => { setLeft(420); map.invalidateSize(); });
 
+  // Les contrôles posés sur la carte (boutons, légende, dialogues) ne doivent pas
+  // transmettre leurs clics / molette à la carte (sinon : point de mesure sous le bouton).
+  document.querySelectorAll("#map .map-ctl, #map .legend, #map .coords, #map .bm-dlg").forEach(el => {
+    L.DomEvent.disableClickPropagation(el); L.DomEvent.disableScrollPropagation(el); });
+
   // ── Coordonnées au survol (MGRS + lat/lon) ─────────────────────────────────
   let lastMgrs = "";
   map.on("mousemove", e => {
