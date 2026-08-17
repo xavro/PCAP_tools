@@ -183,3 +183,5 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 @media (max-height: 720px) { .tabpage.on > .body { overflow: auto; } }
 #inv-body { min-height: 0; }                       /* liste des flux TS : défile dans l'onglet */
 #cot.tabpage.on > .body { overflow: auto; }         /* onglet CoT : tableau + détail défilent ensemble */
+#inv, #gmti, #cot { flex: 1 1 auto !important; min-height: 0; }   /* onglets : prendre toute la hauteur (écrase les anciennes règles de panneaux) */
+#stream { display: none; }                                         /* choix vidéo : par clic dans l'onglet FMV */
