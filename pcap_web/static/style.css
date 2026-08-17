@@ -187,3 +187,4 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 #stream { display: none; }                                         /* choix vidéo : par clic dans l'onglet FMV */
 
 .leaflet-gl-layer, .maplibregl-canvas { pointer-events: none; }   /* couche vectorielle en fond : la carte Leaflet garde la souris */
+.leaflet-gl-layer { position: absolute; }   /* conteneur MapLibre positionné par le plugin dans le tilePane */

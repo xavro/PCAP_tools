@@ -178,7 +178,7 @@ selon l'action (résumé vivant dans chaque onglet) :
 - **Fusion / export** : toutes les sources sur la même carte ; bouton **GeoJSON fusion**
   (pistes GMTI LineString, objets CoT Point + traces, trace capteur vidéo — WGS84).
 - **Fond de carte** (⚙) : ArcGIS Online (internet, défaut : imagerie / topo / rues / gris
-  foncé) ; **tuiles vectorielles d'un ArcGIS Server / Enterprise** (`…/VectorTileServer`, ex.
+  foncé) ; **tuiles vectorielles d'un ArcGIS Server / Enterprise** (*expérimental* — `…/VectorTileServer`, ex.
   les « Open Vector Basemap » du portail : style Esri rendu par MapLibre GL — vendoré —, style /
   sprites / glyphes / tuiles PBF via le proxy `/vts/*`, URL réécrites, token et certificat
   auto-signé gérés) ; **cache raster** (`…/MapServer` tuilé, proxy `/tile`) ; ou MapServer
