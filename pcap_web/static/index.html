@@ -39,7 +39,7 @@
       <h2><span class="tgl">▾</span> Rejeu — routage <span class="right" id="replay-sum">moteur arrêté</span></h2>
       <div class="body">
         <div class="hint"><b>Coché = rejoué</b> : émis en UDP/TCP vers <b>IP[:port]</b> (virgule = fan-out) si une cible est renseignée, sinon seulement <b>vu dans l'IHM</b> (vidéo, CoT, GMTI). Non coché = ni émis, ni affiché.
-          <label class="chk" style="float:right"><input type="checkbox" id="flows-all"> tout</label></div>
+          <label class="chk" style="float:right"><input type="checkbox" id="flows-all"> tout<span id="flows-all-n"></span></label></div>
         <table class="flows"><tbody id="flows-body"><tr><td class="muted">Analyser un pcap.</td></tr></tbody></table>
         <div class="row"><label class="chk"><input type="checkbox" id="rebase"> recaler l'heure CoT (time/start/stale → maintenant)</label></div>
         <div class="row" id="replay-stats"></div>

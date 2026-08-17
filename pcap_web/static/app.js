@@ -91,7 +91,7 @@
     $("cot-body").innerHTML = rows.map(r => { const e = r.ev, col = AFF[e.aff] || "#8a8f98";
       const age = r.t < 0 ? "—" : (tnow - r.t).toFixed(0) + " s";
       return `<tr data-uid="${e.uid || "(sans uid)"}" class="${r.t >= 0 && tnow - r.t > 60 ? "stale" : ""}${cs.sel === (e.uid || "(sans uid)") ? " sel" : ""}" style="color:${col}"><td title="${e.uid}">${e.uid || "—"}</td><td title="${e.type}">${e.type}</td><td>${e.aff || ""}</td><td>${e.callsign || ""}</td><td>${age}</td></tr>`; }).join("");
-    $("cot-sum").textContent = `${cot.rows.size} objets · ${cot.total} events`;
+    $("cot-sum").textContent = `${cot.rows.size} obj · ${cot.total} ev`;
   }
   function resetCot() { cot.rows.clear(); cot.total = 0; lyCot.clearLayers(); $("cot-body").innerHTML = ""; $("cot-sum").textContent = "—"; }
 
@@ -333,7 +333,8 @@
         `<td class="cnt">${fl.pkts}</td><td class="tg"><input type="text" class="fl-tg" placeholder="${dst ? "cible (ex. " + dst + ") — vide = IHM seule" : "IP[:port] — vide = IHM seule"}" title="cible(s) IP[:port], virgule = fan-out ; vide = pas d'émission, affichage IHM seul"></td>`;
       body.appendChild(tr);
     });
-    if (hidden) { const tr = document.createElement("tr"); tr.innerHTML = `<td colspan="4" class="muted">… ${hidden} flux non applicatifs masqués (binaire/vide) — cocher « tout »</td>`; body.appendChild(tr); }
+    $("flows-all").parentElement.title = hidden ? `${hidden} flux non applicatifs (binaire/vide) masqués` : "tous les flux affichés";
+    $("flows-all-n").textContent = hidden ? ` (+${hidden})` : "";
     markTapRow();
   }
   $("flows-all").addEventListener("change", renderFlows);

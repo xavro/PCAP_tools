@@ -166,3 +166,18 @@ table.cot tr.sel td { background: rgba(0,200,255,.12); }
 #gmti-inv, #cot-detail { flex: 1 1 auto !important; min-height: 160px; max-height: none; }
 #cot .body table.cot { flex: 0 1 auto; }
 #inv-body { flex: 1 1 auto !important; overflow: auto; }
+
+/* ── barres de défilement fines, masquées hors survol ; onglets compacts ── */
+* { scrollbar-width: thin; scrollbar-color: rgba(138,143,152,.45) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+*:hover::-webkit-scrollbar-thumb { background: rgba(138,143,152,.45); }
+*::-webkit-scrollbar-thumb:hover { background: rgba(138,143,152,.7); }
+#replay .body { overflow-x: hidden; }
+.tabbar button { white-space: nowrap; min-width: 0; overflow: hidden; }
+.tabbar .tsum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tabpage.on { overflow: hidden; }
+.tabpage.on > .body { overflow: hidden; }
+#gmti-inv, #cot-detail { min-height: 100px; }
+@media (max-height: 720px) { .tabpage.on > .body { overflow: auto; } }
