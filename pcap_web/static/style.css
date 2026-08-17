@@ -14,14 +14,16 @@ button.danger { color: var(--danger); }
 input[type=text] { min-width: 0; }
 label.chk { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
 #app { display: grid; height: 100%; grid-template-rows: auto 1fr auto;
-  grid-template-columns: 400px 1fr; grid-template-areas: "hdr hdr" "left right" "tl tl"; }
+  grid-template-columns: 330px 6px 1fr; grid-template-areas: "hdr hdr hdr" "left gutter right" "tl tl tl"; }
+#gutter { grid-area: gutter; cursor: col-resize; background: var(--border); }
+#gutter:hover { background: var(--accent); }
 header { grid-area: hdr; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
 header .title { color: var(--accent); font-weight: 600; font-size: 15px; margin-right: 8px; }
 header .sub { color: var(--muted); font-size: 11px; display: block; }
 header input#pcap { flex: 1 1 320px; }
 #status { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 12px; }
-#left { grid-area: left; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+#left { grid-area: left; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
 #right { grid-area: right; display: grid; grid-template-rows: 1fr minmax(240px, 42%); min-height: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; }
 .panel h2 { margin: 0; padding: 6px 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;

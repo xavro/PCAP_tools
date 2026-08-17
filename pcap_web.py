@@ -626,7 +626,10 @@ class ReplayEngine:
         with self.lock:
             return dict(self.state)
 
-    def start(self, pcap, routes, speed=1.0, loop=False, rebase=False, taps=()):
+    def start(self, pcap, routes, speed=1.0, loop=False, rebase=False, taps=(), watch=None):
+        """`routes` : flux émis (targets non vides) ; `taps` : ports vidéo poussés vers l'IHM ;
+        `watch` : liste "udp/1237" des flux dont CoT/GMTI sont décodés pour l'IHM
+        (None = tous, [] = aucun). Un flux non coché n'est ni émis ni affiché."""
         with self.lock:
             if self.thread and self.thread.is_alive():
                 raise ValueError("un rejeu est déjà en cours")
@@ -638,16 +641,17 @@ class ReplayEngine:
                                          target=None, target_port=None)
             self.stop_event.clear()
             self.state = {"running": True, "pcap": pcap, "routes": specs, "speed": speed,
-                          "loop": loop, "taps": list(taps), "sent": 0, "passes": 0, "t": 0.0,
+                          "loop": loop, "taps": list(taps), "watch": watch, "sent": 0, "passes": 0, "t": 0.0,
                           "started": time.time()}
-            self.thread = threading.Thread(target=self._run, args=(pcap, args, table, set(int(t) for t in taps)),
+            wset = None if watch is None else set(str(w).lower() for w in watch)
+            self.thread = threading.Thread(target=self._run, args=(pcap, args, table, set(int(t) for t in taps), wset),
                                            daemon=True)
             self.thread.start()
 
     def stop(self):
         self.stop_event.set()
 
-    def _run(self, pcap, args, table, taps):
+    def _run(self, pcap, args, table, taps, watch=None):
         counters = {}
         t_cap0 = [None]
         last_pub = [0.0]
@@ -701,6 +705,8 @@ class ReplayEngine:
                 tsdata = v9._ts_from_udp(pl)
                 if tsdata:
                     video_bus(dport).publish(bytes(tsdata))
+            elif watch is not None and key not in watch:
+                pass                                              # flux non coché : ni émis, ni affiché
             elif pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
                 ev = decode_cot(pl)
                 if ev:
@@ -907,7 +913,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not pcap or not os.path.isfile(pcap):
                     raise FileNotFoundError("pcap introuvable : %r" % pcap)
                 ENGINE.start(pcap, body.get("routes", []), body.get("speed", 1.0), body.get("loop", False),
-                             body.get("rebase", False), body.get("taps", []))
+                             body.get("rebase", False), body.get("taps", []), body.get("watch"))
                 return self._json(ENGINE.status())
             if u.path == "/api/replay/stop":
                 ENGINE.stop()

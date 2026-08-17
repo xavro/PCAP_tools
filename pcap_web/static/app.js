@@ -293,7 +293,7 @@
       const tr = document.createElement("tr"); tr.dataset.i = i;
       const dst = fl.dsts && fl.dsts.length ? fl.dsts[0] : "";
       tr.innerHTML = `<td><input type="checkbox" class="fl-on"></td><td class="name">${fl.proto.toLowerCase()}/${fl.dport} ${fl.dominant}</td>` +
-        `<td class="cnt">${fl.pkts}</td><td class="tg"><input type="text" class="fl-tg" placeholder="IP[:port], IP2[:port]" value="${dst}"></td>`;
+        `<td class="cnt">${fl.pkts}</td><td class="tg"><input type="text" class="fl-tg" placeholder="${dst ? "cible (ex. " + dst + ") — vide = IHM seule" : "IP[:port] — vide = IHM seule"}" title="cible(s) IP[:port], virgule = fan-out ; vide = pas d'émission, affichage IHM seul"></td>`;
       body.appendChild(tr);
     });
     if (hidden) { const tr = document.createElement("tr"); tr.innerHTML = `<td colspan="4" class="muted">… ${hidden} flux non applicatifs masqués (binaire/vide) — cocher « tout »</td>`; body.appendChild(tr); }
@@ -304,12 +304,14 @@
     document.querySelectorAll("#flows-body tr[data-i]").forEach(tr => {
       const fl = state.flows[tr.dataset.i]; tr.classList.toggle("tap", !!(state.cur && fl.proto === "UDP" && fl.dport === state.cur.dport)); });
   }
-  function routesFromUI() {
-    return Array.from(document.querySelectorAll("#flows-body tr[data-i]")).map(tr => {
-      const fl = state.flows[tr.dataset.i]; if (!tr.querySelector(".fl-on").checked) return null;
+  // Coché = rejoué : émis vers les cibles si renseignées, sinon vu seulement dans l'IHM.
+  function checkedFlows() {
+    return Array.from(document.querySelectorAll("#flows-body tr[data-i]")).filter(tr => tr.querySelector(".fl-on").checked).map(tr => {
+      const fl = state.flows[tr.dataset.i];
       const targets = tr.querySelector(".fl-tg").value.split(",").map(s => s.trim()).filter(Boolean);
-      return targets.length ? { proto: fl.proto, dport: fl.dport, targets } : null; }).filter(Boolean);
+      return { proto: fl.proto, dport: fl.dport, dominant: fl.dominant, targets, key: `${fl.proto.toLowerCase()}/${fl.dport}` }; });
   }
+  function routesFromUI() { return checkedFlows().filter(f => f.targets.length).map(f => ({ proto: f.proto, dport: f.dport, targets: f.targets })); }
 
   function renderInventory() {
     const body = $("inv-body"); body.innerHTML = "";
@@ -328,6 +330,7 @@
   async function selectStream(dport) {
     state.cur = state.streams.find(s => s.dport === Number(dport));
     renderInventory(); markTapRow();
+    document.querySelectorAll("#flows-body tr.tap .fl-on").forEach(cb => { cb.checked = true; });   // flux vidéo choisi → coché (IHM seule si cible vide)
     stopPlayer();
     if (state.cur.first_klv) renderTable(state.cur.first_klv.map(f => ({ tag: f.tag, name: f.name, value: f.value, unit: "" })), false);
     status("trace KLV…");
@@ -380,17 +383,23 @@
       $("tl-mode").textContent = "fichier : cliquer la timeline pour se déplacer";
       return startPlayer(`/video.ts?${q}`, false);
     }
-    // Rejeu : moteur UDP + tap vidéo. Le lecteur ws est ouvert AVANT le start pour ne rien rater.
+    // Rejeu : seuls les flux COCHÉS sont rejoués (émis si cible, sinon vus dans l'IHM).
+    // Le lecteur ws est ouvert AVANT le start pour ne rien rater.
+    const checked = checkedFlows();
+    if (!checked.length) return status("cocher au moins un flux à rejouer (cible vide = IHM seule)", true);
     const routes = routesFromUI();
-    const taps = state.cur ? [state.cur.dport] : [];
-    if (!routes.length && !taps.length) return status("cocher un flux à émettre ou choisir un flux vidéo", true);
-    if (state.cur) startPlayer(`${WS}/ws/video?dport=${state.cur.dport}`, true);
+    const watch = checked.map(f => f.key);
+    const videoOn = state.cur && checked.some(f => f.proto === "UDP" && f.dport === state.cur.dport);
+    const taps = videoOn ? [state.cur.dport] : [];
+    if (videoOn) startPlayer(`${WS}/ws/video?dport=${state.cur.dport}`, true);
+    else { stopPlayer(); $("mode-badge").textContent = "flux vidéo non coché — pas de lecture"; $("mode-badge").className = "overlay"; }
     state.log = []; $("replay-log").textContent = ""; resetCot(); resetGmti(); fitOnce = false; state.retries = 0;
     try {
       await api("/api/replay/start", { pcap: state.pcap, routes, speed: parseFloat($("speed").value), loop: $("loop").checked,
-        rebase: $("rebase").checked, taps });
-      $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ${routes.length} route(s) UDP/TCP` + (taps.length ? " + tap vidéo" : "");
-      status("rejeu démarré");
+        rebase: $("rebase").checked, taps, watch });
+      const ihmOnly = checked.length - routes.length;
+      $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ${routes.length} route(s) émise(s)` + (ihmOnly ? ` + ${ihmOnly} IHM seule` : "") + (taps.length ? " + vidéo" : "");
+      status(`rejeu démarré : ${checked.map(f => f.key).join(", ")}`);
     } catch (e) { stopPlayer(); status("rejeu : " + e.message, true); }
   }
   async function stopAll() {
@@ -513,6 +522,16 @@
   }
   requestAnimationFrame(frame);
   window.addEventListener("resize", () => { map.invalidateSize(); drawTimeline(); });
+
+  // ── Poignée : largeur de la colonne gauche (mémorisée) ─────────────────────
+  const app = $("app"), gutter = $("gutter");
+  const setLeft = w => { w = Math.max(240, Math.min(w, window.innerWidth * 0.6)); app.style.gridTemplateColumns = `${w}px 6px 1fr`; localStorage.setItem("leftw", w); };
+  setLeft(parseInt(localStorage.getItem("leftw") || "330", 10));
+  gutter.addEventListener("mousedown", e => {
+    e.preventDefault(); const move = ev => setLeft(ev.clientX); const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); map.invalidateSize(); drawTimeline(); };
+    document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+  });
+  gutter.addEventListener("dblclick", () => { setLeft(330); map.invalidateSize(); });
 
   // ── Init ─────────────────────────────────────────────────────────────────────
   $("btn-load").addEventListener("click", load);
