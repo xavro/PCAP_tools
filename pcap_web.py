@@ -35,7 +35,8 @@ API :
   GET/POST /api/basemap         config fond de carte (basemap.json)
   GET/POST /api/settings        réglages (dernier pcap, récents, IHM) — pcap_web_settings.json
   GET /api/browse?dir=          explorateur de fichiers côté serveur (dossiers + captures)
-  GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export)
+  GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export dynamique)
+  GET /tile?z=&y=&x=            tuile (proxy ArcGIS MapServer tuilé / cache Web Mercator)
   GET /api/gmti/decode?pcap=    décodage GMTI (extracteur complet | streaming) + inventaire 4607
   GET /api/gmti/track?pcap=&profile=  tracker (profil) → pistes / plots bruts / zone job / porteur (lat/lon)
   GET /api/cot/scan?pcap=&filter=     analyse CoT statique (objets, traces, inventaire des types)
@@ -1014,6 +1015,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._video(self._stream(q))
             if u.path == "/live.ts":
                 return self._live(self._stream(q), q)
+            if u.path == "/tile":
+                return self._tile(q)
             if u.path == "/basemap":
                 return self._basemap(q)
             self._err(404, "route inconnue")
@@ -1181,6 +1184,38 @@ class Handler(BaseHTTPRequestHandler):
             if not loop:
                 break
         self.wfile.write(b"0\r\n\r\n")
+
+    _TILE_CACHE = {}
+    _TILE_LOCK = threading.Lock()
+
+    def _tile(self, q):
+        """Proxy de tuiles ArcGIS Server (cache Web Mercator) : /tile?z=&y=&x= →
+        <MapServer>/tile/{z}/{y}/{x}[?token=] ; certificat auto-signé accepté ; LRU mémoire."""
+        cfg = basemap_load()
+        if not (arcgis_basemap and cfg.get("url")):
+            return self._err(503, "MapServer non configuré")
+        z, y, x = int(q["z"][0]), int(q["y"][0]), int(q["x"][0])
+        key = (cfg["url"], z, y, x)
+        with self._TILE_LOCK:
+            data = self._TILE_CACHE.get(key)
+        if data is None:
+            url = "%s/tile/%d/%d/%d" % (arcgis_basemap.mapserver_root(cfg["url"]).rstrip("/"), z, y, x)
+            if cfg.get("token"):
+                url += "?token=" + urllib.parse.quote(cfg["token"])
+            try:
+                data = arcgis_basemap.fetch_png(url, insecure=cfg.get("insecure", True))
+            except Exception as e:
+                return self._err(502, "tuile injoignable : %s" % e)
+            with self._TILE_LOCK:
+                if len(self._TILE_CACHE) > 4000:
+                    self._TILE_CACHE.clear()
+                self._TILE_CACHE[key] = data
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png" if data[:8] == bytes.fromhex("89504e470d0a1a0a") else "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=86400")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _basemap(self, q):
         cfg = basemap_load()

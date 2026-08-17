@@ -178,8 +178,10 @@ selon l'action (résumé vivant dans chaque onglet) :
 - **Fusion / export** : toutes les sources sur la même carte ; bouton **GeoJSON fusion**
   (pistes GMTI LineString, objets CoT Point + traces, trace capteur vidéo — WGS84).
 - **Fond de carte** (⚙) : ArcGIS Online (internet, défaut : imagerie / topo / rues / gris
-  foncé) ou MapServer ArcGIS local via proxy (`/basemap`, EPSG:3857, certificat auto-signé),
-  enregistré dans `basemap.json` (hors dépôt).
+  foncé), **Tile Layer d'un ArcGIS Server / Enterprise** (cache Web Mercator — ex. les « Open
+  Basemap » du portail : URL de l'item `…/rest/services/Hosted/<nom>/MapServer`, via le proxy
+  `/tile`, token et certificat auto-signé gérés) ou MapServer dynamique via `/basemap`
+  (export EPSG:3857) ; enregistré dans `basemap.json` (hors dépôt).
 
 Notes : Chrome gèle le média d'un onglet masqué/occulté — garder l'onglet visible pendant
 un rejeu live ; H.265 n'est pas lu en MSE par tous les navigateurs (les flux ISRBOX sont H.264).

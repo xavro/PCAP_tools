@@ -100,7 +100,8 @@
         <h3>Fond de carte</h3>
         <label>Source <select id="bm-provider">
           <option value="arcgis_online">ArcGIS Online (internet)</option>
-          <option value="mapserver">MapServer ArcGIS (réseau local, via proxy)</option>
+          <option value="mapserver_tiles">Tuiles ArcGIS Server — Tile Layer / cache (réseau local, via proxy)</option>
+          <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
           <option value="none">Aucun</option></select></label>
         <label id="bm-layer-row">Couche <select id="bm-layer">
           <option value="World_Imagery">Imagerie</option>
@@ -108,7 +109,8 @@
           <option value="World_Street_Map">Rues</option>
           <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
         <div id="bm-ms-rows">
-          <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
+          <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/server/rest/services/Hosted/Open_Basemap_Streets/MapServer"></label>
+          <div class="muted" style="font-size:11px">Tile Layer du portail : page de l'item → « URL » (se termine par /MapServer). Cache Web Mercator (schéma standard Esri) requis pour le mode tuiles.</div>
           <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
           <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
         </div>
