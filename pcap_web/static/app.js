@@ -560,7 +560,7 @@
       // « + » ajoute un destinataire (fan-out). L'émission n'a lieu que si « émettre » est coché.
       const dsts = (fl.dsts && fl.dsts.length ? fl.dsts : []).map(d => `${d}:${fl.dport}`);
       tr.innerHTML = `<td><input type="checkbox" class="fl-on" title="coché = rejoué (affiché dans l'IHM)"></td><td class="name">${fl.proto.toLowerCase()}/${fl.dport} ${fl.dominant}</td>` +
-        `<td class="cnt">${fl.pkts}</td><td class="tg"><div class="tgbox"><label class="chk emit" title="émettre en ${fl.proto} vers les cibles ci-contre (sinon IHM seule)"><input type="checkbox" class="fl-emit">↗</label>` +
+        `<td class="cnt">${fl.pkts}</td><td class="tg"><div class="tgbox">` +
         `<span class="tgs">${(dsts.length ? dsts : [""]).map(d => `<span class="tgw"><input type="text" class="fl-tg" value="${d}" placeholder="IP[:port]" title="cible IP[:port] — pré-remplie avec la destination du pcap ; modifiable"><button class="tg-del" title="retirer cette cible">×</button></span>`).join("")}</span>` +
         `<button class="tg-add" title="ajouter un destinataire (fan-out)">+</button></div></td>`;
       body.appendChild(tr);
@@ -571,7 +571,7 @@
       });
       tr.querySelectorAll(".tgw").forEach(wireDel);
       function wireDel(w) { w.querySelector(".tg-del").addEventListener("click", () => { const all = tr.querySelectorAll(".tgw"); if (all.length > 1) w.remove(); else w.querySelector("input").value = ""; }); }
-      tr.querySelector(".fl-emit").addEventListener("change", e => { if (e.target.checked) tr.querySelector(".fl-on").checked = true; });
+
     });
     $("flows-all").parentElement.title = hidden ? `${hidden} flux non applicatifs (binaire/vide) masqués` : "tous les flux affichés";
     $("flows-all-n").textContent = hidden ? ` (+${hidden})` : "";
@@ -586,8 +586,7 @@
   function checkedFlows() {
     return Array.from(document.querySelectorAll("#flows-body tr[data-i]")).filter(tr => tr.querySelector(".fl-on").checked).map(tr => {
       const fl = state.flows[tr.dataset.i];
-      const emit = tr.querySelector(".fl-emit").checked;
-      const targets = emit ? Array.from(tr.querySelectorAll(".fl-tg")).flatMap(i => i.value.split(",")).map(s => s.trim()).filter(Boolean) : [];
+      const targets = Array.from(tr.querySelectorAll(".fl-tg")).flatMap(i => i.value.split(",")).map(s => s.trim()).filter(Boolean);
       return { proto: fl.proto, dport: fl.dport, dominant: fl.dominant, targets, key: `${fl.proto.toLowerCase()}/${fl.dport}` }; });
   }
   function routesFromUI() { return checkedFlows().filter(f => f.targets.length).map(f => ({ proto: f.proto, dport: f.dport, targets: f.targets })); }
@@ -655,7 +654,8 @@
 
   async function play() {
     if (!state.pcap) return status("analyser un pcap d'abord", true);
-    state.mode = $("mode").value;
+    const sel = $("mode").value; const emitting = sel === "emit";
+    state.mode = sel === "file" ? "file" : "replay";
     const q = `pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur ? state.cur.dport : 0}`;
     if (state.mode === "file") {
       if (!state.cur) return status("pas de flux vidéo", true);
@@ -665,8 +665,9 @@
     // Rejeu : seuls les flux COCHÉS sont rejoués (émis si cible, sinon vus dans l'IHM).
     // Le lecteur ws est ouvert AVANT le start pour ne rien rater.
     const checked = checkedFlows();
-    if (!checked.length) return status("cocher au moins un flux à rejouer (cible vide = IHM seule)", true);
-    const routes = routesFromUI();
+    if (!checked.length) return status("cocher au moins un flux à rejouer", true);
+    const routes = emitting ? routesFromUI() : [];                        // IHM seule : aucune émission
+    if (emitting && !routes.length) return status("mode émission : renseigner au moins une cible IP:port sur un flux coché", true);
     const watch = checked.map(f => f.key);
     const videoOn = state.cur && checked.some(f => f.proto === "UDP" && f.dport === state.cur.dport);
     const taps = videoOn ? [state.cur.dport] : [];
@@ -679,9 +680,9 @@
       await api("/api/replay/start", { pcap: state.pcap, routes, speed: parseFloat($("speed").value), loop: $("loop").checked,
         rebase: $("rebase").checked, taps, watch, track });
       if (track) { showTab("gmti"); $("gmti-live-body").textContent = `pistage temps réel actif — profil ${track.profile}${Object.keys(track.overrides).length ? " + surcharges" : ""}`; }
-      const ihmOnly = checked.length - routes.length;
-      $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ${routes.length} route(s) émise(s)` + (ihmOnly ? ` + ${ihmOnly} IHM seule` : "") + (taps.length ? " + vidéo" : "");
-      status(`rejeu démarré : ${checked.map(f => f.key).join(", ")}`);
+      $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ` + (emitting ? `${routes.length} route(s) émise(s) en UDP/TCP` : "IHM seule (aucune émission)") + (taps.length ? " + vidéo" : "");
+      status(`rejeu ${emitting ? "avec émission" : "IHM seule"} : ${checked.map(f => f.key).join(", ")}`);
+      $("mode-badge").textContent = (videoOn ? "● LIVE — flux tapé sur le moteur de rejeu" : "flux vidéo non coché — pas de lecture") + (emitting ? " · ÉMISSION UDP/TCP" : " · IHM seule");
     } catch (e) { stopPlayer(); status("rejeu : " + e.message, true); }
   }
   async function stopAll() {
@@ -893,7 +894,7 @@
   $("stream").addEventListener("change", e => selectStream(e.target.value));
   $("btn-play").addEventListener("click", play);
   $("btn-stop").addEventListener("click", stopAll);
-  $("mode").addEventListener("change", () => { state.mode = $("mode").value; drawTimeline(); });
+  $("mode").addEventListener("change", () => { state.mode = $("mode").value === "file" ? "file" : "replay"; drawTimeline(); document.body.classList.toggle("emit-mode", $("mode").value === "emit"); });
   api("/api/config").then(c => {
     state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();
     fillRecent(c.settings && c.settings.recent);
@@ -902,7 +903,7 @@
       if (qs.get("tab")) showTab(qs.get("tab"));
       if (qs.get("track")) { await loadProfiles(); $("gmti-profile").value = qs.get("track"); if (qs.get("ab")) { $("gmti-ab").value = qs.get("ab"); gs.abProfile = qs.get("ab"); } await gmtiTrack(); }
       if (qs.get("editor")) { $("gmti-editor").hidden = false; renderEditor(); }
-      if (auto) { $("mode").value = auto; setTimeout(play, 800); } }); }
+      if (auto) { $("mode").value = auto === "replay" ? "replay" : auto; setTimeout(play, 800); } }); }
   });
   connectEvents();
 })();

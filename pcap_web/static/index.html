@@ -15,9 +15,10 @@
     <button id="btn-browse" title="parcourir les captures (explorateur côté serveur)">Parcourir…</button>
     <button id="btn-load">Analyser</button>
     <select id="stream" title="flux vidéo TS affiché" hidden></select>
-    <select id="mode" title="mode de lecture">
+    <select id="mode" title="Fichier : lecture de la vidéo extraite (seek libre). Rejeu — IHM seule : les flux cochés sont rejoués à la cadence du pcap dans l'IHM, rien n'est émis sur le réseau. Rejeu + émission : en plus, les flux cochés sont envoyés en UDP/TCP vers leurs cibles.">
       <option value="file">Fichier (seek)</option>
-      <option value="replay">Rejeu (UDP + live)</option>
+      <option value="replay">Rejeu — IHM seule</option>
+      <option value="emit">Rejeu + émission UDP/TCP</option>
     </select>
     <select id="speed" title="vitesse (mode rejeu)">
       <option value="1">×1</option><option value="2">×2</option><option value="5">×5</option><option value="10">×10</option><option value="0">max</option>
@@ -80,7 +81,7 @@
     <section class="panel" id="replay">
       <h2><span class="tgl">▾</span> Rejeu — routage <span class="right" id="replay-sum">moteur arrêté</span></h2>
       <div class="body">
-        <div class="hint" title="Coché = rejoué : le flux est décodé et affiché dans l'IHM (vidéo, CoT, GMTI). Émettre = en plus, envoyé en UDP/TCP vers chaque cible IP:port (pré-remplies avec les destinations originales du pcap ; modifiables ; + pour un fan-out). Non coché = ni émis, ni affiché."><b>Coché = rejoué</b> (IHM) · <b>émettre</b> = envoyé aux cibles <b>IP:port</b> (pré-remplies avec les destinations du pcap, modifiables, « + » = fan-out).
+        <div class="hint" title="Coché = rejoué : le flux est décodé et affiché dans l'IHM (vidéo, CoT, GMTI) ; en mode « Rejeu + émission » il est aussi envoyé en UDP/TCP vers chaque cible IP:port (pré-remplies avec les destinations originales du pcap ; modifiables ; + pour un fan-out). Non coché = ni émis, ni affiché."><b>Coché = rejoué</b> · cibles <b>IP:port</b> pré-remplies (destinations du pcap), modifiables, « + » = fan-out — utilisées en mode <b>Rejeu + émission</b>.
           <label class="chk" style="float:right"><input type="checkbox" id="flows-all"> tout<span id="flows-all-n"></span></label></div>
         <table class="flows"><tbody id="flows-body"><tr><td class="muted">Analyser un pcap.</td></tr></tbody></table>
         <div class="row"><label class="chk"><input type="checkbox" id="rebase"> recaler l'heure CoT (time/start/stale → maintenant)</label></div>

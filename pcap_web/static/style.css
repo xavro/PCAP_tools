@@ -257,11 +257,10 @@ button:disabled, button[disabled] { opacity: .5; cursor: not-allowed; }
 
 /* ── cibles de rejeu : émettre + destinataires multiples ── */
 table.flows td.tg .tgbox { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 3px; width: 100%; }
-table.flows .emit { font-size: 11px; color: var(--muted); margin: 3px 0 0; gap: 2px; white-space: nowrap; }
 table.flows .tgs { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 table.flows .tgw { display: flex; gap: 2px; align-items: center; }
 table.flows .tgw input[type=text] { flex: 1; min-width: 0; width: 100%; padding: 1px 4px; font-size: 12px; }
 table.flows .tg-del, table.flows .tg-add { padding: 0 5px; line-height: 18px; font-size: 12px; flex: 0 0 auto; }
 table.flows .tg-add { margin-top: 1px; }
-table.flows tr:has(.fl-emit:checked) td.name { color: var(--warn); }
-table.flows tr:has(.fl-emit:checked) .emit { color: var(--warn); }
+body.emit-mode table.flows tr:has(.fl-on:checked) td.name { color: var(--warn); }   /* mode émission : flux cochés = émis */
+body.emit-mode #mode { border-color: var(--warn); color: var(--warn); }
