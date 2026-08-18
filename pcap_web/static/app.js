@@ -7,7 +7,7 @@
   const WS = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
   const state = { cfg: null, pcap: "", streams: [], cur: null, track: null, player: null,
     mode: "file", sets: [], applied: -1, tableAt: 0, flows: [], flowsDur: 0, replay: null,
-    bmLayer: null, bmOverlay: null, bmCfg: null, evws: null, log: [], retries: 0 };
+    bmLayer: null, bmOverlay: null, bmCfg: null, evws: null, log: [], retries: 0, seeking: false, videoOn: false, emitting: false };
 
   const status = (msg, warn) => { const s = $("status"); s.textContent = msg; s.style.color = warn ? "var(--warn)" : ""; };
   const fmt = (v, d = 5) => (v == null || isNaN(v)) ? "—" : Number(v).toFixed(d);
@@ -670,6 +670,7 @@
     if (emitting && !routes.length) return status("mode émission : renseigner au moins une cible IP:port sur un flux coché", true);
     const watch = checked.map(f => f.key);
     const videoOn = state.cur && checked.some(f => f.proto === "UDP" && f.dport === state.cur.dport);
+    state.videoOn = !!videoOn; state.emitting = emitting;
     const taps = videoOn ? [state.cur.dport] : [];
     if (videoOn) startPlayer(`${WS}/ws/video?dport=${state.cur.dport}`, true);
     else { stopPlayer(); $("mode-badge").textContent = "flux vidéo non coché — pas de lecture"; $("mode-badge").className = "overlay"; }
@@ -680,11 +681,33 @@
       await api("/api/replay/start", { pcap: state.pcap, routes, speed: parseFloat($("speed").value), loop: $("loop").checked,
         rebase: $("rebase").checked, taps, watch, track });
       if (track) { showTab("gmti"); $("gmti-live-body").textContent = `pistage temps réel actif — profil ${track.profile}${Object.keys(track.overrides).length ? " + surcharges" : ""}`; }
-      $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ` + (emitting ? `${routes.length} route(s) émise(s) en UDP/TCP` : "IHM seule (aucune émission)") + (taps.length ? " + vidéo" : "");
+      $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";
+      $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ` + (emitting ? `${routes.length} route(s) émise(s) en UDP/TCP` : "IHM seule (aucune émission)") + (taps.length ? " + vidéo" : "") + " · clic sur la timeline = saut, ⏸ = pause";
       status(`rejeu ${emitting ? "avec émission" : "IHM seule"} : ${checked.map(f => f.key).join(", ")}`);
       $("mode-badge").textContent = (videoOn ? "● LIVE — flux tapé sur le moteur de rejeu" : "flux vidéo non coché — pas de lecture") + (emitting ? " · ÉMISSION UDP/TCP" : " · IHM seule");
     } catch (e) { stopPlayer(); status("rejeu : " + e.message, true); }
   }
+  // ── Transport du rejeu : pause / vitesse à chaud / saut sur la timeline ────────
+  $("btn-pause").addEventListener("click", async () => {
+    const paused = !(state.replay && state.replay.paused);
+    try { await api("/api/replay/pause", { paused }); if (state.player && state.videoOn) { if (paused) video.pause(); else video.play().catch(() => {}); } status(paused ? "rejeu en pause" : "rejeu repris"); }
+    catch (e) { status("pause : " + e.message, true); }
+  });
+  $("speed").addEventListener("change", async () => {
+    if (state.replay && state.replay.running) { try { await api("/api/replay/speed", { speed: parseFloat($("speed").value) }); status(`vitesse ×${$("speed").value || "max"} appliquée`); } catch (e) { status("vitesse : " + e.message, true); } }
+  });
+  async function seekReplay(t) {
+    if (!(state.replay && state.replay.running)) return;
+    state.seeking = true;
+    state.seekEnd = busy(`saut à t=${t.toFixed(0)} s — rembobinage à blanc (pistes / CoT reconstitués)…`);
+    resetCot(); resetGmti(); resetLive();
+    try {
+      await api("/api/replay/seek", { t });
+      if (state.videoOn && state.cur) startPlayer(`${WS}/ws/video?dport=${state.cur.dport}`, true);   // nouveau flux tapé
+      status(`saut à t=${t.toFixed(0)} s`);
+    } catch (e) { state.seeking = false; if (state.seekEnd) { state.seekEnd(); state.seekEnd = null; } status("saut : " + e.message, true); }
+  }
+
   async function stopAll() {
     stopPlayer();
     try { await api("/api/replay/stop", {}); } catch (e) {}
@@ -747,12 +770,15 @@
   }
   function onEvent(ev) {
     if (ev.type === "hello") { state.replay = ev.replay; renderReplay(); }
-    else if (ev.type === "replay") { state.replay = ev; renderReplay(); }
+    else if (ev.type === "replay") { state.replay = ev; renderReplay(); if (state.seeking && ev.t > 0) { state.seeking = false; if (state.seekEnd) { state.seekEnd(); state.seekEnd = null; } }
+      $("btn-pause").textContent = ev.paused ? "▶" : "⏸"; $("btn-pause").disabled = !ev.running; }
     else if (ev.type === "log") { state.log.push(ev.msg); if (state.log.length > 200) state.log.shift();
       const el = $("replay-log"); el.textContent = state.log.slice(-40).join("\n"); el.scrollTop = el.scrollHeight; }
     else if (ev.type === "cot") { onCotBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
     else if (ev.type === "gmti") { onGmtiBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
-    else if (ev.type === "end") { status(ev.stopped ? "rejeu arrêté" : "rejeu terminé"); if (state.mode === "replay") stopPlayer(); state.replay = { running: false }; renderReplay(); }
+    else if (ev.type === "end") {
+      if (state.seeking) return;                          // fin du run interrompu par un saut : ignorée
+      status(ev.stopped ? "rejeu arrêté" : "rejeu terminé"); if (state.mode === "replay") stopPlayer(); state.replay = { running: false }; renderReplay(); $("btn-pause").disabled = true; }
   }
   function renderReplay() {
     const r = state.replay || {};
@@ -792,9 +818,12 @@
     ctx.fillStyle = "#00c8ff"; ctx.fillRect(x(video.currentTime) - 1, 0, 2, H);
   }
   tl.addEventListener("click", ev => {
-    if (state.mode !== "file" || !state.player) return;
-    const D = duration(); if (!D) return; video.currentTime = (ev.offsetX / tl.clientWidth) * D;
+    const D = duration(); if (!D) return;
+    const t = (ev.offsetX / tl.clientWidth) * D;
+    if (state.mode === "file") { if (state.player) video.currentTime = t; return; }
+    if (state.replay && state.replay.running) seekReplay(t);
   });
+  tl.style.cursor = "pointer";
   function frame() {
     const tms = video.currentTime * 1000;
     if (state.sets.length) { const idx = indexAt(tms + 20); if (idx >= 0 && idx !== state.applied) apply(idx, tms); }

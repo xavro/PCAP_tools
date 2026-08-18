@@ -30,6 +30,8 @@ API :
                                  taps:[dport], watch:[...], track:{profile, overrides}} → démarre le
                                  moteur de rejeu (track = pistage GMTI temps réel, pistes dans les lots gmti)
   POST /api/replay/stop         arrêt propre
+  POST /api/replay/pause {paused} · /api/replay/speed {speed} · /api/replay/seek {t}  transport
+                                (pause/reprise, vitesse à chaud, saut = redémarrage avec rembobinage à blanc)
   GET /api/replay/status        état courant
   WS  /ws/events                événements JSON (replay/log/end)
   WS  /ws/video?dport=          TS binaire du flux tapé (mpegts.js WebSocket loader)
@@ -999,12 +1001,13 @@ class ReplayEngine:
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.state = {"running": False}
+        self.paused = False; self.args = None; self.params = None
 
     def status(self):
         with self.lock:
             return dict(self.state)
 
-    def start(self, pcap, routes, speed=1.0, loop=False, rebase=False, taps=(), watch=None, track=None):
+    def start(self, pcap, routes, speed=1.0, loop=False, rebase=False, taps=(), watch=None, track=None, start_at=0.0):
         """`routes` : flux émis (targets non vides) ; `taps` : ports vidéo poussés vers l'IHM ;
         `watch` : liste "udp/1237" des flux dont CoT/GMTI sont décodés pour l'IHM
         (None = tous, [] = aucun). Un flux non coché n'est ni émis ni affiché."""
@@ -1017,10 +1020,12 @@ class ReplayEngine:
             args = types.SimpleNamespace(speed=float(speed), loop=bool(loop), precise=True,
                                          rebase_time=bool(rebase), drop_unmatched=True,
                                          target=None, target_port=None)
-            self.stop_event.clear()
-            self.state = {"running": True, "pcap": pcap, "routes": specs, "speed": speed,
+            self.stop_event.clear(); self.paused = False; self.args = args
+            self.params = {"pcap": pcap, "routes": routes, "speed": speed, "loop": loop, "rebase": rebase,
+                           "taps": list(taps), "watch": watch, "track": track}
+            self.state = {"running": True, "pcap": pcap, "routes": specs, "speed": speed, "paused": False,
                           "loop": loop, "taps": list(taps), "watch": watch, "track": track, "sent": 0, "passes": 0, "t": 0.0,
-                          "started": time.time()}
+                          "start_at": float(start_at or 0.0), "started": time.time()}
             wset = None if watch is None else set(str(w).lower() for w in watch)
             live = None
             if track:
@@ -1028,14 +1033,43 @@ class ReplayEngine:
                     live = LiveTracker(track.get("profile") or "defaut", track.get("overrides") or {})
                 except Exception as e:
                     raise ValueError("pistage temps réel indisponible : %s" % e)
-            self.thread = threading.Thread(target=self._run, args=(pcap, args, table, set(int(t) for t in taps), wset, live),
-                                           daemon=True)
+            self.thread = threading.Thread(target=self._run, args=(pcap, args, table, set(int(t) for t in taps), wset, live,
+                                                                   float(start_at or 0.0)), daemon=True)
             self.thread.start()
 
     def stop(self):
         self.stop_event.set()
 
-    def _run(self, pcap, args, table, taps, watch=None, live=None):
+    # ── Transport ────────────────────────────────────────────────────────
+    def pause(self, on=True):
+        with self.lock:
+            self.paused = bool(on); self.state["paused"] = self.paused
+        EVENTS.publish({"type": "replay", **self.status()})
+
+    def set_speed(self, speed):
+        with self.lock:
+            if getattr(self, "args", None) is not None:
+                self.args.speed = float(speed)
+            if getattr(self, "params", None):
+                self.params["speed"] = float(speed)          # un saut ultérieur garde la vitesse courante
+            self.state["speed"] = float(speed)
+        EVENTS.publish({"type": "replay", **self.status()})
+
+    def seek(self, t):
+        """Saut à t (s depuis le 1er paquet) : arrêt du run courant puis redémarrage avec
+        rembobinage à blanc jusqu'à t (état trackers/CoT reconstitué). Bloquant (< 1 s + relecture)."""
+        params = getattr(self, "params", None)
+        if not params:
+            raise ValueError("aucun rejeu à repositionner")
+        self.stop_event.set()
+        th = self.thread
+        if th is not None:
+            th.join(timeout=10)
+        self.start(params["pcap"], params["routes"], params["speed"], params["loop"], params["rebase"],
+                   params["taps"], params["watch"], params["track"], start_at=max(0.0, float(t)))
+        return self.status()
+
+    def _run(self, pcap, args, table, taps, watch=None, live=None, start_at=0.0):
         counters = {}
         t_cap0 = [None]
         last_pub = [0.0]
@@ -1085,9 +1119,35 @@ class ReplayEngine:
                 EVENTS.publish(ev)
                 gmti_batch.update({"plots": [], "sensor": None, "pkts": 0, "dwells": []})
 
+        skip_state = {"cot": {}, "n": 0, "first": None}
+
+        def on_skip(ts, proto, dport, pl):
+            """Rembobinage à blanc (avant start_at) : état des trackers et du CoT sans affichage."""
+            if skip_state["first"] is None:
+                skip_state["first"] = ts
+                t_cap0[0] = ts                                        # l'horloge relative garde l'origine du pcap
+            skip_state["n"] += 1
+            key = "%s/%s" % (proto.lower(), dport)
+            if watch is not None and key not in watch:
+                return
+            if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
+                ev = decode_cot(pl)
+                if ev:
+                    ev["src"] = key; skip_state["cot"][ev["uid"] or ("#%d" % skip_state["n"])] = ev
+            elif live is not None and gmti_pcap_to_csv is not None and len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
+                if gmti_pcap_to_csv.looks_like_4607(pl):
+                    try:
+                        live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                    except Exception:
+                        pass
+
         def on_packet(ts, proto, dport, pl, tgts):
             if t_cap0[0] is None:
                 t_cap0[0] = ts
+            if skip_state["cot"]:                                     # état CoT reconstitué au point de reprise
+                EVENTS.publish({"type": "cot", "t": round(ts - t_cap0[0], 3), "events": list(skip_state["cot"].values()),
+                                "total": len(skip_state["cot"]), "resumed": True})
+                skip_state["cot"] = {}
             t_rel[0] = ts - t_cap0[0]
             key = "%s/%s" % (proto.lower(), dport)
             if tgts:
@@ -1132,8 +1192,12 @@ class ReplayEngine:
             EVENTS.publish({"type": "log", "msg": str(msg)})
 
         try:
+            if start_at:
+                EVENTS.publish({"type": "log", "msg": "saut à t=%.1f s : rembobinage à blanc (état pistes/CoT reconstitué)…" % start_at})
             pcap_replay.do_routed_replay(pcap, args, table, should_stop=self.stop_event.is_set,
-                                         on_progress=on_progress, log=log, on_packet=on_packet)
+                                         on_progress=on_progress, log=log, on_packet=on_packet,
+                                         start_at=start_at, on_skip=on_skip if start_at else None,
+                                         is_paused=lambda: self.paused)
         except Exception as e:
             EVENTS.publish({"type": "log", "msg": "ERREUR rejeu : %s" % e})
         finally:
@@ -1337,11 +1401,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not pcap or not os.path.isfile(pcap):
                     raise FileNotFoundError("pcap introuvable : %r" % pcap)
                 ENGINE.start(pcap, body.get("routes", []), body.get("speed", 1.0), body.get("loop", False),
-                             body.get("rebase", False), body.get("taps", []), body.get("watch"), body.get("track"))
+                             body.get("rebase", False), body.get("taps", []), body.get("watch"), body.get("track"),
+                             float(body.get("start_at", 0.0) or 0.0))
                 return self._json(ENGINE.status())
             if u.path == "/api/replay/stop":
                 ENGINE.stop()
                 return self._json({"ok": True})
+            if u.path == "/api/replay/pause":
+                ENGINE.pause(bool(body.get("paused", True)))
+                return self._json(ENGINE.status())
+            if u.path == "/api/replay/speed":
+                ENGINE.set_speed(float(body.get("speed", 1.0)))
+                return self._json(ENGINE.status())
+            if u.path == "/api/replay/seek":
+                return self._json(ENGINE.seek(float(body.get("t", 0.0))))
             if u.path == "/api/settings":
                 return self._json(settings_save(body))
             if u.path == "/api/gmti/profiles":

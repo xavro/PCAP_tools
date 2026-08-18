@@ -413,13 +413,18 @@ def targets_for(table, proto, dport, default_target, default_port):
 
 
 def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=print,
-                     on_packet=None):
+                     on_packet=None, start_at=0.0, on_skip=None, is_paused=None):
     """Rejeu routé. `should_stop()` -> bool (arrêt propre, pour une GUI),
     `on_progress(sent, passes)` (statut live), `log(msg)` (sortie). Sans ces
     callbacks, comportement CLI identique (print, pas d'arrêt externe).
     `on_packet(ts, proto, dport, payload, targets)` : hook appelé pour CHAQUE paquet
     applicatif après cadencement (targets vide = non routé) — permet à une IHM de
-    « voir » le flux rejoué (vidéo, CoT…) sans second lecteur pcap."""
+    « voir » le flux rejoué (vidéo, CoT…) sans second lecteur pcap.
+    Transport (IHM) : `start_at` = décalage (s) depuis le 1er paquet à partir duquel on
+    rejoue — les paquets antérieurs sont parcourus SANS cadencement ni émission et passés à
+    `on_skip(ts, proto, dport, payload)` (rembobinage à blanc : état des trackers, CoT…) ;
+    `is_paused()` -> bool : tant que vrai, le rejeu marque une pause (l'horloge est décalée
+    d'autant) ; `args.speed` peut être modifié à chaud (rebasage de l'horloge)."""
     default_target = None if args.drop_unmatched else args.target
     log("Rejeu ROUTÉ (tout le pcap, timing global) :")
     for (proto, port), tgts in table.items():
@@ -450,6 +455,8 @@ def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=
             passes += 1
             rebaser = TimeRebaser() if args.rebase_time else None
             t0_cap = t0_wall = None
+            first_ts = None
+            cur_speed = args.speed
             sent = 0
             for ts, lt, frame in iter_frames(path):
                 if should_stop is not None and should_stop():
@@ -461,16 +468,35 @@ def do_routed_replay(path, args, table, should_stop=None, on_progress=None, log=
                 proto, src, sport, dst, dport, pl = r
                 if not pl:
                     continue
+                if first_ts is None:
+                    first_ts = ts
+                # Rembobinage à blanc : avant start_at, ni cadencement ni émission.
+                if start_at and ts - first_ts < start_at:
+                    if on_skip is not None:
+                        on_skip(ts, proto, dport, pl)
+                    continue
                 tgts = targets_for(table, proto, dport, default_target, args.target_port)
                 if not tgts and on_packet is None:
                     continue
                 if rebaser is not None and tgts:
                     pl = rebaser.rebase(pl)
+                # Pause : on attend, puis on décale l'horloge murale du temps passé en pause.
+                if is_paused is not None and is_paused():
+                    p0 = time.perf_counter()
+                    while is_paused() and not (should_stop is not None and should_stop()):
+                        time.sleep(0.05)
+                    if t0_wall is not None:
+                        t0_wall += time.perf_counter() - p0
                 # Cadence sur l'horloge GLOBALE de capture (multiplex préservé).
                 if args.speed and args.speed > 0:
                     if t0_cap is None:
                         t0_cap, t0_wall = ts, time.perf_counter()
+                    if args.speed != cur_speed:                 # vitesse changée à chaud : rebasage
+                        t0_wall = time.perf_counter() - (ts - t0_cap) / args.speed
+                        cur_speed = args.speed
                     wait_until(t0_wall + (ts - t0_cap) / args.speed, args.precise)
+                elif cur_speed != args.speed:                   # passage à « max »
+                    cur_speed = args.speed
                 for ip, port in tgts:
                     tport = port or dport
                     if proto == "UDP":

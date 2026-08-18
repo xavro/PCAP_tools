@@ -16,7 +16,7 @@
     <button id="btn-load">Analyser</button>
     <select id="stream" title="flux vidéo TS affiché" hidden></select>
     <select id="mode" title="Fichier : lecture de la vidéo extraite (seek libre). Rejeu — IHM seule : les flux cochés sont rejoués à la cadence du pcap dans l'IHM, rien n'est émis sur le réseau. Rejeu + émission : en plus, les flux cochés sont envoyés en UDP/TCP vers leurs cibles.">
-      <option value="file">Fichier (seek)</option>
+      <option value="file">Vidéo seule (fichier, seek image)</option>
       <option value="replay">Rejeu — IHM seule</option>
       <option value="emit">Rejeu + émission UDP/TCP</option>
     </select>
@@ -25,6 +25,7 @@
     </select>
     <label class="chk"><input type="checkbox" id="loop"> boucle</label>
     <button id="btn-play" class="accent">▶ Lire</button>
+    <button id="btn-pause" title="pause / reprise du rejeu (la vidéo fichier a ses propres commandes)" disabled>⏸</button>
     <button id="btn-stop" class="danger">■ Stop</button>
     <span id="status">prêt</span>
     <span id="busy" class="busy" hidden><i class="spin"></i><span id="busy-txt">en cours…</span></span>
