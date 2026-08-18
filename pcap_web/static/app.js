@@ -219,7 +219,7 @@
     $("gmti-live-body").innerHTML = st.error ? `pistage temps réel : <span style="color:var(--danger)">${st.error}</span>` :
       `pistage temps réel · profil <b>${st.profile}${Object.keys(st.overrides || {}).length ? "*" : ""}</b> · dwells <b>${st.n_dwells}</b> · pistes vivantes <b>${st.displayable}</b> ` +
       `(solides <b>${st.solid}</b>, confirmées <b>${st.confirmed}</b>, coasting <b>${st.coasting}</b>, tentatives ${st.tentative}) · archivées ${st.archived}` +
-      (lv.contacts ? ` · contacts fusionnés <b>${lv.contacts.length}</b>` : "") + (st.n_resets ? ` · resets ${st.n_resets}` : "") + (st.n_filtered ? ` · filtrés ${st.n_filtered}` : "") + (st.n_ghosts ? ` · fantômes ${st.n_ghosts}` : "") + (st.n_absorbed ? ` · pistes absorbées ${st.n_absorbed}` : "") + (st.n_clustered ? ` · échos regroupés ${st.n_clustered}` : "") + vidgapText();
+      (lv.contacts ? ` · contacts fusionnés <b>${lv.contacts.length}</b>` : "") + (st.n_resets ? ` · resets ${st.n_resets}` : "") + (st.n_filtered ? ` · filtrés ${st.n_filtered}` : "") + (st.n_ghosts ? ` · fantômes ${st.n_ghosts}` : "") + (st.n_absorbed ? ` · pistes absorbées ${st.n_absorbed}` : "") + (st.n_swallowed ? ` · échos avalés ${st.n_swallowed}` : "") + (st.n_clustered ? ` · échos regroupés ${st.n_clustered}` : "") + vidgapText();
   }
   function resetLive() { live.layers.clear(); LY.live.clearLayers(); projLayers.length = 0; resetVidgap(); $("gmti-live-body").textContent = ""; }
 
@@ -391,7 +391,7 @@
     ["plots_per_track", "plots / piste", 1, ""], ["hits_mean", "hits moyens", 1, "hi"], ["hits_median", "hits médians", 0, "hi"], ["short_tracks", "pistes < 5 hits", 0, "lo"],
     ["dur_mean_s", "durée moyenne (s)", 0, "hi"], ["dur_max_s", "durée max (s)", 0, ""], ["len_mean_m", "longueur moyenne (m)", 0, ""],
     ["coast_ratio", "part de coasting", 2, "lo"], ["solid", "état Solide", 0, ""], ["confirmed", "état Confirmée", 0, ""], ["coasting_end", "finies en coasting", 0, ""],
-    ["air", "aériennes", 0, ""], ["rotator", "rotateurs", 0, ""], ["contacts", "contacts (fusion)", 0, ""], ["contacts_multi", "contacts multi-pistes", 0, ""], ["n_filtered", "plots filtrés (SNR/classe)", 0, ""], ["n_clustered", "échos regroupés (pré-clustering)", 0, ""], ["n_ghosts", "échos fantômes rejetés (ghostSnrDb)", 0, ""], ["n_absorbed", "pistes absorbées (absorbDwells)", 0, ""]];
+    ["air", "aériennes", 0, ""], ["rotator", "rotateurs", 0, ""], ["contacts", "contacts (fusion)", 0, ""], ["contacts_multi", "contacts multi-pistes", 0, ""], ["n_filtered", "plots filtrés (SNR/classe)", 0, ""], ["n_clustered", "échos regroupés (pré-clustering)", 0, ""], ["n_ghosts", "échos fantômes rejetés (ghostSnrDb)", 0, ""], ["n_absorbed", "pistes absorbées (absorbDwells)", 0, ""], ["n_swallowed", "échos avalés par une piste étendue", 0, ""]];
   function renderMetrics() {
     const a = gs.res && gs.res.metrics, b = gs.resB && gs.resB.metrics; const el = $("gmti-metrics");
     if (!a) { el.hidden = true; return; }

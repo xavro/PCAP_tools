@@ -121,10 +121,9 @@ le même fichier est déposé sur le serveur GeoEvent (propriété `profilesFile
 
 ## 5. Points de vigilance connus
 
-- Le pré-clustering (`clusterDistM`), la suppression des fantômes (`ghostSnrDb`), la pondération SNR
-  (`snrRefDb`) et l'absorption de pistes (`absorbDwells`, dans `Tracker.step` après l'affectation) n'existent pas encore côté Java : un profil qui les active ne passera pas la parité tant
-  que l'étage `prepare_plots` (déclutter → fantômes → SNR → clustering) n'est pas porté dans
-  `Tracker.process` — à faire une fois les valeurs validées sur le banc. `measPosStdMin` est déjà porté.
+- Pré-clustering, fantômes, pondération SNR, absorption et mise à jour étendue sont **portés en Java**
+  (Receiver4607 v0.13, `PlotPrep`/`Tracker.absorb`, cas de parité `v_petrolier*` à 100 %) : un profil qui les
+  active passe la parité ; redéployer `gmti_profiles.json` avec le jar.
 - Le décodage rejette les target reports hors zone de dwell (sentinelles) — compteur dans l'inventaire ;
   à porter dans `Gmti4607Parser` sinon le processor voit des pistes fantômes.
 - Le profil `routier_zone` sur une longue capture peut prendre plusieurs minutes de tracker Python au

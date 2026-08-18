@@ -165,21 +165,11 @@ def cluster_plots(plots, cfg=None):
             for p in g:
                 p.n_echoes, p.span_m = 1, 0.0
             out.extend(g); continue
-        # centroïde pondéré par l'amplitude (10^(SNR/20)) : l'écho fort (coque) pèse plus que les
-        # échos faibles de bord ; poids égaux si SNR absent.
-        w = np.array([10.0 ** (float(p.snr) / 20.0) if p.snr is not None else 1.0 for p in g]); w = w / w.sum()
-        cx, cy = float((xs * w).sum()), float((ys * w).sum())
-        disp = np.cov(np.vstack([xs, ys])) if len(g) > 2 else np.array([[max((xs.max()-xs.min())**2/4, 1.0), 0.0], [0.0, max((ys.max()-ys.min())**2/4, 1.0)]])
-        R = np.mean([p.R for p in g], axis=0) + disp
-        r_pos = max(max(p.r_pos for p in g), math.sqrt(max(float(np.trace(disp)) / 2.0, 0.0)))
-        vl = [p.vel_los for p in g if p.vel_los is not None]
-        snrs = [p.snr for p in g if p.snr is not None]
-        cls = [p.classification for p in g if p.classification not in (None, "")]
-        cls_maj = max(set(cls), key=cls.count) if cls else None
-        q = T.Plot(cx, cy, r_pos=r_pos, R=R, vel_los=(sum(vl) / len(vl)) if vl else None,
-                   snr=max(snrs) if snrs else None, classification=cls_maj)
-        q.n_echoes, q.span_m = len(g), span
-        out.append(q)
+        # centroïde pondéré par l'amplitude, R élargie de la dispersion… (tracker.merge_plots,
+        # partagé avec la mise à jour d'une piste étendue)
+        for p in g:
+            p.n_echoes = 1
+        out.append(T.merge_plots(g))
     return out
 
 
@@ -439,7 +429,7 @@ def run_tracking(path, profile="defaut", overrides=None):
         d["n_coast"] = sum(1 for (_t, _x, _y, st, hit) in h if not hit)
     res = {"raw": raw, "tracks": tracks, "n_kept": len(kept), "n_rejected": n_rejected, "frame": frame,
            "_objs": {tr.id: tr for tr in kept},           # objets Track (inspection : assoc, gates, historique)
-           "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered, "n_clustered": n_clustered, "n_ghosts": n_ghosts,
+           "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered, "n_clustered": n_clustered, "n_ghosts": n_ghosts, "n_swallowed": tk.n_swallowed,
            "contacts": [{"id": cid, "pts": [(float(x), float(y)) for (_t, x, y) in c["pts"]],
                          "n_max": c["n_max"], "hits": c["hits"], "members": sorted(c["members"])}
                         for cid, c in contacts.items()] if merger.enabled() else None}
@@ -504,7 +494,7 @@ def metrics(res):
     coast = sum(t.get("n_coast", 0) for t in tr); pts_total = sum(len(t["pts"]) for t in tr)
     m = {"n_tracks": n, "n_rejected": res["n_rejected"], "n_plots": len(res["raw"]), "n_dwells": res.get("n_dwells", 0),
          "n_filtered": res.get("n_filtered", 0), "n_clustered": res.get("n_clustered", 0), "n_ghosts": res.get("n_ghosts", 0),
-         "n_absorbed": sum(1 for t in res["tracks"] if t.get("absorbed_into")),
+         "n_absorbed": sum(1 for t in res["tracks"] if t.get("absorbed_into")), "n_swallowed": res.get("n_swallowed", 0),
          "hits_total": sum(hits), "hits_mean": sum(hits) / n, "hits_median": sorted(hits)[n // 2],
          "solid": sum(1 for t in tr if t["etat"] == T.SOLID), "confirmed": sum(1 for t in tr if t["etat"] == T.CONFIRMED),
          "coasting_end": sum(1 for t in tr if t["etat"] == T.COASTING),

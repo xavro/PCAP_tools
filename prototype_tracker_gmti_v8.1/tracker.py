@@ -201,6 +201,30 @@ class Track:
         return math.hypot(self.x[2], self.x[3])
 
 
+def merge_plots(g, weighted=True):
+    """Fusionne un groupe de plots (>= 2) en UN plot : centroide pondere par l'amplitude
+    (10^(SNR/20), poids egaux si SNR absent ou weighted=False), R = moyenne des R + dispersion des membres
+    (covariance echantillon si > 2, sinon diag(max((dx/2)^2,1), max((dy/2)^2,1))), r_pos =
+    max(r_pos, sqrt(tr(disp)/2)), v_LOS moyenne, SNR max, classe majoritaire ; attributs
+    n_echoes / span_m. Utilise par le pre-clustering (track_run.cluster_plots) ET par la mise
+    a jour d'une piste etendue (Tracker.step)."""
+    xs = np.array([p.x for p in g]); ys = np.array([p.y for p in g])
+    span = float(math.hypot(xs.max() - xs.min(), ys.max() - ys.min()))
+    w = np.array([10.0 ** (float(p.snr) / 20.0) if (weighted and p.snr is not None) else 1.0 for p in g]); w = w / w.sum()
+    cx, cy = float((xs * w).sum()), float((ys * w).sum())
+    disp = np.cov(np.vstack([xs, ys])) if len(g) > 2 else np.array([[max((xs.max()-xs.min())**2/4, 1.0), 0.0], [0.0, max((ys.max()-ys.min())**2/4, 1.0)]])
+    R = np.mean([p.R for p in g], axis=0) + disp
+    r_pos = max(max(p.r_pos for p in g), math.sqrt(max(float(np.trace(disp)) / 2.0, 0.0)))
+    vl = [p.vel_los for p in g if p.vel_los is not None]
+    snrs = [p.snr for p in g if p.snr is not None]
+    cls = [p.classification for p in g if p.classification not in (None, "")]
+    cls_maj = max(set(cls), key=cls.count) if cls else None
+    q = Plot(cx, cy, r_pos=r_pos, R=R, vel_los=(sum(vl) / len(vl)) if vl else None,
+             snr=max(snrs) if snrs else None, classification=cls_maj)
+    q.n_echoes, q.span_m = sum(getattr(p, "n_echoes", 1) or 1 for p in g), span
+    return q
+
+
 class Plot:
     """Plot MTI en coordonnees locales metriques (ENU) avec covariance mesure."""
     def __init__(self, x, y, r_pos=Params.R_POS_DEFAULT, R=None,
@@ -215,6 +239,7 @@ class Plot:
 
 class Tracker:
     def __init__(self):
+        self.n_swallowed = 0                # echos avales par une piste etendue (pas de nouvelle piste)
         self.tracks = []      # pistes vivantes
         self.archive = []     # pistes mortes (pour analyse / trajets)
 
@@ -261,13 +286,25 @@ class Tracker:
 
         # --- Affectation globale (GNN / hongrois) ---
         assigned_t, assigned_p = set(), set()
+        pairs = []
         if n_t and n_p:
             rows, cols = linear_sum_assignment(cost)
             for i, j in zip(rows, cols):
                 if cost[i, j] < BIG:
-                    self.tracks[i].update(plots[j])
-                    assigned_t.add(i)
-                    assigned_p.add(j)
+                    pairs.append((i, j)); assigned_t.add(i); assigned_p.add(j)
+        # Mise a jour ; une piste ETENDUE (apres absorption) prend en plus les plots orphelins
+        # tombant dans son etendue (etendue/2 + incertitude du plot) et se met a jour avec leur
+        # centroide : les echos des deux extremites de la coque tirent ensemble vers le centre.
+        for i, j in pairs:
+            tr = self.tracks[i]; pl = plots[j]
+            if tr.extent > 0.0:
+                rad = tr.extent / 2.0
+                extra = [k for k, p in enumerate(plots) if k not in assigned_p
+                         and math.hypot(p.x - tr.x[0], p.y - tr.x[1]) < rad + p.r_pos]
+                if extra:
+                    pl = merge_plots([pl] + [plots[k] for k in extra], weighted=False)   # centre geometrique de la cible
+                    assigned_p.update(extra); self.n_swallowed += len(extra)
+            tr.update(pl)
 
         # --- Pistes non servies -> miss ---
         for i, tr in enumerate(self.tracks):
@@ -275,8 +312,15 @@ class Tracker:
                 tr.miss()
 
         # --- Plots orphelins -> nouvelles pistes tentatives ---
+        # (sauf ceux qui tombent DANS l'etendue d'une piste etendue : echos de la meme
+        # coque, deja representee -> avales, pas de nouvelle piste) : rayon = etendue/2 +
+        # incertitude de mesure du plot
+        ext = [tr for tr in self.tracks if tr.extent > 0.0]
         for j, pl in enumerate(plots):
             if j not in assigned_p:
+                if ext and any(math.hypot(pl.x - tr.x[0], pl.y - tr.x[1]) < tr.extent / 2.0 + pl.r_pos for tr in ext):
+                    self.n_swallowed += 1
+                    continue
                 self.tracks.append(Track(pl, t))
 
         # --- Journalisation + absorption + menage ---
