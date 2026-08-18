@@ -182,6 +182,10 @@ selon l'action (résumé vivant dans chaque onglet) :
   (`load_profiles`, `java_config`, `apply_profile` accepte noms Java ou `Params`). Le banc
   reproduit aussi les étages processor : déclutter (minSnrDb, classFilter) et fusion
   `TrackMerger` (« 1 contact = 1 piste », port Python de `TrackMerger.java`).
+  **Pré-clustering des plots par dwell** (cibles étendues : `clusterDistM` / `clusterDvMps` /
+  `clusterMaxSpanM`, 0 = off ; maritime 80 m — liaison simple distance + Doppler compatible,
+  étalement borné, plot centroïde), **projection de trajectoire** (`projectSec`) et **écart piste ↔
+  centre image vidéo** en direct (vérité KLV). Cahier de tests : `docs/CAHIER-TESTS-GMTI.md`.
   **Plots aberrants filtrés à l'extraction** (`gmti_pcap_to_csv.target_plausible`, partagé avec
   `stanag4607_extract`) : target reports hors de la zone de dwell (D22-25 + marge) ou > 500 km du
   capteur, sentinelles (0,0) — certains émetteurs annoncent plus de cibles que le dwell n'en

@@ -457,7 +457,10 @@ def gmti_track(entry, profile, overrides=None):
         raise ValueError("tracker : aucun plot exploitable")
     ll = lambda pts: [[round(a, 6), round(b, 6)] for a, b in (fr.to_ll(x, y) for x, y in pts)]
     tracks = [{"id": t["id"], "hits": t["hits"], "etat": t.get("etat", ""), "is_air": t["is_air"],
-               "is_rotator": t["is_rotator"], "pts": ll(t["pts"]), "smooth": ll(t["smooth"])} for t in res["tracks"]]
+               "is_rotator": t["is_rotator"], "pts": ll(t["pts"]), "smooth": ll(t["smooth"]),
+               "speed": round(math.hypot(*t["vel"]), 1) if t.get("vel") else None,
+               "heading": round((math.degrees(math.atan2(t["vel"][0], t["vel"][1])) + 360.0) % 360.0, 1) if t.get("vel") else None}
+              for t in res["tracks"]]
     if entry["sink"] is not None:                       # plots bruts + classification (extracteur)
         raw = [[round(la, 6), round(lo, 6), int(t["classification"]) if t.get("classification") is not None else None]
                for d, t, (la, lo) in entry["sink"].plots]
@@ -633,6 +636,7 @@ def timeline_tracks(entry, profile, overrides, tl):
         n = len(h)
         step = max(1, n // MAX_PER_TRACK)
         hist, ever, last_nm = [], False, None
+        sts = tr.states
         for i, (t, x, y, st, hit) in enumerate(h):
             nm = names.get(st, "T")
             if nm in ("C", "S"):
@@ -642,7 +646,10 @@ def timeline_tracks(entry, profile, overrides, tl):
             if not keep:
                 continue
             la, lo = fr.to_ll(float(x), float(y))
-            hist.append([round(float(t) + off - t0, 3), round(la, 6), round(lo, 6), nm, 1 if hit else 0, 1 if ever else 0])
+            sp = hd = None
+            if i < len(sts):
+                xs = sts[i][1]; sp = round(float(math.hypot(xs[2], xs[3])), 1); hd = round((math.degrees(math.atan2(float(xs[2]), float(xs[3]))) + 360.0) % 360.0, 1)
+            hist.append([round(float(t) + off - t0, 3), round(la, 6), round(lo, 6), nm, 1 if hit else 0, 1 if ever else 0, sp, hd])
         if hist:
             out.append({"id": tid, "air": bool(tr.is_air), "rot": bool(tr.is_rotator), "hits": tr.hits, "hist": hist})
     return out
@@ -988,7 +995,7 @@ class LiveTracker:
         self.T = sys.modules["tracker"]
         self.profile, self.overrides = profile or "defaut", overrides or {}
         self.tk = None; self.frame = None; self.last_t = None; self.merger = None
-        self.n_dwells = 0; self.n_plots = 0; self.n_resets = 0; self.n_filtered = 0
+        self.n_dwells = 0; self.n_plots = 0; self.n_resets = 0; self.n_filtered = 0; self.n_clustered = 0
         self.itertools = itertools
         self.cfg = None
 
@@ -1036,6 +1043,9 @@ class LiveTracker:
                     R = T.covariance_from_4607(sxy, (x, y), self.tr._clamp_std(sig_r), self.tr._clamp_std(sig_x)) if sxy else None
                     plots.append(T.Plot(x, y, r_pos=max(sig_r, sig_x), R=R,
                                         vel_los=(r["vel_los_cms"] or 0) / 100.0, snr=r["snr_db"], classification=r["classification"]))
+                nb = len(plots)
+                plots = self.tr.cluster_plots(plots, cfg)          # cibles étendues (profil)
+                self.n_clustered += nb - len(plots)
                 self.tk.step(t, plots)
                 self.last_t = t; self.n_dwells += 1; self.n_plots += len(plots)
 
@@ -1086,7 +1096,7 @@ class LiveTracker:
 
     def _stats(self, tent, conf, solid, coast):
         return {"profile": self.profile, "overrides": self.overrides, "n_dwells": self.n_dwells, "n_plots": self.n_plots,
-                "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t,
+                "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t, "n_clustered": self.n_clustered,
                 "tentative": tent, "confirmed": conf, "solid": solid, "coasting": coast,
                 "archived": len(self.tk.archive) if self.tk else 0}
 

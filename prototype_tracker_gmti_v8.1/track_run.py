@@ -33,7 +33,8 @@ PY2JAVA = {v: k for k, v in JAVA2PY.items()}
 # pour que le banc de réglage reflète la prod. Défauts = TrackerConfig.java.
 PROC_DEFAULTS = {"mergeMaxDistM": 0.0, "mergeMaxDvMps": 2.0, "mergeMaxHeadingDeg": 30.0, "mergeSlowMps": 3.0,
                  "minSnrDb": 0, "minTrackSpeedMps": 0.0, "classFilter": [],
-                 "measPosStdMin": 5.0, "measPosStdMax": 200.0}
+                 "measPosStdMin": 5.0, "measPosStdMax": 200.0,
+                 "clusterDistM": 0.0, "clusterDvMps": 2.5, "clusterMaxSpanM": 400.0, "projectSec": 60.0}
 PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                                               "gmti_profiles.json")
 CURRENT = {}          # config effective (noms Java) du dernier apply_profile — lue par run_tracking
@@ -110,6 +111,70 @@ def apply_profile(name, overrides=None):
             setattr(T.Params, pk, v)
     CURRENT = cfg
     return cfg
+
+
+def cluster_plots(plots, cfg=None):
+    """Pré-clustering des plots d'UN dwell pour cibles étendues (gros navire = plusieurs échos).
+    Liaison simple : deux plots sont liés s'ils sont à moins de clusterDistM ET si leurs vitesses
+    radiales sont compatibles (|Δv_LOS| < clusterDvMps, quand toutes deux connues). Un groupe dont
+    l'étalement dépasse clusterMaxSpanM n'est PAS fusionné (banc de véhicules). Le plot fusionné =
+    centroïde (poids égaux), R = moyenne des R + dispersion des membres, r_pos = max(r_pos, √disp),
+    v_LOS moyenne, SNR max, classe majoritaire ; attributs n_echoes / span_m. clusterDistM ≤ 0 →
+    passe-plat (identique à l'existant : routier, personnel…)."""
+    cfg = cfg or CURRENT
+    dmax = float(cfg.get("clusterDistM") or 0.0)
+    if dmax <= 0.0 or len(plots) < 2:
+        for p in plots:
+            if not hasattr(p, "n_echoes"):
+                p.n_echoes, p.span_m = 1, 0.0
+        return plots
+    dv = float(cfg.get("clusterDvMps") or 2.5)
+    span_max = float(cfg.get("clusterMaxSpanM") or 400.0)
+    n = len(plots)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]; i = parent[i]
+        return i
+    for i in range(n):
+        pi = plots[i]
+        for j in range(i + 1, n):
+            pj = plots[j]
+            if math.hypot(pi.x - pj.x, pi.y - pj.y) >= dmax:
+                continue
+            if pi.vel_los is not None and pj.vel_los is not None and abs(pi.vel_los - pj.vel_los) >= dv:
+                continue
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[max(ri, rj)] = min(ri, rj)
+    groups = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(plots[i])
+    out = []
+    import numpy as np
+    for g in groups.values():
+        if len(g) == 1:
+            p = g[0]; p.n_echoes, p.span_m = 1, 0.0; out.append(p); continue
+        xs = np.array([p.x for p in g]); ys = np.array([p.y for p in g])
+        span = float(math.hypot(xs.max() - xs.min(), ys.max() - ys.min()))
+        if span > span_max:                          # trop étalé : on ne fusionne pas
+            for p in g:
+                p.n_echoes, p.span_m = 1, 0.0
+            out.extend(g); continue
+        cx, cy = float(xs.mean()), float(ys.mean())
+        disp = np.cov(np.vstack([xs, ys])) if len(g) > 2 else np.array([[max((xs.max()-xs.min())**2/4, 1.0), 0.0], [0.0, max((ys.max()-ys.min())**2/4, 1.0)]])
+        R = np.mean([p.R for p in g], axis=0) + disp
+        r_pos = max(max(p.r_pos for p in g), math.sqrt(max(float(np.trace(disp)) / 2.0, 0.0)))
+        vl = [p.vel_los for p in g if p.vel_los is not None]
+        snrs = [p.snr for p in g if p.snr is not None]
+        cls = [p.classification for p in g if p.classification not in (None, "")]
+        cls_maj = max(set(cls), key=cls.count) if cls else None
+        q = T.Plot(cx, cy, r_pos=r_pos, R=R, vel_los=(sum(vl) / len(vl)) if vl else None,
+                   snr=max(snrs) if snrs else None, classification=cls_maj)
+        q.n_echoes, q.span_m = len(g), span
+        out.append(q)
+    return out
 
 
 class TrackMerger:
@@ -256,7 +321,7 @@ def run_tracking(path, profile="defaut", overrides=None):
     min_speed = float(cfg.get("minTrackSpeedMps") or 0.0)
     merger = TrackMerger(cfg)
     contacts = defaultdict(lambda: {"pts": [], "n_max": 1, "hits": 0, "members": set()})
-    n_dwells = 0; n_filtered = 0
+    n_dwells = 0; n_filtered = 0; n_clustered = 0
     for t, plots, fr in csv_dwells(path):
         frame = fr
         raw += [(float(p.x), float(p.y)) for p in plots]
@@ -265,6 +330,9 @@ def run_tracking(path, profile="defaut", overrides=None):
                       and (not cls_filter or (p.classification not in (None, "") and int(float(p.classification)) in cls_filter))]
             n_filtered += len(plots) - len(kept_p); plots = kept_p
         n_dwells += 1
+        n_before = len(plots)
+        plots = cluster_plots(plots, cfg)                   # cibles étendues : un navire = un plot
+        n_clustered += n_before - len(plots)
         tk.step(t, plots)
         if merger.enabled():                                # étage post-pistage (comme le processor)
             outs = []
@@ -293,6 +361,7 @@ def run_tracking(path, profile="defaut", overrides=None):
             "id": tr.id,
             "hits": tr.hits,
             "etat": etat,
+            "vel": (float(tr.x[2]), float(tr.x[3])),        # dernier état (m/s ENU) : projection
             "pts": [(float(x), float(y)) for (_t, x, y, _st, _hit) in traj],
             "smooth": [(float(x), float(y)) for (_t, x, y) in T.rts_smooth(tr)],
             "is_air": bool(getattr(tr, "is_air", False)),
@@ -305,7 +374,7 @@ def run_tracking(path, profile="defaut", overrides=None):
         d["n_coast"] = sum(1 for (_t, _x, _y, st, hit) in h if not hit)
     res = {"raw": raw, "tracks": tracks, "n_kept": len(kept), "n_rejected": n_rejected, "frame": frame,
            "_objs": {tr.id: tr for tr in kept},           # objets Track (inspection : assoc, gates, historique)
-           "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered,
+           "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered, "n_clustered": n_clustered,
            "contacts": [{"id": cid, "pts": [(float(x), float(y)) for (_t, x, y) in c["pts"]],
                          "n_max": c["n_max"], "hits": c["hits"], "members": sorted(c["members"])}
                         for cid, c in contacts.items()] if merger.enabled() else None}
@@ -369,7 +438,7 @@ def metrics(res):
     lens = [length(t["pts"]) for t in tr]
     coast = sum(t.get("n_coast", 0) for t in tr); pts_total = sum(len(t["pts"]) for t in tr)
     m = {"n_tracks": n, "n_rejected": res["n_rejected"], "n_plots": len(res["raw"]), "n_dwells": res.get("n_dwells", 0),
-         "n_filtered": res.get("n_filtered", 0),
+         "n_filtered": res.get("n_filtered", 0), "n_clustered": res.get("n_clustered", 0),
          "hits_total": sum(hits), "hits_mean": sum(hits) / n, "hits_median": sorted(hits)[n // 2],
          "solid": sum(1 for t in tr if t["etat"] == T.SOLID), "confirmed": sum(1 for t in tr if t["etat"] == T.CONFIRMED),
          "coasting_end": sum(1 for t in tr if t["etat"] == T.COASTING),

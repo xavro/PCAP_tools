@@ -161,8 +161,38 @@
   // ── Pistes temps réel (moteur de rejeu) : marqueur + traîne, couleur = état ─
   const live = { layers: new Map() };                 // id → {mk, tail, seen}
   const LIVE_COL = { SOLID: "#00e5a8", CONFIRMED: "#00c8ff", COASTING: "#ffd54f", TENTATIVE: "#8a8f98" };
+  // ── Projection de trajectoire (position prédite à état constant) ────────────
+  const projLayers = [];
+  function projectSec() { try { const prof = $("gmti-profile").value || "defaut"; const v = ("projectSec" in gs.ov) ? gs.ov.projectSec : (gs.prof ? effective(prof).projectSec : 60); return v == null ? 0 : +v; } catch (e) { return 60; } }
+  function destPoint(lat, lon, bearingDeg, distM) {
+    const R = 6371000, br = bearingDeg * Math.PI / 180, la1 = lat * Math.PI / 180, lo1 = lon * Math.PI / 180, dr = distM / R;
+    const la2 = Math.asin(Math.sin(la1) * Math.cos(dr) + Math.cos(la1) * Math.sin(dr) * Math.cos(br));
+    const lo2 = lo1 + Math.atan2(Math.sin(br) * Math.sin(dr) * Math.cos(la1), Math.cos(dr) - Math.sin(la1) * Math.sin(la2));
+    return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
+  }
+  function drawProjection(group, lat, lon, speed, heading, col) {
+    const sec = projectSec(); if (!sec || speed == null || heading == null || speed < 0.5) return null;
+    const end = destPoint(lat, lon, heading, speed * sec), mid = destPoint(lat, lon, heading, speed * sec / 2);
+    const pl = L.polyline([[lat, lon], end], { color: col, weight: 1.5, dashArray: "6 5", opacity: .8, renderer: canvasR, interactive: false }).addTo(group);
+    const tip = L.circleMarker(end, { radius: 3, color: col, weight: 1, fillColor: col, fillOpacity: .6, renderer: canvasR, interactive: false }).addTo(group);
+    return [pl, tip, mid];
+  }
+  // ── Écart piste ↔ centre image vidéo (vérité KLV quand le capteur fixe la cible) ─
+  const vidgap = { n: 0, sum: 0, max: 0, last: null, id: null };
+  function resetVidgap() { vidgap.n = 0; vidgap.sum = 0; vidgap.max = 0; vidgap.last = null; vidgap.id = null; }
+  function updateVidgap(tracks) {
+    if (!state.klvCenter || !tracks.length) return;
+    let best = Infinity, bid = null;
+    tracks.forEach(t => { if (!t.ever || t.state === "TENTATIVE") return; const d = MGRS.distBearing(state.klvCenter[0], state.klvCenter[1], t.lat, t.lon).d; if (d < best) { best = d; bid = t.id; } });
+    if (bid == null || best > 5000) return;              // aucune piste à moins de 5 km du centre image : le capteur ne regarde pas une cible pistée
+    vidgap.n++; vidgap.sum += best; vidgap.max = Math.max(vidgap.max, best); vidgap.last = best; vidgap.id = bid;
+  }
+  function vidgapText() { return vidgap.n ? ` · écart piste↔centre image : <b>${vidgap.last.toFixed(0)} m</b> (piste ${vidgap.id}, moy ${(vidgap.sum / vidgap.n).toFixed(0)} m, max ${vidgap.max.toFixed(0)} m sur ${vidgap.n} éch.)` : ""; }
+
   function renderLive(lv) {
     const showTent = $("gmti-live-tent").checked, seen = new Set(); live.last = lv.tracks || [];
+    projLayers.forEach(l => LY.live.removeLayer(l)); projLayers.length = 0;
+    updateVidgap(lv.tracks || []);
     (lv.tracks || []).forEach(t => {
       if (t.state === "TENTATIVE" && !showTent) return;
       if (!t.ever && !showTent) return;                 // pas encore confirmée une fois → tentative
@@ -181,6 +211,7 @@
       e.mk.setLatLng([t.lat, t.lon]); e.mk.setStyle({ color: col, fillColor: col, fillOpacity: t.state === "COASTING" ? .35 : .9 });
       e.tail.setLatLngs(t.tail); e.tail.setStyle({ color: col });
       e.mk.setTooltipContent(`${t.contact != null ? "C" + t.contact + "·" : ""}${t.id} ${t.state[0]}${t.hits}` + (t.speed >= 1 ? ` ${t.speed.toFixed(0)}m/s` : ""));
+      if (t.ever && t.state !== "TENTATIVE") { const pr = drawProjection(LY.live, t.lat, t.lon, t.speed, t.heading, col); if (pr) { projLayers.push(pr[0], pr[1]); } }
       seen.add(t.id);
     });
     live.layers.forEach((e, id) => { if (!seen.has(id)) { LY.live.removeLayer(e.mk); LY.live.removeLayer(e.tail); live.layers.delete(id); } });
@@ -188,9 +219,9 @@
     $("gmti-live-body").innerHTML = st.error ? `pistage temps réel : <span style="color:var(--danger)">${st.error}</span>` :
       `pistage temps réel · profil <b>${st.profile}${Object.keys(st.overrides || {}).length ? "*" : ""}</b> · dwells <b>${st.n_dwells}</b> · pistes vivantes <b>${st.displayable}</b> ` +
       `(solides <b>${st.solid}</b>, confirmées <b>${st.confirmed}</b>, coasting <b>${st.coasting}</b>, tentatives ${st.tentative}) · archivées ${st.archived}` +
-      (lv.contacts ? ` · contacts fusionnés <b>${lv.contacts.length}</b>` : "") + (st.n_resets ? ` · resets ${st.n_resets}` : "") + (st.n_filtered ? ` · filtrés ${st.n_filtered}` : "");
+      (lv.contacts ? ` · contacts fusionnés <b>${lv.contacts.length}</b>` : "") + (st.n_resets ? ` · resets ${st.n_resets}` : "") + (st.n_filtered ? ` · filtrés ${st.n_filtered}` : "") + (st.n_clustered ? ` · échos regroupés ${st.n_clustered}` : "") + vidgapText();
   }
-  function resetLive() { live.layers.clear(); LY.live.clearLayers(); $("gmti-live-body").textContent = ""; }
+  function resetLive() { live.layers.clear(); LY.live.clearLayers(); projLayers.length = 0; resetVidgap(); $("gmti-live-body").textContent = ""; }
 
   function resetGmti() { gmti.dots.forEach(d => lyPlots.removeLayer(d)); gmti.dots = []; gmti.dwells.forEach(d => lyDwell.removeLayer(d)); gmti.dwells = []; if (dwellLine._map) lyDwell.removeLayer(dwellLine); gmti.stats = { pkts: 0, plots: 0, dwells: 0, cls: {} }; if (gmtiSensor._map) lyDwell.removeLayer(gmtiSensor); }
   let fitOnce = false;
@@ -288,7 +319,7 @@
     ab.value = gs.prof.names.includes(curB) ? curB : "";
     renderEditor();
   }
-  const GROUPS = { gate: "Gate & cinématique", vie: "Confirmation & suppression", aerien: "Aérien / rotateur", fusion: "Fusion de pistes (1 contact = 1 piste)", filtre: "Filtres processor" };
+  const GROUPS = { gate: "Gate & cinématique", vie: "Confirmation & suppression", aerien: "Aérien / rotateur", cluster: "Pré-clustering des plots (cibles étendues)", fusion: "Fusion de pistes (1 contact = 1 piste)", filtre: "Filtres processor", affichage: "Affichage" };
   function effective(profile) { return Object.assign({}, gs.prof.defaults, (gs.prof.effective || {})[profile] || {}); }
   function renderEditor() {
     if (!gs.prof) return;
@@ -360,7 +391,7 @@
     ["plots_per_track", "plots / piste", 1, ""], ["hits_mean", "hits moyens", 1, "hi"], ["hits_median", "hits médians", 0, "hi"], ["short_tracks", "pistes < 5 hits", 0, "lo"],
     ["dur_mean_s", "durée moyenne (s)", 0, "hi"], ["dur_max_s", "durée max (s)", 0, ""], ["len_mean_m", "longueur moyenne (m)", 0, ""],
     ["coast_ratio", "part de coasting", 2, "lo"], ["solid", "état Solide", 0, ""], ["confirmed", "état Confirmée", 0, ""], ["coasting_end", "finies en coasting", 0, ""],
-    ["air", "aériennes", 0, ""], ["rotator", "rotateurs", 0, ""], ["contacts", "contacts (fusion)", 0, ""], ["contacts_multi", "contacts multi-pistes", 0, ""], ["n_filtered", "plots filtrés (SNR/classe)", 0, ""]];
+    ["air", "aériennes", 0, ""], ["rotator", "rotateurs", 0, ""], ["contacts", "contacts (fusion)", 0, ""], ["contacts_multi", "contacts multi-pistes", 0, ""], ["n_filtered", "plots filtrés (SNR/classe)", 0, ""], ["n_clustered", "échos regroupés (pré-clustering)", 0, ""]];
   function renderMetrics() {
     const a = gs.res && gs.res.metrics, b = gs.resB && gs.resB.metrics; const el = $("gmti-metrics");
     if (!a) { el.hidden = true; return; }
@@ -394,6 +425,7 @@
       pl.bindTooltip(`piste ${t.id} · ${t.hits} hits · ${t.etat}${t.is_air ? " · aérien" : ""}${t.is_rotator ? " · rotateur" : ""} — cliquer pour inspecter`, { sticky: true });
       pl.on("click", () => inspectTrack(t.id));
       L.circleMarker(pts[pts.length - 1], { radius: 3, color: col, fillColor: col, fillOpacity: 1, weight: 1, renderer: canvasR }).addTo(lyTracks);
+      if (t.speed != null && t.heading != null) drawProjection(lyTracks, pts[pts.length - 1][0], pts[pts.length - 1][1], t.speed, t.heading, col);
     });
   }
   function fitTracks() {
@@ -647,12 +679,15 @@
       status(`erreur lecteur : ${t} / ${d} ${i && i.msg || ""}`, true);
       if (live && state.replay && state.replay.running && state.retries < 5) {      // tap live : on se raccroche
         state.retries++; setTimeout(() => { if (state.replay && state.replay.running) startPlayer(url, true); }, 600);
+      } else if (!live && pb.on && state.retries < 5) {                               // lecture fichier : relance au même instant
+        state.retries++; const at = Math.max(0, pb.t - pb.vOffset);
+        setTimeout(() => { if (pb.on) { startPlayer(url, false); video.playbackRate = speedVal() || 1; const go = () => { video.currentTime = at; video.removeEventListener("loadedmetadata", go); }; video.addEventListener("loadedmetadata", go); if (pb.paused) video.pause(); } }, 500);
       }
     });
     player.on(mpegts.Events.MEDIA_INFO, mi => status(`${live ? "LIVE (tap du rejeu)" : "lecture fichier"} — ${mi.videoCodec || ""} ${mi.width || ""}×${mi.height || ""} ${mi.fps ? mi.fps.toFixed(1) + " fps" : ""}`));
     player.load(); player.play().catch(() => {});
     state.player = player; state.sets = []; state.applied = -1; trace.setLatLngs([]);
-    if (!live) state.retries = 0;
+    if (!live && !pb.on) state.retries = 0;
     $("mode-badge").textContent = live ? "● LIVE — flux tapé sur le moteur de rejeu" : "FICHIER";
     $("mode-badge").className = "overlay" + (live ? " live" : "");
   }
@@ -729,7 +764,7 @@
     let tl;
     try { tl = await withBusy("préchargement de la ligne de temps (CoT, GMTI, pistes, vidéo)…", () => api(`/api/timeline?pcap=${encodeURIComponent(state.pcap)}&watch=${encodeURIComponent(watch)}${trackQ}${limQ()}`), ["btn-play"]); }
     catch (e) { return status("lecture : " + e.message, true); }
-    pb.tl = tl; pb.tracks = tl.tracks || []; pb.on = true; pb.paused = false; pb.t = 0; pb.wall = performance.now(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1;
+    pb.tl = tl; pb.tracks = tl.tracks || []; pb.on = true; pb.paused = false; pb.t = 0; pb.wall = performance.now(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; state.retries = 0;
     state.mode = "play"; resetCot(); resetGmti(); resetLive(); fitOnce = false;
     pb.videoOn = !!(state.cur && checked.some(f => f.proto === "UDP" && f.dport === state.cur.dport));
     const vinfo = pb.videoOn ? (tl.video || []).find(v => v.dport === state.cur.dport) : null;
@@ -809,7 +844,7 @@
         const tail = h.slice(Math.max(0, lo - 30), lo + 1).map(x => [x[1], x[2]]);
         const prev = lo > 0 ? h[lo - 1] : e; const dt = e[0] - prev[0];
         const sp = dt > 0 ? MGRS.distBearing(prev[1], prev[2], e[1], e[2]).d / dt : 0;
-        out.push({ id: tr.id, lat: e[1], lon: e[2], speed: Math.round(sp * 10) / 10, heading: 0, state: st, hits, misses: 0, ever: !!e[5], is_air: tr.air, is_rotator: tr.rot, age_s: Math.round((t - e[0]) * 10) / 10, tail });
+        out.push({ id: tr.id, lat: e[1], lon: e[2], speed: e[6] != null ? e[6] : Math.round(sp * 10) / 10, heading: e[7] != null ? e[7] : 0, state: st, hits, misses: 0, ever: !!e[5], is_air: tr.air, is_rotator: tr.rot, age_s: Math.round((t - e[0]) * 10) / 10, tail });
       });
       renderLive({ tracks: out, stats: { profile: ($("gmti-profile").value || "defaut") + " (hors ligne)", overrides: gs.ov, n_dwells: pb.dwIdx, displayable: cnt.EVER, solid: cnt.SOLID, confirmed: cnt.CONFIRMED, coasting: cnt.COASTING, tentative: cnt.TENTATIVE, archived: 0 } });
     }
@@ -838,12 +873,12 @@
   function apply(idx, tms) {
     const s = state.sets[idx], n = s.num;
     if (n.lat != null) { sensor.setLatLng([n.lat, n.lon]); sensor.setTooltipContent(`${fmt(n.lat)} ${fmt(n.lon)} · ${fmt(n.alt, 0)} m · cap ${fmt(n.hdg, 1)}°`); }
-    if (n.fc_lat != null) { center.setLatLng([n.fc_lat, n.fc_lon]); if (n.lat != null) los.setLatLngs([[n.lat, n.lon], [n.fc_lat, n.fc_lon]]); }
+    if (n.fc_lat != null) { center.setLatLng([n.fc_lat, n.fc_lon]); if (n.lat != null) los.setLatLngs([[n.lat, n.lon], [n.fc_lat, n.fc_lon]]); state.klvCenter = [n.fc_lat, n.fc_lon]; }
     if (n.corners) footprint.setLatLngs(n.corners);
     follow(n);
     if (idx === state.applied + 1) { if (n.lat != null) trace.addLatLng([n.lat, n.lon]); }
     else trace.setLatLngs(state.sets.slice(0, idx + 1).filter((x, i) => x.num.lat != null && (i % 3 === 0 || i === idx)).map(x => [x.num.lat, x.num.lon]));
-    $("hud").textContent = `capteur ${fmt(n.lat)} ${fmt(n.lon)}  alt ${fmt(n.alt, 0)} m\ncap ${fmt(n.hdg, 1)}°  tang ${fmt(n.pitch, 1)}°  roul ${fmt(n.roll, 1)}°\nFOV ${fmt(n.hfov, 2)}°×${fmt(n.vfov, 2)}°  portée ${fmt(n.slant, 0)} m\ncentre ${fmt(n.fc_lat)} ${fmt(n.fc_lon)}`;
+    $("hud").textContent = `capteur ${fmt(n.lat)} ${fmt(n.lon)}  alt ${fmt(n.alt, 0)} m\ncap ${fmt(n.hdg, 1)}°  tang ${fmt(n.pitch, 1)}°  roul ${fmt(n.roll, 1)}°\nFOV ${fmt(n.hfov, 2)}°×${fmt(n.vfov, 2)}°  portée ${fmt(n.slant, 0)} m\ncentre ${fmt(n.fc_lat)} ${fmt(n.fc_lon)}` + (vidgap.last != null ? `\npiste ${vidgap.id} à ${vidgap.last.toFixed(0)} m du centre image` : "");
     $("tl-utc").textContent = utc(n.ts_us);
     $("tl-lag").textContent = (tms - s.pts).toFixed(0);
     if (performance.now() - state.tableAt > 120) { renderTable(s.fields, true); state.tableAt = performance.now(); }

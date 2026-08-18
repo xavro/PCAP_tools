@@ -29,19 +29,24 @@
     "mergeSlowMps": 3.0,
     "minSnrDb": 0,
     "minTrackSpeedMps": 0.0,
-    "classFilter": []
+    "classFilter": [],
+    "clusterDistM": 0.0,
+    "clusterDvMps": 2.5,
+    "clusterMaxSpanM": 400.0,
+    "projectSec": 60.0
   },
   "profiles": {
     "defaut": {},
     "maritime": {
-      "accelStd": 0.05,
-      "initVelStd": 4.0,
+      "gateChi2": 7,
+      "gateMaxM": 250,
       "confirmM": 4,
       "confirmN": 6,
       "deleteMisses": 12,
-      "gateChi2": 7.0,
-      "gateMaxM": 250.0,
-      "mergeMaxDistM": 300.0
+      "accelStd": 0.05,
+      "initVelStd": 4,
+      "mergeMaxDistM": 450,
+      "clusterDistM": 80.0
     },
     "routier": {
       "accelStd": 2.0,
@@ -231,6 +236,26 @@
       "group": "filtre",
       "unit": "liste",
       "doc": "Classes 4607 pistées (vide = toutes). Ex. 10 = véhicule à roues."
+    },
+    "clusterDistM": {
+      "group": "cluster",
+      "unit": "m",
+      "doc": "Pré-clustering des plots PAR DWELL (cible étendue : gros navire = plusieurs échos) : deux plots à moins de cette distance ET de vitesse Doppler compatible sont fusionnés en un plot centroïde avant le pistage. 0 = désactivé (routier, personnel : 1 écho = 1 cible)."
+    },
+    "clusterDvMps": {
+      "group": "cluster",
+      "unit": "m/s",
+      "doc": "|Δ vitesse radiale| max entre deux échos pour les fusionner (échos d'une même coque = même Doppler)."
+    },
+    "clusterMaxSpanM": {
+      "group": "cluster",
+      "unit": "m",
+      "doc": "Étalement max d'un groupe ; au-delà (banc de véhicules, convoi) les plots restent séparés."
+    },
+    "projectSec": {
+      "group": "affichage",
+      "unit": "s",
+      "doc": "Projection de trajectoire dessinée devant chaque piste (position prédite à état constant). 0 = off. Affichage seulement."
     }
   }
 }
