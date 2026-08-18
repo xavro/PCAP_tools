@@ -185,7 +185,10 @@ selon l'action (résumé vivant dans chaque onglet) :
   **Pré-clustering des plots par dwell** (cibles étendues : `clusterDistM` / `clusterDvMps` /
   `clusterMaxSpanM`, 0 = off ; maritime 80 m — liaison simple distance + Doppler compatible,
   étalement borné, plot centroïde), **projection de trajectoire** (`projectSec`) et **écart piste ↔
-  centre image vidéo** en direct (vérité KLV). Cahier de tests : `docs/CAHIER-TESTS-GMTI.md`.
+  centre image vidéo** en direct (vérité KLV). **Suppression des échos fantômes** (`ghostSnrDb`/`ghostDistM` : écho plus faible de N dB qu'un écho
+  fort du même dwell → rejeté) et **pondération SNR de la mesure** (`snrRefDb`/`snrScaleMax`) ; étage
+  d'entrée commun `prepare_plots` (déclutter → fantômes → SNR → clustering) partagé par le banc, le pistage
+  temps réel et l'oracle de parité. Cahier de tests : `docs/CAHIER-TESTS-GMTI.md`.
   **Plots aberrants filtrés à l'extraction** (`gmti_pcap_to_csv.target_plausible`, partagé avec
   `stanag4607_extract`) : target reports hors de la zone de dwell (D22-25 + marge) ou > 500 km du
   capteur, sentinelles (0,0) — certains émetteurs annoncent plus de cibles que le dwell n'en

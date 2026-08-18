@@ -33,7 +33,7 @@ def export(csv_in, profile, csv_out, overrides=None):
     tk = T.Tracker()
     rows = []
     for t, plots, frame in TR.csv_dwells(csv_in):
-        plots = TR.cluster_plots(plots, TR.CURRENT)      # même étage d'entrée que run_tracking (0 = passe-plat)
+        plots, _ = TR.prepare_plots(plots, TR.CURRENT)   # même étage d'entrée que run_tracking (défauts = passe-plat)
         tk.step(t, plots)
         ms = int(round(t * 1000.0))
         for tr in tk.tracks:

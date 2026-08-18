@@ -33,7 +33,11 @@
     "clusterDistM": 0.0,
     "clusterDvMps": 2.5,
     "clusterMaxSpanM": 400.0,
-    "projectSec": 60.0
+    "projectSec": 60.0,
+    "ghostSnrDb": 0.0,
+    "ghostDistM": 400.0,
+    "snrRefDb": 0.0,
+    "snrScaleMax": 4.0
   },
   "profiles": {
     "defaut": {},
@@ -45,8 +49,11 @@
       "deleteMisses": 12,
       "accelStd": 0.05,
       "initVelStd": 4,
-      "mergeMaxDistM": 450,
-      "clusterDistM": 80.0
+      "mergeMaxDistM": 450.0,
+      "clusterDistM": 150.0,
+      "ghostSnrDb": 20.0,
+      "ghostDistM": 400.0,
+      "measPosStdMin": 100.0
     },
     "routier": {
       "accelStd": 2.0,
@@ -240,7 +247,7 @@
     "clusterDistM": {
       "group": "cluster",
       "unit": "m",
-      "doc": "Pré-clustering des plots PAR DWELL (cible étendue : gros navire = plusieurs échos) : deux plots à moins de cette distance ET de vitesse Doppler compatible sont fusionnés en un plot centroïde avant le pistage. 0 = désactivé (routier, personnel : 1 écho = 1 cible)."
+      "doc": "Pré-clustering des plots PAR DWELL (cible étendue : gros navire = plusieurs échos) : deux plots à moins de cette distance ET de vitesse Doppler compatible sont fusionnés en un plot centroïde avant le pistage. 0 = désactivé (routier, personnel : 1 écho = 1 cible). Le plot fusionné est le centroïde pondéré par l'amplitude (10^(SNR/20)) : l'écho fort (coque) pèse plus."
     },
     "clusterDvMps": {
       "group": "cluster",
@@ -256,6 +263,26 @@
       "group": "affichage",
       "unit": "s",
       "doc": "Projection de trajectoire dessinée devant chaque piste (position prédite à état constant). 0 = off. Affichage seulement."
+    },
+    "ghostSnrDb": {
+      "group": "filtre",
+      "unit": "dB",
+      "doc": "Suppression des échos fantômes PAR DWELL : un plot est rejeté s'il existe dans le même dwell un plot plus fort d'au moins cette valeur à moins de ghostDistM (lobes secondaires / ambiguïtés Doppler d'une cible forte : pétrolier SNR 60-85 dB entouré d'échos 20-39 dB à ±250 m avec Doppler ±6-9 m/s). 0 = désactivé. Attention : un petit navire réel proche d'un gros peut être masqué → à régler avec la vérité terrain."
+    },
+    "ghostDistM": {
+      "group": "filtre",
+      "unit": "m",
+      "doc": "Rayon de recherche de l'écho fort pour la suppression des fantômes."
+    },
+    "snrRefDb": {
+      "group": "gate",
+      "unit": "dB",
+      "doc": "Pondération de la mesure par le SNR : σ_mesure × clamp(10^((snrRefDb − SNR)/20), 1, snrScaleMax). Un écho faible est cru moins précisément (gate plus large, correction plus douce) ; un écho ≥ snrRefDb garde ses incertitudes 4607. 0 = désactivé."
+    },
+    "snrScaleMax": {
+      "group": "gate",
+      "unit": "×",
+      "doc": "Facteur max appliqué à σ_mesure par la pondération SNR."
     }
   }
 }

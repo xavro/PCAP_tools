@@ -995,7 +995,7 @@ class LiveTracker:
         self.T = sys.modules["tracker"]
         self.profile, self.overrides = profile or "defaut", overrides or {}
         self.tk = None; self.frame = None; self.last_t = None; self.merger = None
-        self.n_dwells = 0; self.n_plots = 0; self.n_resets = 0; self.n_filtered = 0; self.n_clustered = 0
+        self.n_dwells = 0; self.n_plots = 0; self.n_resets = 0; self.n_filtered = 0; self.n_clustered = 0; self.n_ghosts = 0
         self.itertools = itertools
         self.cfg = None
 
@@ -1014,7 +1014,6 @@ class LiveTracker:
             cfg = self._apply()
             if self.tk is None:
                 self._reset()
-            min_snr = float(cfg.get("minSnrDb") or 0); cls_f = set(int(c) for c in (cfg.get("classFilter") or []))
             for d in dwells:
                 if d["time"] is None:
                     continue
@@ -1033,19 +1032,14 @@ class LiveTracker:
                 sxy = self.frame.to_xy(sl[0], sl[1]) if sl and sl[0] is not None and sl[1] is not None else None
                 plots = []
                 for r in rows:
-                    if min_snr > 0 and (r["snr_db"] is None or r["snr_db"] < min_snr):
-                        self.n_filtered += 1; continue
-                    if cls_f and (r["classification"] is None or int(r["classification"]) not in cls_f):
-                        self.n_filtered += 1; continue
                     x, y = self.frame.to_xy(r["lat"], r["lon"])
                     sig_r = (r["sig_range_cm"] / 100.0) if r["sig_range_cm"] else T.Params.R_POS_DEFAULT
                     sig_x = (r["sig_xrange_dm"] / 10.0) if r["sig_xrange_dm"] else T.Params.R_POS_DEFAULT
                     R = T.covariance_from_4607(sxy, (x, y), self.tr._clamp_std(sig_r), self.tr._clamp_std(sig_x)) if sxy else None
                     plots.append(T.Plot(x, y, r_pos=max(sig_r, sig_x), R=R,
                                         vel_los=(r["vel_los_cms"] or 0) / 100.0, snr=r["snr_db"], classification=r["classification"]))
-                nb = len(plots)
-                plots = self.tr.cluster_plots(plots, cfg)          # cibles étendues (profil)
-                self.n_clustered += nb - len(plots)
+                plots, pst = self.tr.prepare_plots(plots, cfg)     # déclutter → fantômes → SNR → clustering
+                self.n_filtered += pst["filtered"]; self.n_ghosts += pst["ghosts"]; self.n_clustered += pst["clustered"]
                 self.tk.step(t, plots)
                 self.last_t = t; self.n_dwells += 1; self.n_plots += len(plots)
 
@@ -1096,7 +1090,7 @@ class LiveTracker:
 
     def _stats(self, tent, conf, solid, coast):
         return {"profile": self.profile, "overrides": self.overrides, "n_dwells": self.n_dwells, "n_plots": self.n_plots,
-                "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t, "n_clustered": self.n_clustered,
+                "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t, "n_clustered": self.n_clustered, "n_ghosts": self.n_ghosts,
                 "tentative": tent, "confirmed": conf, "solid": solid, "coasting": coast,
                 "archived": len(self.tk.archive) if self.tk else 0}
 

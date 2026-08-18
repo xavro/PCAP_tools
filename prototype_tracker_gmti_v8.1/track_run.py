@@ -34,7 +34,8 @@ PY2JAVA = {v: k for k, v in JAVA2PY.items()}
 PROC_DEFAULTS = {"mergeMaxDistM": 0.0, "mergeMaxDvMps": 2.0, "mergeMaxHeadingDeg": 30.0, "mergeSlowMps": 3.0,
                  "minSnrDb": 0, "minTrackSpeedMps": 0.0, "classFilter": [],
                  "measPosStdMin": 5.0, "measPosStdMax": 200.0,
-                 "clusterDistM": 0.0, "clusterDvMps": 2.5, "clusterMaxSpanM": 400.0, "projectSec": 60.0}
+                 "clusterDistM": 0.0, "clusterDvMps": 2.5, "clusterMaxSpanM": 400.0, "projectSec": 60.0,
+                 "ghostSnrDb": 0.0, "ghostDistM": 400.0, "snrRefDb": 0.0, "snrScaleMax": 4.0}
 PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                                               "gmti_profiles.json")
 CURRENT = {}          # config effective (noms Java) du dernier apply_profile — lue par run_tracking
@@ -162,7 +163,10 @@ def cluster_plots(plots, cfg=None):
             for p in g:
                 p.n_echoes, p.span_m = 1, 0.0
             out.extend(g); continue
-        cx, cy = float(xs.mean()), float(ys.mean())
+        # centroïde pondéré par l'amplitude (10^(SNR/20)) : l'écho fort (coque) pèse plus que les
+        # échos faibles de bord ; poids égaux si SNR absent.
+        w = np.array([10.0 ** (float(p.snr) / 20.0) if p.snr is not None else 1.0 for p in g]); w = w / w.sum()
+        cx, cy = float((xs * w).sum()), float((ys * w).sum())
         disp = np.cov(np.vstack([xs, ys])) if len(g) > 2 else np.array([[max((xs.max()-xs.min())**2/4, 1.0), 0.0], [0.0, max((ys.max()-ys.min())**2/4, 1.0)]])
         R = np.mean([p.R for p in g], axis=0) + disp
         r_pos = max(max(p.r_pos for p in g), math.sqrt(max(float(np.trace(disp)) / 2.0, 0.0)))
@@ -175,6 +179,68 @@ def cluster_plots(plots, cfg=None):
         q.n_echoes, q.span_m = len(g), span
         out.append(q)
     return out
+
+
+def suppress_ghosts(plots, cfg=None):
+    """Suppression des échos fantômes d'UN dwell (lobes secondaires / ambiguïtés Doppler d'un écho
+    fort) : un plot est rejeté s'il existe dans le même dwell un plot plus fort d'au moins
+    ghostSnrDb à moins de ghostDistM. ghostSnrDb ≤ 0 → passe-plat. Retourne (plots, n_rejetés)."""
+    cfg = cfg or CURRENT
+    dsnr = float(cfg.get("ghostSnrDb") or 0.0)
+    if dsnr <= 0.0 or len(plots) < 2:
+        return plots, 0
+    dmax = float(cfg.get("ghostDistM") or 400.0)
+    keep = []
+    for p in plots:
+        ghost = False
+        if p.snr is not None:
+            for q in plots:
+                if q is p or q.snr is None:
+                    continue
+                if q.snr - p.snr >= dsnr and math.hypot(p.x - q.x, p.y - q.y) < dmax:
+                    ghost = True; break
+        if not ghost:
+            keep.append(p)
+    return keep, len(plots) - len(keep)
+
+
+def scale_by_snr(plots, cfg=None):
+    """Pondération de la mesure par le SNR : σ_mesure × clamp(10^((snrRefDb − SNR)/20), 1, snrScaleMax).
+    Un écho faible est cru moins précisément (gate plus large, mise à jour plus douce), un écho
+    ≥ snrRefDb garde ses incertitudes 4607. snrRefDb ≤ 0 → passe-plat."""
+    cfg = cfg or CURRENT
+    ref = float(cfg.get("snrRefDb") or 0.0)
+    if ref <= 0.0:
+        return plots
+    fmax = max(1.0, float(cfg.get("snrScaleMax") or 4.0))
+    for p in plots:
+        if p.snr is None:
+            continue
+        f = min(fmax, max(1.0, 10.0 ** ((ref - float(p.snr)) / 20.0)))
+        if f > 1.0:
+            p.R = p.R * (f * f); p.r_pos = p.r_pos * f
+    return plots
+
+
+def prepare_plots(plots, cfg=None):
+    """Étage d'entrée COMMUN (banc hors ligne, pistage temps réel, oracle de parité) appliqué aux
+    plots d'un dwell, dans cet ordre : déclutter (minSnrDb, classFilter) → fantômes (ghostSnrDb)
+    → pondération SNR (snrRefDb) → pré-clustering (clusterDistM). Retourne (plots, stats) avec
+    stats = {filtered, ghosts, clustered}."""
+    cfg = cfg or CURRENT
+    st = {"filtered": 0, "ghosts": 0, "clustered": 0}
+    min_snr = float(cfg.get("minSnrDb") or 0)
+    cls_filter = set(int(c) for c in (cfg.get("classFilter") or []))
+    if min_snr > 0 or cls_filter:
+        kept = [p for p in plots if (min_snr <= 0 or (p.snr is not None and p.snr >= min_snr))
+                and (not cls_filter or (p.classification not in (None, "") and int(float(p.classification)) in cls_filter))]
+        st["filtered"] = len(plots) - len(kept); plots = kept
+    plots, st["ghosts"] = suppress_ghosts(plots, cfg)
+    plots = scale_by_snr(plots, cfg)
+    n = len(plots)
+    plots = cluster_plots(plots, cfg)
+    st["clustered"] = n - len(plots)
+    return plots, st
 
 
 class TrackMerger:
@@ -321,18 +387,13 @@ def run_tracking(path, profile="defaut", overrides=None):
     min_speed = float(cfg.get("minTrackSpeedMps") or 0.0)
     merger = TrackMerger(cfg)
     contacts = defaultdict(lambda: {"pts": [], "n_max": 1, "hits": 0, "members": set()})
-    n_dwells = 0; n_filtered = 0; n_clustered = 0
+    n_dwells = 0; n_filtered = 0; n_clustered = 0; n_ghosts = 0
     for t, plots, fr in csv_dwells(path):
         frame = fr
         raw += [(float(p.x), float(p.y)) for p in plots]
-        if min_snr > 0 or cls_filter:
-            kept_p = [p for p in plots if (min_snr <= 0 or (p.snr is not None and p.snr >= min_snr))
-                      and (not cls_filter or (p.classification not in (None, "") and int(float(p.classification)) in cls_filter))]
-            n_filtered += len(plots) - len(kept_p); plots = kept_p
         n_dwells += 1
-        n_before = len(plots)
-        plots = cluster_plots(plots, cfg)                   # cibles étendues : un navire = un plot
-        n_clustered += n_before - len(plots)
+        plots, pst = prepare_plots(plots, cfg)              # déclutter → fantômes → SNR → clustering
+        n_filtered += pst["filtered"]; n_ghosts += pst["ghosts"]; n_clustered += pst["clustered"]
         tk.step(t, plots)
         if merger.enabled():                                # étage post-pistage (comme le processor)
             outs = []
@@ -374,7 +435,7 @@ def run_tracking(path, profile="defaut", overrides=None):
         d["n_coast"] = sum(1 for (_t, _x, _y, st, hit) in h if not hit)
     res = {"raw": raw, "tracks": tracks, "n_kept": len(kept), "n_rejected": n_rejected, "frame": frame,
            "_objs": {tr.id: tr for tr in kept},           # objets Track (inspection : assoc, gates, historique)
-           "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered, "n_clustered": n_clustered,
+           "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered, "n_clustered": n_clustered, "n_ghosts": n_ghosts,
            "contacts": [{"id": cid, "pts": [(float(x), float(y)) for (_t, x, y) in c["pts"]],
                          "n_max": c["n_max"], "hits": c["hits"], "members": sorted(c["members"])}
                         for cid, c in contacts.items()] if merger.enabled() else None}
@@ -438,7 +499,7 @@ def metrics(res):
     lens = [length(t["pts"]) for t in tr]
     coast = sum(t.get("n_coast", 0) for t in tr); pts_total = sum(len(t["pts"]) for t in tr)
     m = {"n_tracks": n, "n_rejected": res["n_rejected"], "n_plots": len(res["raw"]), "n_dwells": res.get("n_dwells", 0),
-         "n_filtered": res.get("n_filtered", 0), "n_clustered": res.get("n_clustered", 0),
+         "n_filtered": res.get("n_filtered", 0), "n_clustered": res.get("n_clustered", 0), "n_ghosts": res.get("n_ghosts", 0),
          "hits_total": sum(hits), "hits_mean": sum(hits) / n, "hits_median": sorted(hits)[n // 2],
          "solid": sum(1 for t in tr if t["etat"] == T.SOLID), "confirmed": sum(1 for t in tr if t["etat"] == T.CONFIRMED),
          "coasting_end": sum(1 for t in tr if t["etat"] == T.COASTING),
