@@ -43,9 +43,9 @@
       const st = await withBusy("démarrage de l'écoute réseau…", () => api("/api/live/start", { iface: iface || null, ip: ip || null,
         groups, ports, backend: $("live-backend").value, record: liveRecord(), taps: [], watch: null, track }), ["btn-play"]);
       lv.on = true; state.replay = st; renderReplay();
-      status(`écoute réseau active (${st.mode || ""})${st.recording ? " · enregistrement " + st.recording : ""}`);
+      status(`écoute réseau active (${st.mode || ""})${st.recording ? " · enregistrement " + st.recording : ""}${track && !st.track ? " · pistage indisponible (voir journal)" : ""}`);
       $("mode-badge").textContent = "● ÉCOUTE RÉSEAU — cliquer un flux vidéo pour le lire"; $("mode-badge").className = "overlay live";
-      if (track) { showTab("gmti"); $("gmti-live-body").textContent = `pistage temps réel actif — profil ${track.profile}`; }
+      if (track && st.track) { showTab("gmti"); $("gmti-live-body").textContent = `pistage temps réel actif — profil ${track.profile}`; }
     } catch (e) { status("écoute : " + e.message, true); }
   }
   async function liveStop() {

@@ -1241,7 +1241,7 @@ class PacketSink:
                     if self.live is None or self.live.profile != (track.get("profile") or "defaut") or self.live.overrides != (track.get("overrides") or {}):
                         self.live = LiveTracker(track.get("profile") or "defaut", track.get("overrides") or {})
                 except Exception as e:
-                    EVENTS.publish({"type": "log", "msg": "pistage temps réel indisponible : %s" % e})
+                    EVENTS.publish({"type": "log", "msg": "pistage temps réel indisponible : %s (numpy/scipy manquants pour cet interpréteur ?)" % e})
 
     def publish(self, force=False):
         now = time.perf_counter()
@@ -1385,11 +1385,14 @@ class LiveEngine:
             if ENGINE.status().get("running"):
                 raise ValueError("un rejeu est en cours : l'arrêter d'abord")
             live = None
+            warn = None
             if track:
                 try:
                     live = LiveTracker(track.get("profile") or "defaut", track.get("overrides") or {})
-                except Exception as e:
-                    raise ValueError("pistage temps réel indisponible : %s" % e)
+                except Exception as e:                        # non bloquant : l'écoute continue sans pistage
+                    warn = ("pistage temps réel indisponible : %s — l'écoute continue sans pistes (installer numpy/scipy "
+                            "pour l'interpréteur qui lance la console : sous sudo → `sudo pip3 install numpy scipy`)" % e)
+                    track = None
             wset = None if watch is None else set(str(w).lower() for w in watch)
             self.stop_event.clear()
             self.flows = {}
@@ -1412,6 +1415,8 @@ class LiveEngine:
                 raise ValueError("écoute impossible : %s" % e)
             self.state["mode"] = mode
         EVENTS.publish({"type": "log", "msg": "écoute réseau démarrée (%s)%s" % (mode, (" — enregistrement " + self.writer.dir) if self.writer else "")})
+        if warn:
+            EVENTS.publish({"type": "log", "msg": warn})
         self.thread = threading.Thread(target=self._ticker, daemon=True); self.thread.start()
         EVENTS.publish({"type": "replay", **self.status()})
 
