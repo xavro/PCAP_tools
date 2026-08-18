@@ -12,6 +12,25 @@
   const status = (msg, warn) => { const s = $("status"); s.textContent = msg; s.style.color = warn ? "var(--warn)" : ""; };
   const fmt = (v, d = 5) => (v == null || isNaN(v)) ? "—" : Number(v).toFixed(d);
   const utc = us => us ? new Date(us / 1000).toISOString().replace("T", " ").replace("Z", "") : "—";
+  // ── Indicateur d'activité (barre + pastille), compteur d'opérations en cours ──
+  let busyN = 0; const busyStack = [];
+  function busy(label) {
+    busyN++; busyStack.push(label || "en cours…");
+    $("busy-txt").textContent = busyStack[busyStack.length - 1]; $("busy").hidden = false; $("busybar").hidden = false; document.body.classList.add("is-busy");
+    let done = false;
+    return () => { if (done) return; done = true; busyN = Math.max(0, busyN - 1); const i = busyStack.indexOf(label || "en cours…"); if (i >= 0) busyStack.splice(i, 1);
+      if (busyN === 0) { $("busy").hidden = true; $("busybar").hidden = true; document.body.classList.remove("is-busy"); } else $("busy-txt").textContent = busyStack[busyStack.length - 1]; };
+  }
+  async function withBusy(label, fn, disable = []) {
+    const end = busy(label); disable.forEach(id => { const b = $(id); if (b) b.disabled = true; });
+    try { return await fn(); } finally { end(); disable.forEach(id => { const b = $(id); if (b) b.disabled = false; }); }
+  }
+  async function download(url, filename, label) {
+    return withBusy(label || "export…", async () => {
+      const r = await fetch(url); if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch (e) {} throw new Error(m); }
+      const blob = await r.blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    });
+  }
   const api = async (url, body) => {
     const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
     const j = await r.json(); if (j.error) throw new Error(j.error); return j;
@@ -176,7 +195,7 @@
   function trackColor(t) { return t.is_air ? "#ff9f43" : t.is_rotator ? "#e58cff" : (ETAT_COL[t.etat] || "#00c8ff"); }
   async function gmtiDecode() {
     showTab("gmti"); $("gmti-status").textContent = "décodage GMTI…";
-    try { gs.decoded = await api(`/api/gmti/decode?pcap=${encodeURIComponent(state.pcap)}${limQ()}`); }
+    try { gs.decoded = await withBusy("décodage GMTI 4607 (extracteur)…", () => api(`/api/gmti/decode?pcap=${encodeURIComponent(state.pcap)}${limQ()}`), ["gmti-decode", "gmti-track"]); }
     catch (e) { return $("gmti-status").textContent = "erreur : " + e.message; }
     const d = gs.decoded;
     if (!d.decoded) { $("gmti-status").textContent = d.error || "aucun GMTI"; return; }
@@ -191,11 +210,11 @@
     const profile = $("gmti-profile").value || "defaut";
     const ovq = Object.keys(gs.ov).length ? `&overrides=${encodeURIComponent(JSON.stringify(gs.ov))}` : "";
     $("gmti-status").textContent = `tracker en cours (profil ${profile}${ovq ? " + surcharges" : ""})…`;
-    try { gs.res = await api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}${limQ()}`); }
+    try { gs.res = await withBusy(`tracker GMTI — profil ${profile}${ovq ? " + surcharges" : ""}…`, () => api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}${limQ()}`), ["gmti-track", "ed-run", "gmti-decode"]); }
     catch (e) { return $("gmti-status").textContent = "tracker : " + e.message; }
     gs.resB = null;
     if (gs.abProfile) {
-      try { gs.resB = await api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${gs.abProfile}${limQ()}`); } catch (e) { status("A/B : " + e.message, true); }
+      try { gs.resB = await withBusy(`tracker GMTI — profil B ${gs.abProfile}…`, () => api(`/api/gmti/track?pcap=${encodeURIComponent(state.pcap)}&profile=${gs.abProfile}${limQ()}`)); } catch (e) { status("A/B : " + e.message, true); }
     }
     drawTracks(); fitTracks(); renderMetrics();
     const r = gs.res, m = r.metrics || {};
@@ -216,7 +235,7 @@
   async function inspectTrack(id) {
     if (!gs.res) return;
     const profile = gs.res.profile, ovq = Object.keys(gs.res.overrides || {}).length ? `&overrides=${encodeURIComponent(JSON.stringify(gs.res.overrides))}` : "";
-    let d; try { d = await api(`/api/gmti/track/detail?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}&id=${id}${limQ()}`); }
+    let d; try { d = await withBusy(`inspection de la piste ${id}…`, () => api(`/api/gmti/track/detail?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}&id=${id}${limQ()}`)); }
     catch (e) { return status("inspection : " + e.message, true); }
     ins.d = d; showTab("gmti"); $("gmti-inspect").hidden = false; $("gmti-editor").hidden = true;
     lyInspect.clearLayers();
@@ -319,9 +338,8 @@
     if (!state.pcap) return status("analyser un pcap d'abord", true);
     const profile = $("gmti-profile").value || "defaut", ovq = Object.keys(gs.ov).length ? `&overrides=${encodeURIComponent(JSON.stringify(gs.ov))}` : "";
     const name = ($("ed-name").value.trim() || profile);
-    status("export de l'oracle de parité (rejeu du tracker Python)… quelques secondes");
     const secs = prompt("Fenêtre du cas de parité (secondes de dwell_time depuis le premier plot ; 0 = capture entière — attention, le test JUnit est en O(n²) par dwell) :", "300"); if (secs === null) return;
-    const a = document.createElement("a"); a.href = `/api/gmti/parity.zip?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}&name=${encodeURIComponent(name)}&seconds=${encodeURIComponent(secs)}${limQ()}`; a.click();
+    download(`/api/gmti/parity.zip?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}&name=${encodeURIComponent(name)}&seconds=${encodeURIComponent(secs)}${limQ()}`, `parity_${name}.zip`, "oracle de parité (rejeu du tracker Python)…").then(() => status("oracle de parité exporté")).catch(e => status("oracle : " + e.message, true));
   });
   $("ed-export").addEventListener("click", () => {
     if (!gs.prof) return; const profile = $("gmti-profile").value || "defaut";
@@ -393,7 +411,7 @@
   async function cotScan() {
     showTab("cot"); $("cot-status").textContent = "analyse CoT…";
     const flt = $("cot-filter").value.trim();
-    try { cs.data = await api(`/api/cot/scan?pcap=${encodeURIComponent(state.pcap)}&filter=${encodeURIComponent(flt)}`); }
+    try { cs.data = await withBusy("analyse CoT (parse XML de toute la capture)…", () => api(`/api/cot/scan?pcap=${encodeURIComponent(state.pcap)}&filter=${encodeURIComponent(flt)}`), ["cot-scan"]); }
     catch (e) { return $("cot-status").textContent = "erreur : " + e.message; }
     resetCot(); const d = cs.data;
     d.rows.forEach(row => {
@@ -432,8 +450,7 @@
   $("btn-geojson").addEventListener("click", () => {
     if (!state.pcap) return status("analyser un pcap d'abord", true);
     const profile = $("gmti-profile").value || "defaut";
-    status("export GeoJSON (fusion GMTI + CoT + vidéo)… peut prendre quelques secondes");
-    const a = document.createElement("a"); a.href = `/api/fused/export.geojson?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${limQ()}`; a.download = "fusion.geojson"; a.click();
+    download(`/api/fused/export.geojson?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${limQ()}`, "fusion.geojson", "export GeoJSON fusion (GMTI + CoT + vidéo)…").then(() => status("GeoJSON exporté")).catch(e => status("export : " + e.message, true));
   });
   $("btn-ts").addEventListener("click", () => {
     if (!state.cur) return status("pas de flux vidéo sélectionné", true);
@@ -477,8 +494,16 @@
   }
   function bmDialogRows() { const p = $("bm-provider").value; $("bm-layer-row").hidden = p !== "arcgis_online"; $("bm-ms-rows").hidden = p !== "mapserver"; }
   $("bm-provider").addEventListener("change", bmDialogRows);
-  $("btn-bm").addEventListener("click", () => { bmDialogFill(); $("bm-dlg").hidden = !$("bm-dlg").hidden; });
-  $("bm-close").addEventListener("click", () => { $("bm-dlg").hidden = true; });
+  $("btn-settings").addEventListener("click", () => { const st = $("settings"); st.hidden = !st.hidden; if (!st.hidden) { bmDialogFill(); renderFilesInfo(); } });
+  $("st-close").addEventListener("click", () => { $("settings").hidden = true; });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") $("settings").hidden = true; });
+  document.addEventListener("mousedown", e => { const st = $("settings"); if (!st.hidden && !st.contains(e.target) && !$("btn-settings").contains(e.target)) st.hidden = true; });
+  function renderFilesInfo() {
+    const c = state.cfg || {};
+    $("st-files").innerHTML = `profils tracker : <b>${(gs.prof && gs.prof.path) || "gmti_profiles.json"}</b><br>` +
+      `dernier pcap : <b>${state.pcap || "—"}</b><br>fond de carte : basemap.json · réglages : pcap_web_settings.json (dossier de pcap_web.py)` +
+      (c.default_limit ? `<br>limite d'analyse : ${c.default_limit} paquets (--limit)` : "");
+  }
   $("bm-save").addEventListener("click", async () => {
     const cfg = { provider: $("bm-provider").value, layer: $("bm-layer").value, url: $("bm-url").value.trim(),
       token: $("bm-token").value.trim() || null, insecure: $("bm-insecure").checked };
@@ -503,8 +528,8 @@
     let r, f;
     try {
       const lim = state.cfg && state.cfg.default_limit ? `&limit=${state.cfg.default_limit}` : "";
-      [r, f] = await Promise.all([api(`/api/streams?pcap=${encodeURIComponent(state.pcap)}${lim}`),
-                                  api(`/api/flows?pcap=${encodeURIComponent(state.pcap)}${lim}`)]);
+      [r, f] = await withBusy("analyse du pcap (flux TS + protocoles)…", () => Promise.all([api(`/api/streams?pcap=${encodeURIComponent(state.pcap)}${lim}`),
+                                  api(`/api/flows?pcap=${encodeURIComponent(state.pcap)}${lim}`)]), ["btn-load", "btn-browse"]);
     } catch (e) { return status("erreur : " + e.message, true); }
     state.streams = r.streams; state.flows = f.flows; state.flowsDur = f.duration_s;
     api("/api/settings").then(st => fillRecent(st.recent)).catch(() => {});
@@ -575,7 +600,7 @@
     stopPlayer();
     if (state.cur.first_klv) renderTable(state.cur.first_klv.map(f => ({ tag: f.tag, name: f.name, value: f.value, unit: "" })), false);
     status("trace KLV…");
-    try { state.track = await api(`/api/klv?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}`); }
+    try { state.track = await withBusy("trace KLV du flux vidéo…", () => api(`/api/klv?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}`)); }
     catch (e) { state.track = null; return status("erreur KLV : " + e.message, true); }
     fullTrack.setLatLngs(state.track.sets.map(s => [s.lat, s.lon]));
     $("klv-sum").textContent = `${state.track.n} sets · ${state.track.n && (state.track.n / state.cur.duration_s).toFixed(1)} Hz`;
@@ -776,10 +801,11 @@
     document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
   });
   gutter.addEventListener("dblclick", () => { setLeft(420); map.invalidateSize(); });
+  $("st-leftw").addEventListener("click", () => { setLeft(420); map.invalidateSize(); });
 
   // Les contrôles posés sur la carte (boutons, légende, dialogues) ne doivent pas
   // transmettre leurs clics / molette à la carte (sinon : point de mesure sous le bouton).
-  document.querySelectorAll("#map .map-ctl, #map .legend, #map .coords, #map .bm-dlg").forEach(el => {
+  document.querySelectorAll("#map .map-ctl, #map .legend, #map .coords").forEach(el => {
     L.DomEvent.disableClickPropagation(el); L.DomEvent.disableScrollPropagation(el); });
 
   // ── Coordonnées au survol (MGRS + lat/lon) ─────────────────────────────────

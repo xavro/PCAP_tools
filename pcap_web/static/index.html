@@ -26,8 +26,50 @@
     <button id="btn-play" class="accent">▶ Lire</button>
     <button id="btn-stop" class="danger">■ Stop</button>
     <span id="status">prêt</span>
-    <span class="fs-ctl" title="taille du texte des panneaux"><button id="fs-minus">A−</button><button id="fs-plus">A+</button></span>
+    <span id="busy" class="busy" hidden><i class="spin"></i><span id="busy-txt">en cours…</span></span>
+    <button id="btn-settings" title="paramètres de l'application">⚙ Paramètres</button>
+    <div id="busybar" class="busybar" hidden></div>
   </header>
+  <div class="settings" id="settings" hidden>
+    <div class="st-head"><b>⚙ Paramètres</b><button id="st-close">✕</button></div>
+    <div class="st-body">
+      <section>
+        <h4>Affichage</h4>
+        <div class="row"><span>Taille du texte des panneaux</span><span class="fs-ctl"><button id="fs-minus">A−</button><button id="fs-plus">A+</button></span></div>
+        <div class="row"><span>Largeur de la colonne gauche</span><button id="st-leftw">↺ défaut (420 px)</button><span class="muted">glisser la poignée pour ajuster</span></div>
+        <div class="row"><label class="chk"><input type="checkbox" id="fulltrack" checked> trace complète du capteur vidéo (pointillé)</label></div>
+      </section>
+      <section>
+        <h4>Fond de carte</h4>
+        <div class="row"><label class="chk"><input type="checkbox" id="basemap" checked> afficher le fond de carte</label></div>
+        <label>Source <select id="bm-provider">
+          <option value="arcgis_online">ArcGIS Online (internet)</option>
+          <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
+          <option value="none">Aucun</option></select></label>
+        <label id="bm-layer-row">Couche <select id="bm-layer">
+          <option value="World_Imagery">Imagerie</option>
+          <option value="World_Topo_Map">Topographique</option>
+          <option value="World_Street_Map">Rues</option>
+          <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
+        <div id="bm-ms-rows">
+          <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
+          <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
+          <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
+        </div>
+        <div class="row"><button id="bm-save" class="accent">Appliquer &amp; enregistrer</button><span id="bm-msg" class="muted"></span></div>
+      </section>
+      <section>
+        <h4>Exports</h4>
+        <div class="row"><button id="btn-geojson" title="pistes GMTI + objets/traces CoT + trace capteur vidéo (WGS84)">⤓ GeoJSON fusion</button><span class="muted">pistes GMTI (profil courant), objets/traces CoT, trace capteur vidéo</span></div>
+        <div class="row"><button id="btn-ts" title="télécharger le TS du flux vidéo sélectionné">⤓ .ts du flux vidéo</button><span class="muted">flux MPEG-TS réassemblé (lecteur externe)</span></div>
+        <div class="row"><span class="muted">Profils GMTI : « ⤓ JSON » et « ⤓ oracle de parité » sont dans l'onglet GMTI 4607 → ⚙ paramètres du profil.</span></div>
+      </section>
+      <section>
+        <h4>Fichiers &amp; réglages locaux</h4>
+        <div class="mono muted" id="st-files">—</div>
+      </section>
+    </div>
+  </div>
   <div class="browse-dlg" id="browse-dlg" hidden>
     <div class="bd-head"><b>Choisir une capture</b><span id="bd-dir" class="mono muted"></span><button id="bd-close">✕</button></div>
     <div class="bd-body"><ul id="bd-list"></ul></div>
@@ -120,29 +162,8 @@
     <div id="map" style="position:relative">
       <div class="map-ctl">
         <label class="chk">suivre <select id="follow" style="padding:1px 4px"><option value="sensor">le capteur</option><option value="center">le centre image</option><option value="both">capteur + empreinte</option><option value="none">rien</option></select></label>
-        <label class="chk"><input type="checkbox" id="basemap" checked> fond de carte</label>
-        <label class="chk"><input type="checkbox" id="fulltrack" checked> trace complète</label>
-        <div style="display:flex;gap:4px"><button id="btn-fit" style="padding:2px 8px;flex:1">Ajuster la vue</button><button id="btn-bm" title="configurer le fond de carte" style="padding:2px 8px">⚙</button></div>
-        <div style="display:flex;gap:4px"><button id="btn-geojson" style="padding:2px 8px;flex:1" title="pistes GMTI + objets/traces CoT + trace capteur vidéo (WGS84)">⤓ GeoJSON fusion</button><button id="btn-ts" style="padding:2px 8px" title="télécharger le TS du flux vidéo sélectionné">⤓ .ts</button></div>
+        <div style="display:flex;gap:4px"><button id="btn-fit" style="padding:2px 8px;flex:1">Ajuster la vue</button></div>
         <div style="display:flex;gap:4px"><button id="btn-measure" style="padding:2px 8px;flex:1" title="mesurer : cliquer les points sur la carte, double-clic ou Échap pour terminer">📏 Mesurer</button><button id="btn-measure-clear" style="padding:2px 8px" title="effacer les mesures">✕</button></div>
-      </div>
-      <div class="bm-dlg" id="bm-dlg" hidden>
-        <h3>Fond de carte</h3>
-        <label>Source <select id="bm-provider">
-          <option value="arcgis_online">ArcGIS Online (internet)</option>
-          <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
-          <option value="none">Aucun</option></select></label>
-        <label id="bm-layer-row">Couche <select id="bm-layer">
-          <option value="World_Imagery">Imagerie</option>
-          <option value="World_Topo_Map">Topographique</option>
-          <option value="World_Street_Map">Rues</option>
-          <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
-        <div id="bm-ms-rows">
-          <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
-          <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
-          <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
-        </div>
-        <div class="row"><button id="bm-save" class="accent">Appliquer &amp; enregistrer</button><button id="bm-close">Fermer</button><span id="bm-msg" class="muted"></span></div>
       </div>
       <div class="coords" id="coords" title="position du pointeur — cliquer pour copier le MGRS"><b id="c-mgrs">—</b><span id="c-ll"></span></div>
       <div class="legend" title="cliquer une entrée pour masquer / afficher la couche">
