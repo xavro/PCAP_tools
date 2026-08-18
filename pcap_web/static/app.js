@@ -32,7 +32,7 @@
   // ── Carte (EPSG:3857 : tuiles ArcGIS Online ; export MapServer demandé en 3857) ─
   const map = L.map("map", { attributionControl: true, zoomSnap: 0.25, preferCanvas: true }).setView([46, 2], 5);
   const LY = {};                                       // clé légende → groupe de couches
-  ["trace", "foot", "center", "plots", "dwell", "tracks", "contacts", "ab", "cot"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
+  ["trace", "foot", "center", "plots", "dwell", "tracks", "live", "contacts", "ab", "cot"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
   const lyTrace = LY.trace, lyFoot = LY.foot, lyCenter = LY.center, lyPlots = LY.plots, lyDwell = LY.dwell, lyCot = LY.cot;
   const canvasR = L.canvas({ padding: 0.3 });
   map.attributionControl.setPrefix("");
@@ -124,11 +124,42 @@
     });
     while (gmti.dots.length > GMTI_MAX) lyPlots.removeLayer(gmti.dots.shift());
     if (b.sensor && b.sensor[0] != null) { gmtiSensor.setLatLng(b.sensor); if (!gmtiSensor._map) gmtiSensor.addTo(lyDwell); }
+    if (b.live) renderLive(b.live);
     const cls = Object.entries(gmti.stats.cls).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `cls ${k}: <b>${v}</b>`).join(" · ");
     $("gmti-body").innerHTML = `paquets 4607 <b>${gmti.stats.pkts}</b> · dwells <b>${gmti.stats.dwells}</b> · plots <b>${gmti.stats.plots}</b> (affichés ${gmti.dots.length}) · t=<b>${b.t.toFixed(1)}</b> s<br>` +
       (b.sensor ? `capteur <b>${b.sensor[0].toFixed(4)} ${b.sensor[1].toFixed(4)}</b><br>` : "") + cls;
     $("gmti-sum").textContent = `${gmti.stats.plots} plots`;
   }
+  // ── Pistes temps réel (moteur de rejeu) : marqueur + traîne, couleur = état ─
+  const live = { layers: new Map() };                 // id → {mk, tail, seen}
+  const LIVE_COL = { SOLID: "#00e5a8", CONFIRMED: "#00c8ff", COASTING: "#ffd54f", TENTATIVE: "#8a8f98" };
+  function renderLive(lv) {
+    const showTent = $("gmti-live-tent").checked, seen = new Set();
+    (lv.tracks || []).forEach(t => {
+      if (t.state === "TENTATIVE" && !showTent) return;
+      if (!t.ever && !showTent) return;                 // pas encore confirmée une fois → tentative
+      const col = t.is_air ? "#ff9f43" : t.is_rotator ? "#e58cff" : (t.ever ? LIVE_COL[t.state] : LIVE_COL.TENTATIVE);
+      let e = live.layers.get(t.id);
+      if (!e) {
+        e = { mk: L.circleMarker([t.lat, t.lon], { radius: 5, weight: 1.5, color: col, fillColor: col, fillOpacity: .9, renderer: canvasR }).addTo(LY.live),
+              tail: L.polyline(t.tail, { color: col, weight: 2, opacity: .8, renderer: canvasR }).addTo(LY.live) };
+        e.mk.bindTooltip("", { permanent: true, direction: "right", offset: [6, 0], className: "live-lbl" });
+        live.layers.set(t.id, e);
+      }
+      e.mk.setLatLng([t.lat, t.lon]); e.mk.setStyle({ color: col, fillColor: col, fillOpacity: t.state === "COASTING" ? .35 : .9 });
+      e.tail.setLatLngs(t.tail); e.tail.setStyle({ color: col });
+      e.mk.setTooltipContent(`${t.contact != null ? "C" + t.contact + "·" : ""}${t.id} ${t.state[0]}${t.hits}` + (t.speed >= 1 ? ` ${t.speed.toFixed(0)}m/s` : ""));
+      seen.add(t.id);
+    });
+    live.layers.forEach((e, id) => { if (!seen.has(id)) { LY.live.removeLayer(e.mk); LY.live.removeLayer(e.tail); live.layers.delete(id); } });
+    const st = lv.stats || {};
+    $("gmti-live-body").innerHTML = st.error ? `pistage temps réel : <span style="color:var(--danger)">${st.error}</span>` :
+      `pistage temps réel · profil <b>${st.profile}${Object.keys(st.overrides || {}).length ? "*" : ""}</b> · dwells <b>${st.n_dwells}</b> · pistes vivantes <b>${st.displayable}</b> ` +
+      `(solides <b>${st.solid}</b>, confirmées <b>${st.confirmed}</b>, coasting <b>${st.coasting}</b>, tentatives ${st.tentative}) · archivées ${st.archived}` +
+      (lv.contacts ? ` · contacts fusionnés <b>${lv.contacts.length}</b>` : "") + (st.n_resets ? ` · resets ${st.n_resets}` : "") + (st.n_filtered ? ` · filtrés ${st.n_filtered}` : "");
+  }
+  function resetLive() { live.layers.clear(); LY.live.clearLayers(); $("gmti-live-body").textContent = ""; }
+
   function resetGmti() { gmti.dots.forEach(d => lyPlots.removeLayer(d)); gmti.dots = []; gmti.dwells.forEach(d => lyDwell.removeLayer(d)); gmti.dwells = []; if (dwellLine._map) lyDwell.removeLayer(dwellLine); gmti.stats = { pkts: 0, plots: 0, dwells: 0, cls: {} }; if (gmtiSensor._map) lyDwell.removeLayer(gmtiSensor); }
   let fitOnce = false;
 
@@ -543,10 +574,13 @@
     const taps = videoOn ? [state.cur.dport] : [];
     if (videoOn) startPlayer(`${WS}/ws/video?dport=${state.cur.dport}`, true);
     else { stopPlayer(); $("mode-badge").textContent = "flux vidéo non coché — pas de lecture"; $("mode-badge").className = "overlay"; }
-    state.log = []; $("replay-log").textContent = ""; resetCot(); resetGmti(); fitOnce = false; state.retries = 0;
+    state.log = []; $("replay-log").textContent = ""; resetCot(); resetGmti(); resetLive(); fitOnce = false; state.retries = 0;
+    const gmtiChecked = checked.some(f => /GMTI|4607/i.test(f.dominant));
+    const track = (gmtiChecked && $("gmti-live").checked) ? { profile: $("gmti-profile").value || "defaut", overrides: gs.ov } : null;
     try {
       await api("/api/replay/start", { pcap: state.pcap, routes, speed: parseFloat($("speed").value), loop: $("loop").checked,
-        rebase: $("rebase").checked, taps, watch });
+        rebase: $("rebase").checked, taps, watch, track });
+      if (track) { showTab("gmti"); $("gmti-live-body").textContent = `pistage temps réel actif — profil ${track.profile}${Object.keys(track.overrides).length ? " + surcharges" : ""}`; }
       const ihmOnly = checked.length - routes.length;
       $("tl-mode").textContent = `rejeu ×${$("speed").value || "max"} — ${routes.length} route(s) émise(s)` + (ihmOnly ? ` + ${ihmOnly} IHM seule` : "") + (taps.length ? " + vidéo" : "");
       status(`rejeu démarré : ${checked.map(f => f.key).join(", ")}`);

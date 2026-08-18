@@ -26,8 +26,9 @@ API :
   GET /video.ts?pcap=&dport=    TS réassemblé (Range supporté)
   GET /live.ts?pcap=&dport=&speed=&loop=  TS cadencé temps réel (chunked, sans UDP)
   GET /api/flows?pcap=&limit=   flux applicatifs (pcap_analyze) pour le routage
-  POST /api/replay/start        {pcap, routes:[{proto,dport,targets:[ip[:port]]}], speed,
-                                 loop, rebase, taps:[dport]} → démarre le moteur de rejeu
+  POST /api/replay/start        {pcap, routes:[{proto,dport,targets:[ip[:port]]}], speed, loop, rebase,
+                                 taps:[dport], watch:[...], track:{profile, overrides}} → démarre le
+                                 moteur de rejeu (track = pistage GMTI temps réel, pistes dans les lots gmti)
   POST /api/replay/stop         arrêt propre
   GET /api/replay/status        état courant
   WS  /ws/events                événements JSON (replay/log/end)
@@ -441,7 +442,8 @@ def gmti_track(entry, profile, overrides=None):
     if key in entry["tracks"]:
         return entry["tracks"][key]
     tr = load_track_run()
-    res = tr.run_tracking(entry["csv"], profile, overrides or None)
+    with TRACK_LOCK:                                    # Params globaux : pas en même temps que le pistage live
+        res = tr.run_tracking(entry["csv"], profile, overrides or None)
     fr = res.get("frame")
     if fr is None:
         raise ValueError("tracker : aucun plot exploitable")
@@ -778,6 +780,123 @@ def decode_gmti(pl):
     return plots, sensor, dw
 
 
+TRACK_LOCK = threading.RLock()     # Params du tracker = classe globale : un seul utilisateur à la fois
+
+
+class LiveTracker:
+    """Pistage TEMPS RÉEL pendant le rejeu : Tracker.step() dwell par dwell (comme le
+    processor GeoEvent), profil + surcharges (noms Java), déclutter, fusion TrackMerger.
+    Le lock global sérialise l'accès à tracker.Params avec l'analyse statique."""
+
+    def __init__(self, profile="defaut", overrides=None):
+        import itertools
+        self.tr = load_track_run()
+        self.T = sys.modules["tracker"]
+        self.profile, self.overrides = profile or "defaut", overrides or {}
+        self.tk = None; self.frame = None; self.last_t = None; self.merger = None
+        self.n_dwells = 0; self.n_plots = 0; self.n_resets = 0; self.n_filtered = 0
+        self.itertools = itertools
+        self.cfg = None
+
+    def _apply(self):
+        self.cfg = self.tr.apply_profile(self.profile, self.overrides)
+        return self.cfg
+
+    def _reset(self):
+        self.tk = self.T.Tracker(); self.T.Track._ids = self.itertools.count(1)
+        self.merger = self.tr.TrackMerger(self.cfg or self._apply()); self.last_t = None
+
+    def step_dwells(self, dwells):
+        """dwells : sortie de gmti_pcap_to_csv.decode_packet_dwells (rows déjà validés)."""
+        T = self.T
+        with TRACK_LOCK:
+            cfg = self._apply()
+            if self.tk is None:
+                self._reset()
+            min_snr = float(cfg.get("minSnrDb") or 0); cls_f = set(int(c) for c in (cfg.get("classFilter") or []))
+            for d in dwells:
+                if d["time"] is None:
+                    continue
+                t = d["time"] / 1000.0
+                rows = d["rows"]
+                if self.frame is None:
+                    if not rows:
+                        continue
+                    self.frame = T.LocalFrame(rows[0]["lat"], rows[0]["lon"])
+                if self.last_t is not None:
+                    if t < self.last_t - 5.0:                       # rejeu bouclé / retour franc → nouvelle session
+                        self.n_resets += 1; self._reset()
+                    elif t < self.last_t:                            # léger désordre : on ne recule pas le temps
+                        t = self.last_t
+                sl = d["sensor"]
+                sxy = self.frame.to_xy(sl[0], sl[1]) if sl and sl[0] is not None and sl[1] is not None else None
+                plots = []
+                for r in rows:
+                    if min_snr > 0 and (r["snr_db"] is None or r["snr_db"] < min_snr):
+                        self.n_filtered += 1; continue
+                    if cls_f and (r["classification"] is None or int(r["classification"]) not in cls_f):
+                        self.n_filtered += 1; continue
+                    x, y = self.frame.to_xy(r["lat"], r["lon"])
+                    sig_r = (r["sig_range_cm"] / 100.0) if r["sig_range_cm"] else T.Params.R_POS_DEFAULT
+                    sig_x = (r["sig_xrange_dm"] / 10.0) if r["sig_xrange_dm"] else T.Params.R_POS_DEFAULT
+                    R = T.covariance_from_4607(sxy, (x, y), sig_r, sig_x) if sxy else None
+                    plots.append(T.Plot(x, y, r_pos=max(sig_r, sig_x), R=R,
+                                        vel_los=(r["vel_los_cms"] or 0) / 100.0, snr=r["snr_db"], classification=r["classification"]))
+                self.tk.step(t, plots)
+                self.last_t = t; self.n_dwells += 1; self.n_plots += len(plots)
+
+    def snapshot(self, tail=30):
+        """Pistes vivantes (état, position, vitesse, cap, traîne) + contacts fusionnés."""
+        T = self.T
+        if self.tk is None or self.frame is None:
+            return {"tracks": [], "stats": self._stats(0, 0, 0, 0)}
+        with TRACK_LOCK:
+            self._apply()
+            names = {T.TENTATIVE: "TENTATIVE", T.CONFIRMED: "CONFIRMED", T.SOLID: "SOLID", T.COASTING: "COASTING"}
+            out, outs = [], []
+            counts = {"TENTATIVE": 0, "CONFIRMED": 0, "SOLID": 0, "COASTING": 0, "EVER": 0}
+            min_speed = float((self.cfg or {}).get("minTrackSpeedMps") or 0.0)
+            for tr in self.tk.tracks:
+                st = tr.state
+                if st == T.DEAD:
+                    continue
+                name = names.get(st, str(st)); counts[name] = counts.get(name, 0) + 1
+                if tr.confirmed_ever:
+                    counts["EVER"] += 1
+                sp = float(tr.speed())
+                la, lo = self.frame.to_ll(float(tr.x[0]), float(tr.x[1]))
+                hist = tr.history[-tail:]
+                o = {"id": tr.id, "lat": round(la, 6), "lon": round(lo, 6), "speed": round(sp, 1),
+                     "heading": round((math.degrees(math.atan2(tr.x[2], tr.x[3])) + 360.0) % 360.0, 1),
+                     "state": name, "hits": tr.hits, "misses": tr.misses, "ever": bool(tr.confirmed_ever),
+                     "is_air": bool(tr.is_air), "is_rotator": bool(tr.is_rotator),
+                     "age_s": round(max(0.0, (self.last_t or 0) - tr.t_last_update), 1),
+                     "tail": [[round(a, 6), round(b, 6)] for a, b in (self.frame.to_ll(float(x), float(y)) for (_t, x, y, _s, _h) in hist)]}
+                out.append(o)
+                if tr.confirmed_ever and name != "TENTATIVE" and (min_speed <= 0 or sp >= min_speed):   # affichables (comme le processor)
+                    outs.append({"track_id": tr.id, "x": float(tr.x[0]), "y": float(tr.x[1]), "speed": sp, "heading": o["heading"],
+                                 "state": name, "hits": tr.hits, "is_air": o["is_air"], "is_rotator": o["is_rotator"]})
+            contacts = None
+            if self.merger and self.merger.enabled():
+                by_track = {}
+                cs = self.merger.merge(outs)
+                for c in cs:
+                    for m in c["members"]:
+                        by_track[m] = c["id"]
+                for o in out:
+                    o["contact"] = by_track.get(o["id"])
+                contacts = [{"id": c["id"], "n": c["n"], "lat": round(self.frame.to_ll(c["x"], c["y"])[0], 6),
+                             "lon": round(self.frame.to_ll(c["x"], c["y"])[1], 6), "members": c["members"]} for c in cs if c["n"] > 1]
+            st_ = self._stats(counts["TENTATIVE"], counts["CONFIRMED"], counts["SOLID"], counts["COASTING"]); st_["displayable"] = counts["EVER"]
+            return {"tracks": out, "contacts": contacts, "stats": st_}
+
+    def _stats(self, tent, conf, solid, coast):
+        return {"profile": self.profile, "overrides": self.overrides, "n_dwells": self.n_dwells, "n_plots": self.n_plots,
+                "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t,
+                "tentative": tent, "confirmed": conf, "solid": solid, "coasting": coast,
+                "archived": len(self.tk.archive) if self.tk else 0}
+
+
 class ReplayEngine:
     """Un rejeu à la fois : pcap_replay.do_routed_replay dans un thread + hook on_packet."""
 
@@ -791,7 +910,7 @@ class ReplayEngine:
         with self.lock:
             return dict(self.state)
 
-    def start(self, pcap, routes, speed=1.0, loop=False, rebase=False, taps=(), watch=None):
+    def start(self, pcap, routes, speed=1.0, loop=False, rebase=False, taps=(), watch=None, track=None):
         """`routes` : flux émis (targets non vides) ; `taps` : ports vidéo poussés vers l'IHM ;
         `watch` : liste "udp/1237" des flux dont CoT/GMTI sont décodés pour l'IHM
         (None = tous, [] = aucun). Un flux non coché n'est ni émis ni affiché."""
@@ -806,17 +925,23 @@ class ReplayEngine:
                                          target=None, target_port=None)
             self.stop_event.clear()
             self.state = {"running": True, "pcap": pcap, "routes": specs, "speed": speed,
-                          "loop": loop, "taps": list(taps), "watch": watch, "sent": 0, "passes": 0, "t": 0.0,
+                          "loop": loop, "taps": list(taps), "watch": watch, "track": track, "sent": 0, "passes": 0, "t": 0.0,
                           "started": time.time()}
             wset = None if watch is None else set(str(w).lower() for w in watch)
-            self.thread = threading.Thread(target=self._run, args=(pcap, args, table, set(int(t) for t in taps), wset),
+            live = None
+            if track:
+                try:
+                    live = LiveTracker(track.get("profile") or "defaut", track.get("overrides") or {})
+                except Exception as e:
+                    raise ValueError("pistage temps réel indisponible : %s" % e)
+            self.thread = threading.Thread(target=self._run, args=(pcap, args, table, set(int(t) for t in taps), wset, live),
                                            daemon=True)
             self.thread.start()
 
     def stop(self):
         self.stop_event.set()
 
-    def _run(self, pcap, args, table, taps, watch=None):
+    def _run(self, pcap, args, table, taps, watch=None, live=None):
         counters = {}
         t_cap0 = [None]
         last_pub = [0.0]
@@ -854,10 +979,16 @@ class ReplayEngine:
                 plots = gmti_batch["plots"]
                 if len(plots) > 4000:                          # décimation d'affichage
                     plots = plots[::len(plots) // 4000 + 1]
-                EVENTS.publish({"type": "gmti", "t": round(t_rel[0], 3), "plots": plots, "sensor": gmti_batch["sensor"],
-                                "dwells": gmti_batch["dwells"][-40:], "pkts": gmti_batch["pkts"],
-                                "total_plots": totals["gmti_plots"], "total_pkts": totals["gmti_pkts"],
-                                "total_dwells": totals["gmti_dwells"]})
+                ev = {"type": "gmti", "t": round(t_rel[0], 3), "plots": plots, "sensor": gmti_batch["sensor"],
+                      "dwells": gmti_batch["dwells"][-40:], "pkts": gmti_batch["pkts"],
+                      "total_plots": totals["gmti_plots"], "total_pkts": totals["gmti_pkts"],
+                      "total_dwells": totals["gmti_dwells"]}
+                if live is not None:
+                    try:
+                        ev["live"] = live.snapshot()
+                    except Exception as e:
+                        ev["live"] = {"tracks": [], "stats": {"error": str(e)}}
+                EVENTS.publish(ev)
                 gmti_batch.update({"plots": [], "sensor": None, "pkts": 0, "dwells": []})
 
         def on_packet(ts, proto, dport, pl, tgts):
@@ -885,6 +1016,11 @@ class ReplayEngine:
                     plots, sensor, dw = g
                     gmti_batch["plots"].extend(plots); gmti_batch["pkts"] += 1
                     gmti_batch["dwells"].extend(dw)
+                    if live is not None and gmti_pcap_to_csv is not None:
+                        try:
+                            live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                        except Exception as e:
+                            EVENTS.publish({"type": "log", "msg": "pistage temps réel : %s" % e})
                     if sensor:
                         gmti_batch["sensor"] = sensor
                     totals["gmti_plots"] += len(plots); totals["gmti_pkts"] += 1; totals["gmti_dwells"] += len(dw)
@@ -1091,7 +1227,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not pcap or not os.path.isfile(pcap):
                     raise FileNotFoundError("pcap introuvable : %r" % pcap)
                 ENGINE.start(pcap, body.get("routes", []), body.get("speed", 1.0), body.get("loop", False),
-                             body.get("rebase", False), body.get("taps", []), body.get("watch"))
+                             body.get("rebase", False), body.get("taps", []), body.get("watch"), body.get("track"))
                 return self._json(ENGINE.status())
             if u.path == "/api/replay/stop":
                 ENGINE.stop()

@@ -72,6 +72,8 @@
           <label class="chk"><input type="checkbox" id="gmti-ovl" checked> zone job / porteur</label>
           <label class="chk" title="rejeu : zone balayée par chaque dwell (D22-25) avec fondu"><input type="checkbox" id="gmti-dwell" checked> dwells (rejeu)</label>
           <label class="chk" title="comparer avec un second profil (tracé magenta pointillé, métriques côte à côte)">A/B <select id="gmti-ab"><option value="">—</option></select></label>
+          <label class="chk" title="rejeu : le tracker tourne dwell par dwell dans le moteur (profil + surcharges ci-dessus), pistes vivantes sur la carte"><input type="checkbox" id="gmti-live" checked> pistage temps réel</label>
+          <label class="chk" title="afficher aussi les pistes tentatives (non confirmées) en gris"><input type="checkbox" id="gmti-live-tent"> tentatives</label>
         </div>
         <div id="gmti-status" class="mono muted">Décoder le GMTI du pcap, puis lancer le tracker (profil de tuning).</div>
         <div id="gmti-editor" hidden>
@@ -91,6 +93,7 @@
         </div>
         <div id="gmti-metrics" hidden></div>
         <div id="gmti-body"><span class="muted">plots reçus au fil du rejeu (dwells, vitesse radiale, SNR, classes)</span></div>
+        <div id="gmti-live-body" class="mono muted"></div>
         <pre id="gmti-inv" hidden></pre>
       </div>
       </div>
@@ -141,6 +144,7 @@
         <span data-ly="plots"><i style="background:#7cff6b;border-radius:0"></i>plots GMTI</span>
         <span data-ly="dwell"><i style="background:transparent;border:1px solid #7cff6b;border-radius:0"></i>dwell</span>
         <span data-ly="tracks"><i style="background:#00c8ff;border-radius:0;height:3px;width:12px"></i>pistes GMTI</span>
+        <span data-ly="live"><i style="background:#00e5a8;border-radius:50%;width:9px;height:9px"></i>pistes (rejeu)</span>
         <span data-ly="contacts"><i style="background:#e58cff;border-radius:0;height:5px;width:12px;opacity:.7"></i>contacts (fusion)</span>
         <span data-ly="ab"><i style="background:transparent;border-top:2px dashed #ff5cf0;border-radius:0;height:0;width:12px"></i>A/B</span>
         <span data-ly="cot"><i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</span>

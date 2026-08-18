@@ -180,7 +180,10 @@ selon l'action (résumé vivant dans chaque onglet) :
   capteur, sentinelles (0,0) — certains émetteurs annoncent plus de cibles que le dwell n'en
   contient (octets texte lus comme des cibles) ; compteur dans l'inventaire 4607.
   En rejeu (temps réel, même cadence que l'émission UDP) : plots 4607 au fil de l'eau (couche
-  canvas, capteur, classes) et **zone balayée de chaque dwell** (secteur capteur → centre,
+  canvas, capteur, classes), **pistage temps réel** (`LiveTracker` : `Tracker.step()` dwell par
+  dwell dans le moteur, comme le processor GeoEvent — profil + surcharges de l'onglet, déclutter,
+  fusion ; pistes vivantes avec traîne, couleur = état, étiquette id/état/hits/vitesse, tentatives
+  en option, compteurs vivants, reset sur retour de temps) et **zone balayée de chaque dwell** (secteur capteur → centre,
   ± étendue distance/angle D24/D25, fondu des dernières dwells, ligne capteur → centre).
 - **CoT** : analyse statique (`cot_extract`) — objets colorés par affiliation MIL-STD-2525,
   traces par uid, tableau, inventaire des types, **XML du dernier event** au clic ; en rejeu :

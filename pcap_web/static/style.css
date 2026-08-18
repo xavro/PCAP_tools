@@ -213,3 +213,8 @@ table.met th { color: var(--muted); font-weight: normal; }
 table.met td:first-child, table.met th:first-child { text-align: left; color: var(--muted); }
 table.met td.a { color: var(--accent); } table.met td.b { color: #ff5cf0; }
 table.met tr.better-a td.a, table.met tr.better-b td.b { font-weight: bold; }
+
+/* ── pistage temps réel ── */
+#gmti-live-body { margin-top: 2px; } #gmti-live-body b { color: var(--fg); font-weight: normal; }
+.live-lbl { background: rgba(0,0,0,.6); border: 0; color: #00e5a8; font: 10px Consolas, monospace; padding: 1px 3px; border-radius: 3px; white-space: nowrap; }
+.live-lbl::before { display: none; }
