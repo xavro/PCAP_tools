@@ -78,6 +78,9 @@ class Track:
         self.is_rotator = False             # rotateur fixe : v_LOS forte MAIS immobile au sol
         self.history = [(t, plot.x, plot.y, TENTATIVE, True)]
         self.states = [(t, self.x.copy(), self.P.copy())]   # pour le lisseur RTS
+        # Journal d'inspection (aucun effet sur le pistage) : plots associes et gates.
+        self.assoc = [(t, plot.x, plot.y, 0.0, plot.vel_los, plot.snr, plot.classification)]
+        self.gates = []                                     # (t, S 2x2 innovation, d2)
         self.last_hit_idx = 0
         self._hit = True
 
@@ -104,6 +107,12 @@ class Track:
         H = _H
         y = np.array([plot.x, plot.y]) - H @ self.x
         S = H @ self.P @ H.T + plot.R
+        try:
+            d2 = float(y @ np.linalg.solve(S, y))
+        except np.linalg.LinAlgError:
+            d2 = float("nan")
+        self.assoc.append((self.t, plot.x, plot.y, d2, plot.vel_los, plot.snr, plot.classification))
+        self.gates.append((self.t, S.copy(), d2))
         K = self.P @ H.T @ np.linalg.inv(S)
         self.x = self.x + K @ y
         self.P = (_I4 - K @ H) @ self.P

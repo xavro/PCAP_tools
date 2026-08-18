@@ -41,6 +41,8 @@ API :
   GET /api/gmti/track?pcap=&profile=&overrides={json}  tracker (profil + surcharges, noms Java) → pistes,
                                 plots bruts, zone job, porteur, contacts (fusion), métriques, config effective
   GET/POST /api/gmti/profiles   profils du tracker (source unique gmti_profiles.json, partagée avec le Java)
+  GET /api/gmti/track/detail?pcap=&profile=&overrides=&id=  inspection d'une piste (historique, plots
+                                associés + d², gates 2σ, vitesses)
   GET /api/cot/scan?pcap=&filter=     analyse CoT statique (objets, traces, inventaire des types)
   GET /api/cot/event?pcap=&uid=       dernier event XML d'un uid
   GET /api/fused/export.geojson?pcap=&profile=  fusion GMTI + CoT + capteur vidéo (WGS84)
@@ -430,7 +432,7 @@ def gmti_profile_save(name, params):
     tr.load_profiles()
     with _ALOCK:                                        # les runs en cache dépendent des profils
         for e in _GMTI.values():
-            e["tracks"].clear()
+            e["tracks"].clear(); e.get("res", {}).clear()
     return gmti_profiles()
 
 
@@ -466,7 +468,23 @@ def gmti_track(entry, profile, overrides=None):
            "n_kept": res["n_kept"], "n_rejected": res["n_rejected"], "tracks": tracks,
            "raw": raw, "n_raw": len(raw), "zone": entry["zone"], "porteur": entry["porteur"], "contacts": contacts}
     entry["tracks"][key] = out
+    entry.setdefault("res", {})[key] = res                # objets Python (inspection d'une piste)
     return out
+
+
+def gmti_track_detail(entry, profile, overrides, track_id):
+    key = profile + "|" + json.dumps(overrides or {}, sort_keys=True)
+    res = (entry.get("res") or {}).get(key)
+    if res is None:
+        gmti_track(entry, profile, overrides)
+        res = entry["res"][key]
+    tr = load_track_run()
+    with TRACK_LOCK:
+        tr.apply_profile(profile, overrides or None)      # GATE_CHI2 du profil pour les ellipses
+        d = tr.track_detail(res, track_id)
+    if d is None:
+        raise ValueError("piste %s inconnue pour ce run" % track_id)
+    return d
 
 
 def cot_scan(path, flt=None):
@@ -1171,6 +1189,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(gmti_track(gmti_decode(path, limit), profile, ov))
             if u.path == "/api/gmti/profiles":
                 return self._json(gmti_profiles())
+            if u.path == "/api/gmti/track/detail":
+                path = self._pcap(q); limit = int(q.get("limit", ["0"])[0] or 0)
+                profile = q.get("profile", ["defaut"])[0]
+                ov = json.loads(q.get("overrides", ["{}"])[0] or "{}")
+                return self._json(gmti_track_detail(gmti_decode(path, limit), profile, ov, int(q.get("id", ["0"])[0])))
             if u.path == "/api/cot/scan":
                 path = self._pcap(q)
                 return self._json(cot_summary(cot_scan(path, q.get("filter", [""])[0])))

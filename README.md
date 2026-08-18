@@ -183,7 +183,10 @@ selon l'action (résumé vivant dans chaque onglet) :
   canvas, capteur, classes), **pistage temps réel** (`LiveTracker` : `Tracker.step()` dwell par
   dwell dans le moteur, comme le processor GeoEvent — profil + surcharges de l'onglet, déclutter,
   fusion ; pistes vivantes avec traîne, couleur = état, étiquette id/état/hits/vitesse, tentatives
-  en option, compteurs vivants, reset sur retour de temps) et **zone balayée de chaque dwell** (secteur capteur → centre,
+  en option, compteurs vivants, reset sur retour de temps) et **zone balayée de chaque dwell**
+  **Inspection d'une piste** (clic sur une piste du tracker) : plots associés colorés par d²
+  Mahalanobis, ellipses de gate χ² du profil, chronologie hit/miss par dwell (état), tableau
+  t / Δt / état / vitesse / d² / v_LOS / SNR / classe, résumé (durée, vitesses, d² moyen) (secteur capteur → centre,
   ± étendue distance/angle D24/D25, fondu des dernières dwells, ligne capteur → centre).
 - **CoT** : analyse statique (`cot_extract`) — objets colorés par affiliation MIL-STD-2525,
   traces par uid, tableau, inventaire des types, **XML du dernier event** au clic ; en rejeu :

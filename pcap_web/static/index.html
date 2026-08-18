@@ -91,6 +91,13 @@
           </div>
           <div id="ed-msg" class="muted mono"></div>
         </div>
+        <div id="gmti-inspect" hidden>
+          <div class="row" style="justify-content:space-between"><b id="ins-title">piste</b><span><button id="ins-fit" style="padding:1px 8px">⌖ centrer</button> <button id="ins-close" style="padding:1px 8px">✕</button></span></div>
+          <div id="ins-stats" class="mono muted"></div>
+          <div class="ins-strip" id="ins-strip" title="chronologie : un carré par dwell — plein = plot associé (couleur = état), sombre = miss ; survol = détail"></div>
+          <div id="ins-legend" class="muted" style="font-size:11px">■ solide ■ confirmée ■ coasting ■ tentative · sombre = miss · sur la carte : plots associés (● couleur = d² Mahalanobis, vert &lt; 2, jaune &lt; 6, rouge au-delà), ellipses = gate χ² du profil</div>
+          <div class="ins-table-wrap"><table class="ins" id="ins-table"></table></div>
+        </div>
         <div id="gmti-metrics" hidden></div>
         <div id="gmti-body"><span class="muted">plots reçus au fil du rejeu (dwells, vitesse radiale, SNR, classes)</span></div>
         <div id="gmti-live-body" class="mono muted"></div>

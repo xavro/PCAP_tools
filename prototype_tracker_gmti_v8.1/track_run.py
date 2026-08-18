@@ -295,12 +295,56 @@ def run_tracking(path, profile="defaut", overrides=None):
         d["t0"], d["t1"] = (float(h[0][0]), float(h[-1][0])) if h else (0.0, 0.0)
         d["n_coast"] = sum(1 for (_t, _x, _y, st, hit) in h if not hit)
     res = {"raw": raw, "tracks": tracks, "n_kept": len(kept), "n_rejected": n_rejected, "frame": frame,
+           "_objs": {tr.id: tr for tr in kept},           # objets Track (inspection : assoc, gates, historique)
            "config": cfg, "n_dwells": n_dwells, "n_filtered": n_filtered,
            "contacts": [{"id": cid, "pts": [(float(x), float(y)) for (_t, x, y) in c["pts"]],
                          "n_max": c["n_max"], "hits": c["hits"], "members": sorted(c["members"])}
                         for cid, c in contacts.items()] if merger.enabled() else None}
     res["metrics"] = metrics(res)
     return res
+
+
+def track_detail(res, track_id):
+    """Détail d'une piste du dernier run (inspection) : historique complet (t, lat, lon, état, hit,
+    vitesse), plots associés (t, lat, lon, d² Mahalanobis, v_LOS, SNR, classe), gates 2σ
+    (t, lat, lon, demi-axes m, orientation °) et résumé."""
+    tr = (res.get("_objs") or {}).get(int(track_id))
+    fr = res.get("frame")
+    if tr is None or fr is None:
+        return None
+    names = {T.TENTATIVE: "TENTATIVE", T.CONFIRMED: "CONFIRMED", T.SOLID: "SOLID", T.COASTING: "COASTING", T.DEAD: "DEAD"}
+    hist = []
+    for i, (t, x, y, st, hit) in enumerate(tr.history):
+        la, lo = fr.to_ll(float(x), float(y))
+        sp = None
+        if i < len(tr.states):
+            xs = tr.states[i][1]; sp = float(math.hypot(xs[2], xs[3]))
+        hist.append([round(float(t), 3), round(la, 6), round(lo, 6), names.get(st, str(st)), bool(hit), None if sp is None else round(sp, 1)])
+    assoc = []
+    for (t, x, y, d2, vlos, snr, cls) in tr.assoc:
+        la, lo = fr.to_ll(float(x), float(y))
+        assoc.append([round(float(t), 3), round(la, 6), round(lo, 6), None if d2 != d2 else round(float(d2), 2),
+                      None if vlos is None else round(float(vlos), 1), snr, cls])
+    gates = []
+    import numpy as np
+    chi2 = float(T.Params.GATE_CHI2)
+    for (t, S, d2), (ta, x, y, *_r) in zip(tr.gates, tr.assoc[1:]):
+        try:
+            w, v = np.linalg.eigh(S)
+            a, b = math.sqrt(max(w[1], 0) * chi2), math.sqrt(max(w[0], 0) * chi2)
+            ang = math.degrees(math.atan2(v[1, 1], v[0, 1]))
+        except Exception:
+            continue
+        # centre = position predite (avant mise a jour) ~ etat de l'historique precedent ; on prend le plot associe comme repere
+        la, lo = fr.to_ll(float(x), float(y))
+        gates.append([round(float(t), 3), round(la, 6), round(lo, 6), round(a, 1), round(b, 1), round(ang, 1), None if d2 != d2 else round(float(d2), 2)])
+    speeds = [h[5] for h in hist if h[5] is not None]
+    return {"id": tr.id, "hits": tr.hits, "misses": tr.misses, "confirmed_ever": bool(tr.confirmed_ever),
+            "is_air": bool(tr.is_air), "is_rotator": bool(tr.is_rotator),
+            "t0": hist[0][0] if hist else None, "t1": hist[-1][0] if hist else None,
+            "n_hist": len(hist), "n_miss": sum(1 for h in hist if not h[4]),
+            "speed_mean": (sum(speeds) / len(speeds)) if speeds else None, "speed_max": max(speeds) if speeds else None,
+            "hist": hist, "assoc": assoc, "gates": gates, "gate_chi2": chi2, "gate_max_m": float(tr.gate_max)}
 
 
 def metrics(res):

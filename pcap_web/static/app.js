@@ -33,6 +33,7 @@
   const map = L.map("map", { attributionControl: true, zoomSnap: 0.25, preferCanvas: true }).setView([46, 2], 5);
   const LY = {};                                       // clé légende → groupe de couches
   ["trace", "foot", "center", "plots", "dwell", "tracks", "live", "contacts", "ab", "cot"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
+  const lyInspect = L.layerGroup().addTo(map);          // surbrillance de la piste inspectée
   const lyTrace = LY.trace, lyFoot = LY.foot, lyCenter = LY.center, lyPlots = LY.plots, lyDwell = LY.dwell, lyCot = LY.cot;
   const canvasR = L.canvas({ padding: 0.3 });
   map.attributionControl.setPrefix("");
@@ -134,7 +135,7 @@
   const live = { layers: new Map() };                 // id → {mk, tail, seen}
   const LIVE_COL = { SOLID: "#00e5a8", CONFIRMED: "#00c8ff", COASTING: "#ffd54f", TENTATIVE: "#8a8f98" };
   function renderLive(lv) {
-    const showTent = $("gmti-live-tent").checked, seen = new Set();
+    const showTent = $("gmti-live-tent").checked, seen = new Set(); live.last = lv.tracks || [];
     (lv.tracks || []).forEach(t => {
       if (t.state === "TENTATIVE" && !showTent) return;
       if (!t.ever && !showTent) return;                 // pas encore confirmée une fois → tentative
@@ -144,6 +145,10 @@
         e = { mk: L.circleMarker([t.lat, t.lon], { radius: 5, weight: 1.5, color: col, fillColor: col, fillOpacity: .9, renderer: canvasR }).addTo(LY.live),
               tail: L.polyline(t.tail, { color: col, weight: 2, opacity: .8, renderer: canvasR }).addTo(LY.live) };
         e.mk.bindTooltip("", { permanent: true, direction: "right", offset: [6, 0], className: "live-lbl" });
+        e.mk.on("click", () => { const cur = live.last && live.last.find(x => x.id === t.id); if (!cur) return; showTab("gmti");
+          $("gmti-inspect").hidden = false; $("ins-title").textContent = `piste live ${cur.id} · ${cur.state} · ${cur.hits} hits · ${cur.misses} miss consécutifs`;
+          $("ins-stats").innerHTML = `vitesse <b>${cur.speed}</b> m/s · cap <b>${cur.heading}°</b> · dernière MAJ il y a <b>${cur.age_s}</b> s · confirmée une fois : <b>${cur.ever ? "oui" : "non"}</b>` + (cur.contact != null ? ` · contact <b>${cur.contact}</b>` : "") + (cur.is_air ? " · aérien" : "") + (cur.is_rotator ? " · rotateur" : "");
+          $("ins-strip").innerHTML = ""; $("ins-table").innerHTML = ""; lyInspect.clearLayers(); L.polyline(cur.tail, { color: "#fff", weight: 5, opacity: .35 }).addTo(lyInspect); ins.d = null; });
         live.layers.set(t.id, e);
       }
       e.mk.setLatLng([t.lat, t.lon]); e.mk.setStyle({ color: col, fillColor: col, fillOpacity: t.state === "COASTING" ? .35 : .9 });
@@ -198,6 +203,52 @@
       (m.contacts != null ? ` · ${m.contacts} contacts (${m.contacts_multi} fusionnés)` : "") + (r.zone.length ? " · zone job" : "") + (r.porteur.length ? ` · porteur ${r.porteur.length} pos` : "");
     $("gmti-sum").textContent = `${r.n_kept} pistes · profil ${profile}${ovq ? "*" : ""}`;
   }
+
+  // ── Inspection d'une piste (analyse statique) ───────────────────────────────
+  const ins = { d: null, rows: [], sel: -1 };
+  function ellipsePts(lat, lon, a, b, angDeg, n = 36) {
+    const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540, th = angDeg * Math.PI / 180, out = [];
+    for (let i = 0; i < n; i++) { const p = 2 * Math.PI * i / n, ex = a * Math.cos(p), ey = b * Math.sin(p);
+      const x = ex * Math.cos(th) - ey * Math.sin(th), y = ex * Math.sin(th) + ey * Math.cos(th); out.push([lat + y / ky, lon + x / kx]); }
+    return out;
+  }
+  const d2col = d2 => d2 == null ? "#8a8f98" : d2 < 2 ? "#7cff6b" : d2 < 6 ? "#ffd54f" : "#ff5252";
+  async function inspectTrack(id) {
+    if (!gs.res) return;
+    const profile = gs.res.profile, ovq = Object.keys(gs.res.overrides || {}).length ? `&overrides=${encodeURIComponent(JSON.stringify(gs.res.overrides))}` : "";
+    let d; try { d = await api(`/api/gmti/track/detail?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}&id=${id}${limQ()}`); }
+    catch (e) { return status("inspection : " + e.message, true); }
+    ins.d = d; showTab("gmti"); $("gmti-inspect").hidden = false; $("gmti-editor").hidden = true;
+    lyInspect.clearLayers();
+    const t = gs.res.tracks.find(x => x.id === id);
+    if (t) L.polyline(t.pts, { color: "#ffffff", weight: 5, opacity: .35 }).addTo(lyInspect);
+    d.gates.forEach(g => L.polygon(ellipsePts(g[1], g[2], g[3], g[4], g[5]), { color: "#ffd54f", weight: 1, opacity: .5, fill: false, dashArray: "3 3" }).addTo(lyInspect));
+    d.assoc.forEach(a => L.circleMarker([a[1], a[2]], { radius: 4, color: "#000", weight: 1, fillColor: d2col(a[3]), fillOpacity: 1 }).addTo(lyInspect)
+      .bindTooltip(`t=${a[0].toFixed(2)} s · d²=${a[3]} · v_LOS ${a[4] ?? "—"} m/s · SNR ${a[5] ?? "—"} · classe ${a[6] ?? "—"}`));
+    const dur = (d.t1 != null && d.t0 != null) ? d.t1 - d.t0 : 0;
+    $("ins-title").textContent = `piste ${d.id} · ${d.hits} hits · ${d.n_miss} miss · profil ${profile}${ovq ? "*" : ""}` + (d.is_air ? " · aérien" : "") + (d.is_rotator ? " · rotateur" : "");
+    $("ins-stats").innerHTML = `durée <b>${dur.toFixed(1)} s</b> · dwells vus <b>${d.n_hist}</b> · vitesse moy <b>${d.speed_mean != null ? d.speed_mean.toFixed(1) : "—"}</b> / max <b>${d.speed_max != null ? d.speed_max.toFixed(1) : "—"}</b> m/s · gate χ² <b>${d.gate_chi2}</b> · plafond gate <b>${d.gate_max_m} m</b>` +
+      (d.assoc.length > 1 ? ` · d² moyen <b>${(d.assoc.slice(1).reduce((s_, a) => s_ + (a[3] || 0), 0) / (d.assoc.length - 1)).toFixed(2)}</b>` : "");
+    const strip = $("ins-strip"); strip.innerHTML = "";
+    d.hist.forEach((h, i) => { const el = document.createElement("i"); el.className = (h[4] ? "hit " : "miss ") + h[3]; el.title = `#${i} t=${h[0].toFixed(2)} s · ${h[3]} · ${h[4] ? "plot associé" : "miss"}${h[5] != null ? " · " + h[5].toFixed(1) + " m/s" : ""}`; el.onclick = () => insSelect(i); strip.appendChild(el); });
+    const tb = $("ins-table"); tb.innerHTML = `<tr><th>#</th><th>t (s)</th><th>Δt</th><th>état</th><th>hit</th><th>v m/s</th><th>d²</th><th>v_LOS</th><th>SNR</th><th>cls</th></tr>`;
+    let k = 0; ins.rows = [];
+    d.hist.forEach((h, i) => {
+      let a = null; if (h[4] && k < d.assoc.length) { a = d.assoc[k]; k++; }
+      const tr = document.createElement("tr"); tr.className = h[4] ? "" : "miss"; tr.dataset.i = i;
+      tr.innerHTML = `<td>${i}</td><td>${h[0].toFixed(2)}</td><td>${i ? (h[0] - d.hist[i - 1][0]).toFixed(2) : "—"}</td><td>${h[3]}</td><td>${h[4] ? "●" : "·"}</td><td>${h[5] != null ? h[5].toFixed(1) : ""}</td><td>${a && a[3] != null ? a[3] : ""}</td><td>${a && a[4] != null ? a[4] : ""}</td><td>${a && a[5] != null ? a[5] : ""}</td><td>${a && a[6] != null ? a[6] : ""}</td>`;
+      tr.onclick = () => insSelect(i); tb.appendChild(tr); ins.rows.push(tr);
+    });
+    status(`piste ${d.id} inspectée — ${d.hits} plots associés, ${d.gates.length} gates`);
+  }
+  function insSelect(i) {
+    const d = ins.d; if (!d) return; ins.sel = i;
+    document.querySelectorAll("#ins-strip i").forEach((el, j) => el.classList.toggle("cur", j === i));
+    ins.rows.forEach((tr, j) => tr.style.outline = j === i ? "1px solid var(--accent)" : "");
+    const h = d.hist[i]; if (h) map.panTo([h[1], h[2]]);
+  }
+  $("ins-close").addEventListener("click", () => { $("gmti-inspect").hidden = true; lyInspect.clearLayers(); ins.d = null; });
+  $("ins-fit").addEventListener("click", () => { const d = ins.d; if (d && d.hist.length) map.fitBounds(L.latLngBounds(d.hist.map(h => [h[1], h[2]])).pad(0.3)); });
 
   // ── Profils (source unique gmti_profiles.json) + éditeur de paramètres ─────
   async function loadProfiles() {
@@ -289,7 +340,7 @@
     el.innerHTML = h + "</table>"; el.hidden = false;
   }
   function drawTracks() {
-    lyTracks.clearLayers(); lyRawStatic.clearLayers(); LY.contacts.clearLayers(); LY.ab.clearLayers(); const r = gs.res; if (!r) return;
+    lyTracks.clearLayers(); lyRawStatic.clearLayers(); LY.contacts.clearLayers(); LY.ab.clearLayers(); lyInspect.clearLayers(); $("gmti-inspect").hidden = true; ins.d = null; const r = gs.res; if (!r) return;
     if (r.contacts) r.contacts.forEach(c => { if (c.pts.length < 2) return;
       L.polyline(c.pts, { color: "#e58cff", weight: 5, opacity: .35, renderer: canvasR }).addTo(LY.contacts)
         .bindTooltip(`contact ${c.id} · ${c.n_max} piste(s) max · ${c.hits} hits · pistes ${c.members.slice(0, 6).join(",")}${c.members.length > 6 ? "…" : ""}`, { sticky: true }); });
@@ -306,7 +357,8 @@
       const pts = smooth && t.smooth.length ? t.smooth : t.pts; if (pts.length < 2) return;
       const col = trackColor(t);
       const pl = L.polyline(pts, { color: col, weight: 2, opacity: .95, renderer: canvasR }).addTo(lyTracks);
-      pl.bindTooltip(`piste ${t.id} · ${t.hits} hits · ${t.etat}${t.is_air ? " · aérien" : ""}${t.is_rotator ? " · rotateur" : ""}`, { sticky: true });
+      pl.bindTooltip(`piste ${t.id} · ${t.hits} hits · ${t.etat}${t.is_air ? " · aérien" : ""}${t.is_rotator ? " · rotateur" : ""} — cliquer pour inspecter`, { sticky: true });
+      pl.on("click", () => inspectTrack(t.id));
       L.circleMarker(pts[pts.length - 1], { radius: 3, color: col, fillColor: col, fillOpacity: 1, weight: 1, renderer: canvasR }).addTo(lyTracks);
     });
   }

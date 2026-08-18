@@ -218,3 +218,19 @@ table.met tr.better-a td.a, table.met tr.better-b td.b { font-weight: bold; }
 #gmti-live-body { margin-top: 2px; } #gmti-live-body b { color: var(--fg); font-weight: normal; }
 .live-lbl { background: rgba(0,0,0,.6); border: 0; color: #00e5a8; font: 10px Consolas, monospace; padding: 1px 3px; border-radius: 3px; white-space: nowrap; }
 .live-lbl::before { display: none; }
+
+/* ── inspection d'une piste ── */
+#gmti-inspect { border: 1px solid var(--accent); border-radius: 6px; padding: 6px 8px; margin: 4px 0; background: var(--bg); }
+#gmti-inspect .row { margin: 0 0 4px; }
+.ins-strip { display: flex; flex-wrap: wrap; gap: 1px; margin: 4px 0; }
+.ins-strip i { display: block; width: 7px; height: 12px; border-radius: 1px; background: #2a323d; }
+.ins-strip i.hit.SOLID { background: #00e5a8; } .ins-strip i.hit.CONFIRMED { background: #00c8ff; } .ins-strip i.hit.COASTING { background: #ffd54f; } .ins-strip i.hit.TENTATIVE { background: #8a8f98; }
+.ins-strip i.miss.COASTING { background: #4a4520; } .ins-strip i.miss.DEAD { background: #4a2020; }
+.ins-strip i.cur { outline: 1px solid #fff; }
+.ins-table-wrap { max-height: 180px; overflow: auto; margin-top: 4px; }
+table.ins { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+table.ins th, table.ins td { padding: 1px 5px; border-bottom: 1px solid #1f262f; text-align: right; white-space: nowrap; }
+table.ins th { color: var(--muted); font-weight: normal; position: sticky; top: 0; background: var(--bg); }
+table.ins td:first-child, table.ins th:first-child { text-align: left; }
+table.ins tr.miss td { color: var(--muted); }
+table.ins tr:hover td { background: rgba(0,200,255,.08); cursor: pointer; }
