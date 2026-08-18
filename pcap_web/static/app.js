@@ -135,8 +135,8 @@
         let ly;
         if (d.poly) ly = L.polygon(d.poly, { color: "#7cff6b", weight: 1.2, fillColor: "#7cff6b", fillOpacity: .10, opacity: .9, renderer: canvasR });
         else ly = L.circleMarker(d.center, { radius: 5, color: "#7cff6b", weight: 1, fill: false, renderer: canvasR });
-        ly.addTo(lyDwell); ly.bindTooltip(`dwell ${d.dwell != null ? d.dwell : ""} · revisit ${d.revisit != null ? d.revisit : ""} · ${d.n} cible(s)` +
-          (d.range_he_km != null ? ` · ±${d.range_he_km.toFixed(2)} km / ±${(d.angle_he_deg || 0).toFixed(2)}°` : ""), { sticky: true });
+        ly.addTo(lyDwell);                              // pas d'infobulle : les dwells défilent sous la souris (gêne)
+        ly.options.interactive = false;
         gmti.dwells.push(ly);
         if (b.sensor && d.center) { dwellLine.setLatLngs([b.sensor, d.center]); if (!dwellLine._map) dwellLine.addTo(lyDwell); }
       });
