@@ -792,8 +792,11 @@
 
   // ── Timeline ────────────────────────────────────────────────────────────────
   const tl = $("timeline"), ctx = tl.getContext("2d");
+  // Mode rejeu : le lecteur vidéo (flux tapé) repart de 0 à chaque (re)démarrage ; on décale son
+  // temps du start_at du rejeu pour rester en temps de capture sur la timeline.
+  const vOff = () => (state.mode === "replay" && state.replay && state.replay.start_at) ? state.replay.start_at : 0;
   function duration() {
-    if (state.mode === "replay") return Math.max(state.flowsDur || 0, (state.replay && state.replay.t) || 0, video.currentTime);
+    if (state.mode === "replay") return Math.max(state.flowsDur || 0, (state.replay && state.replay.t) || 0, vOff() + video.currentTime);
     return (isFinite(video.duration) && video.duration > 0) ? video.duration : (state.cur ? state.cur.duration_s : 0);
   }
   function drawTimeline() {
@@ -807,15 +810,16 @@
       const mx = Math.max(1, ...bins);
       for (let i = 0; i < W; i++) if (bins[i]) { const h = 4 + 14 * bins[i] / mx; ctx.fillRect(i, H - 12 - h, 1, h); }
     }
+    const off = vOff();
     ctx.fillStyle = "rgba(0,200,255,.18)";
-    for (let i = 0; i < video.buffered.length; i++) ctx.fillRect(x(video.buffered.start(i)), H - 10, x(video.buffered.end(i)) - x(video.buffered.start(i)), 6);
+    for (let i = 0; i < video.buffered.length; i++) ctx.fillRect(x(off + video.buffered.start(i)), H - 10, x(video.buffered.end(i)) - x(video.buffered.start(i)), 6);
     if (state.mode === "replay") {
-      ctx.fillStyle = "rgba(255,213,79,.7)"; state.sets.forEach(s => ctx.fillRect(x(s.pts / 1000), H - 30, 1, 10));
+      ctx.fillStyle = "rgba(255,213,79,.7)"; state.sets.forEach(s => ctx.fillRect(x(off + s.pts / 1000), H - 30, 1, 10));
       if (state.replay && state.replay.running) { ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(state.replay.t || 0) - 1, 0, 2, H); ctx.fillText("rejeu", x(state.replay.t || 0) + 4, H - 2); }
     }
     ctx.fillStyle = "#8a9098"; ctx.font = "10px Consolas"; const step = D > 600 ? 120 : D > 120 ? 30 : D > 30 ? 10 : 5;
     for (let t = 0; t <= D; t += step) { ctx.fillRect(x(t), 0, 1, 6); ctx.fillText(t + "s", x(t) + 2, 12); }
-    ctx.fillStyle = "#00c8ff"; ctx.fillRect(x(video.currentTime) - 1, 0, 2, H);
+    ctx.fillStyle = "#00c8ff"; ctx.fillRect(x(off + video.currentTime) - 1, 0, 2, H);
   }
   tl.addEventListener("click", ev => {
     const D = duration(); if (!D) return;
@@ -827,7 +831,7 @@
   function frame() {
     const tms = video.currentTime * 1000;
     if (state.sets.length) { const idx = indexAt(tms + 20); if (idx >= 0 && idx !== state.applied) apply(idx, tms); }
-    $("tl-t").textContent = video.currentTime.toFixed(3);
+    $("tl-t").textContent = (vOff() + video.currentTime).toFixed(3);
     if (state.mode === "file" && isFinite(video.duration)) $("tl-d").textContent = video.duration.toFixed(1);
     drawTimeline();
     requestAnimationFrame(frame);
