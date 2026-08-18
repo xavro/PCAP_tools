@@ -152,13 +152,14 @@ selon l'action (résumé vivant dans chaque onglet) :
 
 - **Rejeu — routage** : flux applicatifs (`pcap_analyze`). **Coché = rejoué** (décodé et affiché
   dans l'IHM : vidéo, CoT, GMTI) ; non coché = ni émis, ni affiché. Le sélecteur de l'en-tête
-  choisit le mode : **Vidéo seule (fichier, seek image)**, **Rejeu — IHM seule** (rien n'est
-  émis : analyse à blanc) ou **Rejeu + émission UDP/TCP** (les flux cochés sont aussi envoyés vers
-  leurs cibles `IP:port`, **pré-remplies avec les destinations originales du pcap**, modifiables,
-  « + » = fan-out). **Transport du rejeu** : ⏸ pause / reprise, vitesse changée à chaud, **clic sur
-  la timeline = saut** — le moteur redémarre au temps demandé après un *rembobinage à blanc*
-  (relecture à vitesse max sans émission ni affichage, qui reconstitue l'état du tracker GMTI et
-  des objets CoT), la vidéo tapée repart de là. Vitesse ×1…max,
+  choisit le mode : **Lecture IHM seule (préchargé)** — la ligne de temps entière est chargée
+  d'un coup (`/api/timeline` : CoT datés, dwells/plots GMTI datés, offsets vidéo, **pistes du run
+  hors ligne** datées sur la capture) et jouée dans le navigateur : vidéo = fichier extrait (seek
+  à l'image), horloge de lecture pilotant CoT / GMTI / pistes, **saut instantané** (clic timeline),
+  ⏸ pause, vitesse (= `playbackRate`), boucle ; rien n'est émis — ou **Rejeu + émission UDP/TCP**
+  (moteur à la cadence du pcap, flux cochés envoyés vers leurs cibles `IP:port` pré-remplies avec
+  les destinations originales, modifiables, « + » = fan-out ; l'IHM suit en direct ; ⏸ pause,
+  vitesse à chaud, clic timeline = saut avec *rembobinage à blanc* qui reconstitue pistes et CoT). Vitesse ×1…max,
   boucle, recalage d'heure CoT. *Un moteur unique* (`pcap_replay.do_routed_replay` + hook
   `on_packet`) émet **et** alimente l'IHM par WebSocket (serveur RFC 6455 stdlib) :
   `/ws/video` (TS binaire du flux vidéo → mpegts.js, *ce que voit le client*) et

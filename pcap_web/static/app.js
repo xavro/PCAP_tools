@@ -84,6 +84,11 @@
   const cot = { rows: new Map(), tableAt: 0, total: 0 };            // uid -> {ev, marker, trail, pts, t}
   function onCotBatch(b) {
     cot.total = b.total;
+    // Gros lot (saut / analyse statique) : on détache la couche le temps d'ajouter les marqueurs
+    // (les infobulles permanentes provoquent sinon un reflow par objet → plusieurs secondes).
+    const bulk = b.events.length > 40, hadLayer = bulk && map.hasLayer(lyCot);
+    const manyLabels = b.events.length > 200;              // > 200 objets d'un coup : étiquettes au survol seulement (coût DOM)
+    if (hadLayer) lyCot.remove();
     b.events.forEach(ev => {
       const key = ev.uid || "(sans uid)"; let r = cot.rows.get(key);
       const col = AFF[ev.aff] || "#8a8f98";
@@ -91,7 +96,7 @@
         r = { ev, pts: [], t: 0 };
         r.marker = L.circleMarker([0, 0], { radius: 5, color: col, fillColor: col, fillOpacity: .9, weight: 1.5, renderer: canvasR });
         r.trail = L.polyline([], { color: col, weight: 1, opacity: .55, renderer: canvasR });
-        r.marker.bindTooltip("", { permanent: true, direction: "right", offset: [6, 0], className: "cot-lbl" });
+        r.marker.bindTooltip("", { permanent: !manyLabels, direction: "right", offset: [6, 0], className: "cot-lbl" });
         cot.rows.set(key, r);
       }
       r.ev = ev; r.t = b.t;
@@ -104,7 +109,8 @@
         if (!last || last[0] !== ev.lat || last[1] !== ev.lon) { r.pts.push([ev.lat, ev.lon]); if (r.pts.length > 400) r.pts.shift(); r.trail.setLatLngs(r.pts); }
       }
     });
-    if (performance.now() - cot.tableAt > 300) { renderCot(b.t); cot.tableAt = performance.now(); }
+    if (hadLayer) lyCot.addTo(map);
+    if (performance.now() - cot.tableAt > 300 || bulk) { renderCot(b.t); cot.tableAt = performance.now(); }
   }
   function renderCot(tnow) {
     const rows = Array.from(cot.rows.values()).sort((a, b) => b.t - a.t).slice(0, 300);
@@ -401,7 +407,7 @@
     map.fitBounds(L.latLngBounds(core.length ? core : pts).pad(0.1));
   }
   const limQ = () => state.cfg && state.cfg.default_limit ? `&limit=${state.cfg.default_limit}` : "";
-  window.__dbg = { state, gs, map, fitTracks, drawTracks };          // accès console (débogage / tests)
+
   $("gmti-decode").addEventListener("click", gmtiDecode);
   $("gmti-track").addEventListener("click", gmtiTrack);
   ["gmti-raw", "gmti-smooth", "gmti-ovl"].forEach(id => $(id).addEventListener("change", drawTracks));
@@ -414,17 +420,19 @@
     try { cs.data = await withBusy("analyse CoT (parse XML de toute la capture)…", () => api(`/api/cot/scan?pcap=${encodeURIComponent(state.pcap)}&filter=${encodeURIComponent(flt)}`), ["cot-scan"]); }
     catch (e) { return $("cot-status").textContent = "erreur : " + e.message; }
     resetCot(); const d = cs.data;
+    const hadLayer = map.hasLayer(lyCot); if (hadLayer) lyCot.remove();
     d.rows.forEach(row => {
       const ev = { uid: row.uid, type: row.type, aff: row.affiliation, callsign: row.callsign, lat: +row.lat, lon: +row.lon, speed: row.speed != null ? +row.speed : null };
       const key = ev.uid || "(sans uid)"; const col = AFF[ev.aff] || "#8a8f98";
       const r = { ev, pts: (d.tracks[row.uid] || []).slice(-400), t: -1 };
       r.marker = L.circleMarker([0, 0], { radius: 5, color: col, fillColor: col, fillOpacity: .9, weight: 1.5, renderer: canvasR });
       r.trail = L.polyline(r.pts, { color: col, weight: 1, opacity: .55, renderer: canvasR });
-      r.marker.bindTooltip((ev.callsign || ev.uid || "?"), { permanent: true, direction: "right", offset: [6, 0], className: "cot-lbl" });
+      r.marker.bindTooltip((ev.callsign || ev.uid || "?"), { permanent: d.rows.length <= 200, direction: "right", offset: [6, 0], className: "cot-lbl" });
       if (!isNaN(ev.lat) && !isNaN(ev.lon) && !(ev.lat === 0 && ev.lon === 0)) { r.marker.setLatLng([ev.lat, ev.lon]); r.trail.addTo(lyCot); r.marker.addTo(lyCot); }
       r.marker.on("click", () => cotSelect(key));
       cot.rows.set(key, r);
     });
+    if (hadLayer) lyCot.addTo(map);
     cot.total = d.kept; renderCot(-1);
     $("cot-status").textContent = `${d.kept} events · ${d.types.length} types · ${d.rows.length} objets · malformés ${d.malformed}` + (d.tcp_recovered ? ` · TCP réassemblés ${d.tcp_recovered}` : "");
     const inv = [`INVENTAIRE CoT — ${d.kept} events, ${d.types.length} types, ${d.rows.length} objets (malformés ${d.malformed})`, "",
@@ -607,7 +615,7 @@
 
   async function selectStream(dport) {
     state.cur = state.streams.find(s => s.dport === Number(dport));
-    renderInventory(); markTapRow(); showTab("fmv");
+    renderInventory(); markTapRow(); showTab("fmv"); playbackStop();
     document.querySelectorAll("#flows-body tr.tap .fl-on").forEach(cb => { cb.checked = true; });   // flux vidéo choisi → coché (IHM seule si cible vide)
     stopPlayer();
     if (state.cur.first_klv) renderTable(state.cur.first_klv.map(f => ({ tag: f.tag, name: f.name, value: f.value, unit: "" })), false);
@@ -650,18 +658,14 @@
     if (state.player) { try { state.player.pause(); state.player.unload(); state.player.detachMediaElement(); state.player.destroy(); } catch (e) {} }
     state.player = null;
   }
-  video.addEventListener("ended", () => { if (state.mode === "file" && $("loop").checked && state.player) { video.currentTime = 0; video.play(); } });
+  video.addEventListener("ended", () => { if (pb.on && $("loop").checked) playbackSeek(0); });
 
   async function play() {
     if (!state.pcap) return status("analyser un pcap d'abord", true);
     const sel = $("mode").value; const emitting = sel === "emit";
-    state.mode = sel === "file" ? "file" : "replay";
+    if (sel === "play") return playbackStart();
+    state.mode = "replay";
     const q = `pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur ? state.cur.dport : 0}`;
-    if (state.mode === "file") {
-      if (!state.cur) return status("pas de flux vidéo", true);
-      $("tl-mode").textContent = "fichier : cliquer la timeline pour se déplacer";
-      return startPlayer(`/video.ts?${q}`, false);
-    }
     // Rejeu : seuls les flux COCHÉS sont rejoués (émis si cible, sinon vus dans l'IHM).
     // Le lecteur ws est ouvert AVANT le start pour ne rien rater.
     const checked = checkedFlows();
@@ -689,11 +693,13 @@
   }
   // ── Transport du rejeu : pause / vitesse à chaud / saut sur la timeline ────────
   $("btn-pause").addEventListener("click", async () => {
+    if (pb.on) return playbackPause(!pb.paused);
     const paused = !(state.replay && state.replay.paused);
     try { await api("/api/replay/pause", { paused }); if (state.player && state.videoOn) { if (paused) video.pause(); else video.play().catch(() => {}); } status(paused ? "rejeu en pause" : "rejeu repris"); }
     catch (e) { status("pause : " + e.message, true); }
   });
   $("speed").addEventListener("change", async () => {
+    if (pb.on) return playbackSpeed();
     if (state.replay && state.replay.running) { try { await api("/api/replay/speed", { speed: parseFloat($("speed").value) }); status(`vitesse ×${$("speed").value || "max"} appliquée`); } catch (e) { status("vitesse : " + e.message, true); } }
   });
   async function seekReplay(t) {
@@ -708,7 +714,106 @@
     } catch (e) { state.seeking = false; if (state.seekEnd) { state.seekEnd(); state.seekEnd = null; } status("saut : " + e.message, true); }
   }
 
+  // ── Lecture — IHM seule : ligne de temps préchargée, horloge côté navigateur ───
+  const pb = { on: false, tl: null, tracks: [], t: 0, paused: false, wall: 0, cotIdx: 0, dwIdx: 0, videoOn: false, vOffset: 0, lastT: -1, tentShown: false };
+  async function playbackStart() {
+    const checked = checkedFlows();
+    if (!checked.length) return status("cocher au moins un flux à lire", true);
+    stopPlayer(); if (state.replay && state.replay.running) { try { await api("/api/replay/stop", {}); } catch (e) {} }
+    const watch = checked.map(f => f.key).join(",");
+    const gmtiChecked = checked.some(f => /GMTI|4607/i.test(f.dominant));
+    const profile = $("gmti-profile").value || "defaut", ovq = Object.keys(gs.ov).length ? `&overrides=${encodeURIComponent(JSON.stringify(gs.ov))}` : "";
+    const trackQ = (gmtiChecked && $("gmti-live").checked) ? `&profile=${profile}${ovq}` : "";
+    let tl;
+    try { tl = await withBusy("préchargement de la ligne de temps (CoT, GMTI, pistes, vidéo)…", () => api(`/api/timeline?pcap=${encodeURIComponent(state.pcap)}&watch=${encodeURIComponent(watch)}${trackQ}${limQ()}`), ["btn-play"]); }
+    catch (e) { return status("lecture : " + e.message, true); }
+    pb.tl = tl; pb.tracks = tl.tracks || []; pb.on = true; pb.paused = false; pb.t = 0; pb.wall = performance.now(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1;
+    state.mode = "play"; resetCot(); resetGmti(); resetLive(); fitOnce = false;
+    pb.videoOn = !!(state.cur && checked.some(f => f.proto === "UDP" && f.dport === state.cur.dport));
+    const vinfo = pb.videoOn ? (tl.video || []).find(v => v.dport === state.cur.dport) : null;
+    pb.vOffset = vinfo ? vinfo.t_offset : 0;
+    if (pb.videoOn) { startPlayer(`/video.ts?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}`, false); video.playbackRate = speedVal() || 1; }
+    else { $("mode-badge").textContent = "LECTURE — sans vidéo"; $("mode-badge").className = "overlay"; }
+    if (pb.videoOn) { $("mode-badge").textContent = "LECTURE — vidéo fichier (seek image) · IHM seule"; }
+    $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";
+    $("tl-mode").textContent = `lecture ×${$("speed").value || "max"} — ${checked.length} flux, ${tl.cot.length} events CoT, ${tl.dwells.length} dwells, ${pb.tracks.length} pistes` + (tl.tracks_error ? ` (pistes : ${tl.tracks_error})` : "") + " · clic timeline = saut, ⏸ = pause";
+    $("tl-d").textContent = tl.duration.toFixed(1);
+    if (gmtiChecked && trackQ) { showTab("gmti"); $("gmti-live-body").textContent = `lecture : pistes du run hors ligne (profil ${profile}${ovq ? "*" : ""}) datées sur la capture`; }
+    status(`lecture IHM seule démarrée : ${checked.map(f => f.key).join(", ")}`);
+    fitTimeline();
+  }
+  const speedVal = () => parseFloat($("speed").value);
+  function fitTimeline() {
+    const pts = []; (pb.tl.cot || []).slice(0, 2000).forEach(c => { if (c[5] != null && c[6] != null && !(c[5] === 0 && c[6] === 0)) pts.push([c[5], c[6]]); });
+    (pb.tl.dwells || []).slice(0, 500).forEach(d => { if (d[2]) pts.push(d[2]); if (d[1] && d[1][0] != null) pts.push(d[1]); });
+    if (!state.cur && pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15));
+  }
+  function playbackStop() { pb.on = false; $("btn-pause").disabled = true; }
+  function playbackSeek(t) {
+    if (!pb.on) return; t = Math.max(0, Math.min(t, pb.tl.duration));
+    pb.t = t; pb.wall = performance.now();
+    if (pb.videoOn && state.player) { video.currentTime = Math.max(0, t - pb.vOffset); }
+    // état reconstitué depuis le début (rapide : listes en mémoire)
+    const T0 = performance.now(); resetCot(); resetGmti(); resetLive(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; const T1 = performance.now();
+    playbackRender(t, true); const T2 = performance.now(); pb.dbg = { reset: Math.round(T1 - T0), render: Math.round(T2 - T1) };
+    status(`saut à t=${t.toFixed(1)} s`);
+  }
+  function playbackPause(paused) {
+    pb.paused = paused; if (pb.videoOn && state.player) { if (paused) video.pause(); else video.play().catch(() => {}); }
+    if (!paused) pb.wall = performance.now();
+    $("btn-pause").textContent = paused ? "▶" : "⏸"; status(paused ? "lecture en pause" : "lecture reprise");
+  }
+  function playbackSpeed() { if (pb.videoOn && state.player) video.playbackRate = speedVal() || 16; pb.wall = performance.now(); }
+  function playbackTick() {
+    if (!pb.on) return;
+    let t;
+    if (pb.videoOn && state.player && !video.paused && !video.ended) t = pb.vOffset + video.currentTime;
+    else if (pb.paused) t = pb.t;
+    else { const now = performance.now(); const sp = speedVal() || 16; t = pb.t + (now - pb.wall) / 1000 * sp; pb.wall = now; if (t >= pb.tl.duration) { t = pb.tl.duration; if ($("loop").checked) { playbackSeek(0); return; } } }
+    pb.t = t; playbackRender(t, false);
+  }
+  const ST_NAME = { T: "TENTATIVE", C: "CONFIRMED", S: "SOLID", K: "COASTING", D: "DEAD" };
+  function playbackRender(t, jump) {
+    const tl = pb.tl; const P0 = performance.now(); let P1 = P0, P2 = P0;
+    // CoT : événements écoulés depuis le dernier rendu (dernier par uid)
+    if (tl.cot.length && pb.cotIdx < tl.cot.length && tl.cot[pb.cotIdx][0] <= t) {
+      const evs = new Map(); let n = 0;
+      while (pb.cotIdx < tl.cot.length && tl.cot[pb.cotIdx][0] <= t) { const c = tl.cot[pb.cotIdx++]; n++;
+        evs.set(c[1] || ("#" + pb.cotIdx), { uid: c[1], type: c[2], aff: c[3], callsign: c[4], lat: c[5], lon: c[6], speed: c[7], course: c[8], src: c[9] }); }
+      onCotBatch({ t, events: Array.from(evs.values()), total: pb.cotIdx });
+    }
+    P1 = performance.now();
+    // GMTI : dwells / plots écoulés
+    if (tl.dwells.length && pb.dwIdx < tl.dwells.length && tl.dwells[pb.dwIdx][0] <= t) {
+      const dws = [], plots = []; let sensor = null;
+      while (pb.dwIdx < tl.dwells.length && tl.dwells[pb.dwIdx][0] <= t) { const d = tl.dwells[pb.dwIdx++];
+        if (d[1]) sensor = d[1]; if (d[2]) dws.push({ center: d[2], poly: d[3], n: d[4] }); if (d[6]) plots.push(...d[6]); }
+      if (jump) { dws.splice(0, Math.max(0, dws.length - 12)); plots.splice(0, Math.max(0, plots.length - 600)); }   // saut : seuls les derniers plots/dwells sont redessinés
+      onGmtiBatch({ t, dwells: dws, plots, sensor, pkts: 0, total_pkts: pb.dwIdx, total_plots: gmti.stats.plots + plots.length, total_dwells: pb.dwIdx });
+    }
+    P2 = performance.now();
+    // Pistes (run hors ligne) : état à t
+    if (pb.tracks.length) {
+      const out = []; const cnt = { TENTATIVE: 0, CONFIRMED: 0, SOLID: 0, COASTING: 0, EVER: 0 };
+      pb.tracks.forEach(tr => {
+        const h = tr.hist; if (!h.length || h[0][0] > t) return;
+        let lo = 0, hi = h.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (h[m][0] <= t) lo = m; else hi = m - 1; }
+        const e = h[lo]; if (t - e[0] > 120) return;                    // morte depuis longtemps
+        const st = ST_NAME[e[3]] || "TENTATIVE"; if (st === "DEAD") return;
+        cnt[st] = (cnt[st] || 0) + 1; if (e[5]) cnt.EVER++;
+        let hits = 0; for (let i = 0; i <= lo; i++) hits += h[i][4];
+        const tail = h.slice(Math.max(0, lo - 30), lo + 1).map(x => [x[1], x[2]]);
+        const prev = lo > 0 ? h[lo - 1] : e; const dt = e[0] - prev[0];
+        const sp = dt > 0 ? MGRS.distBearing(prev[1], prev[2], e[1], e[2]).d / dt : 0;
+        out.push({ id: tr.id, lat: e[1], lon: e[2], speed: Math.round(sp * 10) / 10, heading: 0, state: st, hits, misses: 0, ever: !!e[5], is_air: tr.air, is_rotator: tr.rot, age_s: Math.round((t - e[0]) * 10) / 10, tail });
+      });
+      renderLive({ tracks: out, stats: { profile: ($("gmti-profile").value || "defaut") + " (hors ligne)", overrides: gs.ov, n_dwells: pb.dwIdx, displayable: cnt.EVER, solid: cnt.SOLID, confirmed: cnt.CONFIRMED, coasting: cnt.COASTING, tentative: cnt.TENTATIVE, archived: 0 } });
+    }
+    pb.lastT = t; if (jump) pb.dbg2 = { cot: Math.round(P1 - P0), gmti: Math.round(P2 - P1), tracks: Math.round(performance.now() - P2) };
+  }
+
   async function stopAll() {
+    playbackStop();
     stopPlayer();
     try { await api("/api/replay/stop", {}); } catch (e) {}
     status("arrêté");
@@ -794,8 +899,9 @@
   const tl = $("timeline"), ctx = tl.getContext("2d");
   // Mode rejeu : le lecteur vidéo (flux tapé) repart de 0 à chaque (re)démarrage ; on décale son
   // temps du start_at du rejeu pour rester en temps de capture sur la timeline.
-  const vOff = () => (state.mode === "replay" && state.replay && state.replay.start_at) ? state.replay.start_at : 0;
+  const vOff = () => pb.on ? pb.vOffset : ((state.mode === "replay" && state.replay && state.replay.start_at) ? state.replay.start_at : 0);
   function duration() {
+    if (pb.on && pb.tl) return pb.tl.duration || (state.flowsDur || 0);
     if (state.mode === "replay") return Math.max(state.flowsDur || 0, (state.replay && state.replay.t) || 0, vOff() + video.currentTime);
     return (isFinite(video.duration) && video.duration > 0) ? video.duration : (state.cur ? state.cur.duration_s : 0);
   }
@@ -804,7 +910,13 @@
     ctx.clearRect(0, 0, W, H); ctx.fillStyle = "#0e1216"; ctx.fillRect(0, 0, W, H);
     const D = duration(); if (!D) return;
     const x = t => t / D * W;
-    if (state.track && state.track.sets.length && state.mode === "file") {
+    if (pb.on && pb.tl) {                                    // densité CoT + dwells (lecture)
+      const bins = new Float32Array(W); pb.tl.cot.forEach(c => { const i = Math.floor(x(c[0])); if (i >= 0 && i < W) bins[i]++; }); pb.tl.dwells.forEach(d => { const i = Math.floor(x(d[0])); if (i >= 0 && i < W) bins[i] += 2; });
+      const mx = Math.max(1, ...bins); ctx.fillStyle = "rgba(124,255,107,.35)";
+      for (let i = 0; i < W; i++) if (bins[i]) { const h = 3 + 12 * bins[i] / mx; ctx.fillRect(i, H - 12 - h, 1, h); }
+      ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(pb.t) - 1, 0, 2, H); ctx.fillText("lecture", x(pb.t) + 4, H - 2);
+    }
+    if (state.track && state.track.sets.length && (state.mode === "file" || pb.on)) {
       ctx.fillStyle = "rgba(255,213,79,.55)";
       const bins = new Float32Array(W); state.track.sets.forEach(s => { const i = Math.floor(x(s.t)); if (i >= 0 && i < W) bins[i]++; });
       const mx = Math.max(1, ...bins);
@@ -813,7 +925,7 @@
     const off = vOff();
     ctx.fillStyle = "rgba(0,200,255,.18)";
     for (let i = 0; i < video.buffered.length; i++) ctx.fillRect(x(off + video.buffered.start(i)), H - 10, x(video.buffered.end(i)) - x(video.buffered.start(i)), 6);
-    if (state.mode === "replay") {
+    if (state.mode === "replay" || pb.on) {
       ctx.fillStyle = "rgba(255,213,79,.7)"; state.sets.forEach(s => ctx.fillRect(x(off + s.pts / 1000), H - 30, 1, 10));
       if (state.replay && state.replay.running) { ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(state.replay.t || 0) - 1, 0, 2, H); ctx.fillText("rejeu", x(state.replay.t || 0) + 4, H - 2); }
     }
@@ -824,15 +936,16 @@
   tl.addEventListener("click", ev => {
     const D = duration(); if (!D) return;
     const t = (ev.offsetX / tl.clientWidth) * D;
-    if (state.mode === "file") { if (state.player) video.currentTime = t; return; }
+    if (pb.on) return playbackSeek(t);
     if (state.replay && state.replay.running) seekReplay(t);
   });
   tl.style.cursor = "pointer";
   function frame() {
+    playbackTick();
     const tms = video.currentTime * 1000;
     if (state.sets.length) { const idx = indexAt(tms + 20); if (idx >= 0 && idx !== state.applied) apply(idx, tms); }
     $("tl-t").textContent = (vOff() + video.currentTime).toFixed(3);
-    if (state.mode === "file" && isFinite(video.duration)) $("tl-d").textContent = video.duration.toFixed(1);
+    if (pb.on) $("tl-d").textContent = (pb.tl.duration || 0).toFixed(1); else if (state.mode === "file" && isFinite(video.duration)) $("tl-d").textContent = video.duration.toFixed(1);
     drawTimeline();
     requestAnimationFrame(frame);
   }
@@ -921,13 +1034,15 @@
   document.addEventListener("keydown", e => { if (e.key === "Escape") $("browse-dlg").hidden = true; });
   function fillRecent(list) { const dl = $("recent"); dl.innerHTML = ""; (list || []).forEach(r => { const o = document.createElement("option"); o.value = r; dl.appendChild(o); }); }
 
+  window.__dbg = { state, gs, map, fitTracks, drawTracks, pb };          // accès console (débogage / tests)
+
   // ── Init ─────────────────────────────────────────────────────────────────────
   $("btn-load").addEventListener("click", load);
   $("pcap").addEventListener("keydown", e => { if (e.key === "Enter") load(); });
   $("stream").addEventListener("change", e => selectStream(e.target.value));
   $("btn-play").addEventListener("click", play);
   $("btn-stop").addEventListener("click", stopAll);
-  $("mode").addEventListener("change", () => { state.mode = $("mode").value === "file" ? "file" : "replay"; drawTimeline(); document.body.classList.toggle("emit-mode", $("mode").value === "emit"); });
+  $("mode").addEventListener("change", () => { state.mode = $("mode").value === "play" ? "play" : "replay"; drawTimeline(); document.body.classList.toggle("emit-mode", $("mode").value === "emit"); });
   api("/api/config").then(c => {
     state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();
     fillRecent(c.settings && c.settings.recent);
@@ -936,7 +1051,7 @@
       if (qs.get("tab")) showTab(qs.get("tab"));
       if (qs.get("track")) { await loadProfiles(); $("gmti-profile").value = qs.get("track"); if (qs.get("ab")) { $("gmti-ab").value = qs.get("ab"); gs.abProfile = qs.get("ab"); } await gmtiTrack(); }
       if (qs.get("editor")) { $("gmti-editor").hidden = false; renderEditor(); }
-      if (auto) { $("mode").value = auto === "replay" ? "replay" : auto; setTimeout(play, 800); } }); }
+      if (auto) { $("mode").value = (auto === "replay" || auto === "file") ? "play" : auto; setTimeout(play, 800); } }); }
   });
   connectEvents();
 })();

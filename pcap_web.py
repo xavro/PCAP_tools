@@ -45,6 +45,8 @@ API :
   GET/POST /api/gmti/profiles   profils du tracker (source unique gmti_profiles.json, partagée avec le Java)
   GET /api/gmti/track/detail?pcap=&profile=&overrides=&id=  inspection d'une piste (historique, plots
                                 associés + d², gates 2σ, vitesses)
+  GET /api/timeline?pcap=&watch=&profile=&overrides=  ligne de temps préchargée (mode Lecture IHM seule) :
+                                CoT datés, dwells/plots GMTI datés, offsets vidéo, pistes du run hors ligne datées
   GET /api/gmti/parity.zip?pcap=&profile=&overrides=&name=  oracle de parité pour TrackerParityTest (Java) :
                                 <nom>.input.csv + <nom>.expected.csv + <nom>.profile.json
   GET /api/cot/scan?pcap=&filter=     analyse CoT statique (objets, traces, inventaire des types)
@@ -548,6 +550,94 @@ def gmti_parity_zip(entry, profile, overrides, name=None, seconds=300.0):
         z.writestr("%s.profile.json" % name, json.dumps(prof, indent=2, ensure_ascii=False))
         z.writestr("README-parite.txt", readme)
     return name, buf.getvalue(), n_exp
+
+
+# ── Ligne de temps préchargée (mode « Lecture IHM seule », sans moteur) ─────────
+_TL_CACHE = {}
+
+
+def timeline_data(path, limit=0, watch=None):
+    """Événements datés de toute la capture (temps relatif au 1er paquet) : CoT (un par
+    datagramme), dwells GMTI (zone, plots), offsets des flux vidéo. Mis en cache par pcap."""
+    key = (os.path.abspath(path), os.path.getmtime(path), int(limit or 0), tuple(sorted(watch or [])))
+    with _ALOCK:
+        if key in _TL_CACHE:
+            return _TL_CACHE[key]
+    t0 = None
+    cot, dwells, gmti_dt = [], [], []
+    n = 0
+    wset = set(w.lower() for w in watch) if watch else None
+    for ts, lt, frame in iter_frames(path):
+        n += 1
+        if limit and n > limit:
+            break
+        r = parse(lt, frame)
+        if not r:
+            continue
+        proto, src, sport, dst, dport, pl = r
+        if not pl:
+            continue
+        if t0 is None:
+            t0 = ts
+        key2 = "%s/%s" % (proto.lower(), dport)
+        if wset is not None and key2 not in wset:
+            continue
+        if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
+            ev = decode_cot(pl)
+            if ev:
+                cot.append([round(ts - t0, 3), ev["uid"], ev["type"], ev["aff"], ev.get("callsign"), ev["lat"], ev["lon"],
+                            ev.get("speed"), ev.get("course"), key2])
+        elif len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
+            g = decode_gmti(pl)
+            if g is not None:
+                plots, sensor, dw = g
+                for d in dw:
+                    dwells.append([round(ts - t0, 3), sensor, d["center"], d["poly"], d["n"], d.get("t_ms")])
+                    if d.get("t_ms") is not None:
+                        gmti_dt.append(ts - d["t_ms"] / 1000.0)
+                if plots and not dw:
+                    dwells.append([round(ts - t0, 3), sensor, None, None, len(plots), None])
+                if plots:
+                    dwells[-1].append(plots)
+    gmti_dt.sort()
+    dwell_offset = gmti_dt[len(gmti_dt) // 2] if gmti_dt else None      # pcap_ts ≈ dwell_time + offset
+    streams = scan(path, limit)
+    video = [{"dport": st.dport, "dst": st.dst, "t_offset": round((st.t0 or t0 or 0) - (t0 or 0), 3), "duration": round((st.t1 or 0) - (st.t0 or 0), 3)}
+             for st in streams.values()]
+    out = {"t0": t0, "duration": round((ts - t0) if t0 is not None else 0.0, 3), "n_packets": n,
+           "cot": cot, "dwells": dwells, "dwell_offset": dwell_offset, "video": video}
+    with _ALOCK:
+        _TL_CACHE[key] = out
+    return out
+
+
+def timeline_tracks(entry, profile, overrides, tl):
+    """Pistes du run hors ligne (même algorithme que le live) datées en temps de capture :
+    [{id, air, rot, hist:[[t_rel, lat, lon, state, hit, ever]]}] via dwell_offset."""
+    key = profile + "|" + json.dumps(overrides or {}, sort_keys=True)
+    res = (entry.get("res") or {}).get(key)
+    if res is None:
+        gmti_track(entry, profile, overrides)
+        res = entry["res"][key]
+    fr = res.get("frame")
+    off = tl.get("dwell_offset")
+    t0 = tl.get("t0")
+    if fr is None or off is None or t0 is None:
+        return []
+    T_ = sys.modules["tracker"]
+    names = {T_.TENTATIVE: "T", T_.CONFIRMED: "C", T_.SOLID: "S", T_.COASTING: "K", T_.DEAD: "D"}
+    out = []
+    for tid, tr in (res.get("_objs") or {}).items():
+        hist, ever = [], False
+        for (t, x, y, st, hit) in tr.history:
+            nm = names.get(st, "T")
+            if nm in ("C", "S"):
+                ever = True
+            la, lo = fr.to_ll(float(x), float(y))
+            hist.append([round(float(t) + off - t0, 3), round(la, 6), round(lo, 6), nm, 1 if hit else 0, 1 if ever else 0])
+        if hist:
+            out.append({"id": tid, "air": bool(tr.is_air), "rot": bool(tr.is_rotator), "hits": tr.hits, "hist": hist})
+    return out
 
 
 def gmti_track_detail(entry, profile, overrides, track_id):
@@ -1340,6 +1430,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Disposition", "attachment; filename=\"parity_%s.zip\"" % name)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers(); self.wfile.write(data); return
+            if u.path == "/api/timeline":
+                path = self._pcap(q); limit = int(q.get("limit", ["0"])[0] or 0)
+                watch = [w for w in q.get("watch", [""])[0].split(",") if w]
+                tl = timeline_data(path, limit, watch or None)
+                out = dict(tl)
+                if q.get("profile", [""])[0]:
+                    ov = json.loads(q.get("overrides", ["{}"])[0] or "{}")
+                    try:
+                        out["tracks"] = timeline_tracks(gmti_decode(path, limit), q["profile"][0], ov, tl)
+                    except Exception as e:
+                        out["tracks"] = []; out["tracks_error"] = str(e)
+                return self._json(out)
             if u.path == "/api/gmti/track/detail":
                 path = self._pcap(q); limit = int(q.get("limit", ["0"])[0] or 0)
                 profile = q.get("profile", ["defaut"])[0]
