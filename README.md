@@ -175,6 +175,10 @@ selon l'action (résumé vivant dans chaque onglet) :
   (`load_profiles`, `java_config`, `apply_profile` accepte noms Java ou `Params`). Le banc
   reproduit aussi les étages processor : déclutter (minSnrDb, classFilter) et fusion
   `TrackMerger` (« 1 contact = 1 piste », port Python de `TrackMerger.java`).
+  **Plots aberrants filtrés à l'extraction** (`gmti_pcap_to_csv.target_plausible`, partagé avec
+  `stanag4607_extract`) : target reports hors de la zone de dwell (D22-25 + marge) ou > 500 km du
+  capteur, sentinelles (0,0) — certains émetteurs annoncent plus de cibles que le dwell n'en
+  contient (octets texte lus comme des cibles) ; compteur dans l'inventaire 4607.
   En rejeu (temps réel, même cadence que l'émission UDP) : plots 4607 au fil de l'eau (couche
   canvas, capteur, classes) et **zone balayée de chaque dwell** (secteur capteur → centre,
   ± étendue distance/angle D24/D25, fondu des dernières dwells, ligne capteur → centre).

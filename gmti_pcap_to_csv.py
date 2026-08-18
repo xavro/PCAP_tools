@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import math
 import os
 import struct
 import sys
@@ -87,6 +88,44 @@ def _norm_lon(lon):
     if lon is None:
         return None
     return lon - 360.0 if lon > 180.0 else lon
+
+
+# ── Validation des target reports (plots aberrants) ────────────────────────
+# Certains émetteurs annoncent un target_count supérieur au contenu réel du dwell :
+# les octets suivants (texte, padding « @@@@ », espaces) sont alors lus comme des
+# cibles → plots (0,0), 22.588/45.176 (0x40404040/0x20202020)… Ni le tracker ni le
+# processor ne doivent les voir : on rejette tout report hors de la ZONE DE DWELL
+# (D22-25, avec marge), ou à plus de MAX_SENSOR_RANGE_KM du capteur si la zone
+# manque, ainsi que (0,0) et les latitudes impossibles.
+MAX_SENSOR_RANGE_KM = 500.0
+_R_EARTH = 6371000.0
+
+
+def _dist_m(lat1, lon1, lat2, lon2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * _R_EARTH * math.asin(min(1.0, math.sqrt(a)))
+
+
+def target_plausible(lat, lon, sensor_lat=None, sensor_lon=None, center_lat=None, center_lon=None,
+                     range_he_km=None, angle_he_deg=None):
+    """True si le plot est géographiquement plausible pour ce dwell."""
+    if lat is None or lon is None or not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 360.0):
+        return False
+    if abs(lat) < 1e-6 and abs(lon) < 1e-6:
+        return False
+    if center_lat is not None and center_lon is not None and range_he_km and range_he_km > 0:
+        r_ext = range_he_km * 1000.0
+        half_w = 0.0
+        if sensor_lat is not None and sensor_lon is not None and angle_he_deg is not None:
+            R = _dist_m(sensor_lat, sensor_lon, center_lat, center_lon)
+            half_w = R * math.tan(math.radians(min(abs(angle_he_deg), 89.0)))
+        bound = 2.0 * max(r_ext, 250.0) + 2.0 * half_w + 300.0
+        return _dist_m(center_lat, center_lon, lat, lon) <= bound
+    if sensor_lat is not None and sensor_lon is not None:
+        return _dist_m(sensor_lat, sensor_lon, lat, lon) <= MAX_SENSOR_RANGE_KM * 1000.0
+    return True
 
 
 def _mask_bit(mask8, bit):
@@ -179,7 +218,8 @@ def decode_packet_dwells(b):
                     out.append({"time": d["time"], "revisit": d["revisit"], "dwell": d["dwell"],
                                 "sensor": (d["slat"], _norm_lon(d["slon"]) if d["slon"] is not None else None, d["salt"]),
                                 "center": (d["clat"], _norm_lon(d["clon"])) if d["clat"] is not None and d["clon"] is not None else None,
-                                "range_he_km": d["range_he"], "angle_he_deg": d["angle_he"], "rows": rows})
+                                "range_he_km": d["range_he"], "angle_he_deg": d["angle_he"], "rows": rows,
+                                "n_rejected": d.get("n_rejected", 0)})
                 idx += seg_size
         except Exception:
             break
@@ -241,6 +281,10 @@ def _decode_dwell_full(b, seg):
             lat = tr["dlat"] * d["scale_lat"] + d["clat"]
             lon = tr["dlon"] * d["scale_lon"] + d["clon"]
         if lat is None or lon is None:
+            continue
+        if not target_plausible(lat, _norm_lon(lon), d["slat"], _norm_lon(d["slon"]) if d["slon"] is not None else None,
+                                d["clat"], _norm_lon(d["clon"]) if d["clon"] is not None else None, d["range_he"], d["angle_he"]):
+            d["n_rejected"] = d.get("n_rejected", 0) + 1
             continue
         rows.append({
             "dwell_time_ms": d["time"] if d["time"] is not None else 0,

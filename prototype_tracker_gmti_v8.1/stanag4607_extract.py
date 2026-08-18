@@ -32,6 +32,11 @@ from collections import Counter, defaultdict
 # Lecteur pcap/pcapng COMMUN (au niveau racine de la suite d'outils).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pcap_frames import iter_frames, parse  # noqa: E402
+try:
+    from gmti_pcap_to_csv import target_plausible          # validation partagée des target reports
+except Exception:                                          # repli minimal
+    def target_plausible(lat, lon, *a, **k):
+        return lat is not None and lon is not None and -90.0 <= lat <= 90.0 and not (abs(lat) < 1e-6 and abs(lon) < 1e-6)
 
 # ---------------------------------------------------------------- conversions
 def sa32(r): return r * (90.0 / 2**31)
@@ -238,6 +243,7 @@ def parse_stream(buf, sink):
 class Sink:
     def __init__(self, jsonl_path=None):
         self.resync = 0
+        self.bad_targets = 0        # target reports rejetés (position implausible)
         self.pkt_count = 0
         self.pkt_meta = defaultdict(Counter)
         self.seg_count = Counter()
@@ -279,6 +285,11 @@ class Sink:
                         self.num_stats[k].append(tgt[k])
                 ll = self._latlon(d, tgt)
                 if ll:
+                    if not target_plausible(ll[0], ll[1], d.get("sensor_lat"), lon180(d["sensor_lon"]) if "sensor_lon" in d else None,
+                                            d.get("dwell_center_lat"), lon180(d["dwell_center_lon"]) if "dwell_center_lon" in d else None,
+                                            d.get("dwell_range_he_km"), d.get("dwell_angle_he_deg")):
+                        self.bad_targets += 1          # plot aberrant (hors zone de dwell / sentinelle) : ignoré
+                        continue
                     self.plots.append((d, tgt, ll))
             for k in ("mdv_dms", "dwell_range_he_km", "dwell_angle_he_deg"):
                 if k in d:
@@ -322,7 +333,8 @@ def rapport(s):
     A("=" * 68)
     A("INVENTAIRE STANAG 4607")
     A("=" * 68)
-    A(f"paquets : {s.pkt_count} | octets resynchronises : {s.resync}")
+    A(f"paquets : {s.pkt_count} | octets resynchronises : {s.resync} | "
+      f"target reports rejetes (position implausible) : {getattr(s, 'bad_targets', 0)}")
     A("")
     A("-- En-tete paquet --")
     for k, c in s.pkt_meta.items():
