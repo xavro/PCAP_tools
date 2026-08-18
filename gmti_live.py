@@ -115,6 +115,7 @@ class LiveTracker:
                      "is_air": bool(tr.is_air), "is_rotator": bool(tr.is_rotator),
                      "age_s": round(max(0.0, (self.last_t or 0) - tr.t_last_update), 1),
                      "extent_m": round(float(getattr(tr, "extent", 0.0)), 1), "absorbed": list(getattr(tr, "absorbed", [])),
+                     "cls": tr.dominant_class() if hasattr(tr, "dominant_class") else None,
                      "tail": [[round(a, 6), round(b, 6)] for a, b in (self.frame.to_ll(float(x), float(y)) for (_t, x, y, _s, _h) in hist)]}
                 out.append(o)
                 if tr.confirmed_ever and name != "TENTATIVE" and (min_speed <= 0 or sp >= min_speed):   # affichables (comme le processor)

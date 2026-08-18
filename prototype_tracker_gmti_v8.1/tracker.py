@@ -168,6 +168,10 @@ class Track:
         self.states = [(t, self.x.copy(), self.P.copy())]   # pour le lisseur RTS
         # Journal d'inspection (aucun effet sur le pistage) : plots associes et gates.
         self.assoc = [(t, plot.x, plot.y, 0.0, plot.vel_los, plot.snr, plot.classification)]
+        # Classification fusionnee sur la duree de vie (vote majoritaire, comme Track.java) : la classe
+        # d'un plot peut varier d'un dwell a l'autre ; la piste rapporte sa classe dominante.
+        self.cls_counts = {}
+        self._vote_class(plot.classification)
         self.gates = []                                     # (t, S 2x2 innovation, d2)
         self.last_hit_idx = 0
         self._hit = True
@@ -214,6 +218,7 @@ class Track:
         except np.linalg.LinAlgError:
             d2 = float("nan")
         self.assoc.append((self.t, plot.x, plot.y, d2, plot.vel_los, plot.snr, plot.classification))
+        self._vote_class(plot.classification)
         self.gates.append((self.t, S.copy(), d2))
         K = self.P @ H.T @ np.linalg.inv(S)
         self.x = self.x + K @ y
@@ -280,6 +285,22 @@ class Track:
 
     def speed(self):
         return math.hypot(self.x[2], self.x[3])
+
+    def _vote_class(self, cls):
+        if cls in (None, ""):
+            return
+        try:
+            c = int(float(cls))
+        except (TypeError, ValueError):
+            return
+        self.cls_counts[c] = self.cls_counts.get(c, 0) + 1
+
+    def dominant_class(self):
+        """Classe STANAG 4607 (D32.11) majoritaire sur la vie de la piste ; None si aucune.
+        Departage : la plus frequente, puis le code le plus bas (comme Track.java)."""
+        if not self.cls_counts:
+            return None
+        return min(self.cls_counts, key=lambda c: (-self.cls_counts[c], c))
 
 
 def merge_plots(g, weighted=True):
