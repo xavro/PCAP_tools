@@ -79,6 +79,10 @@ sys.path.insert(0, HERE)
 from pcap_replay import iter_frames, parse                       # noqa: E402
 import pcap_replay                                                # noqa: E402
 import pcap_analyze                                               # noqa: E402
+try:
+    import net_capture                                            # noqa: E402  (écoute réseau live)
+except Exception:                                                 # pragma: no cover
+    net_capture = None
 import video4609 as v9                                            # noqa: E402
 import xml.etree.ElementTree as ET                                # noqa: E402
 try:
@@ -1174,123 +1178,14 @@ class ReplayEngine:
         return self.status()
 
     def _run(self, pcap, args, table, taps, watch=None, live=None, start_at=0.0):
-        counters = {}
-        t_cap0 = [None]
-        last_pub = [0.0]
-        wall0 = time.perf_counter()
-        bytes_out = [0]
-
-        def publish(force=False):
-            now = time.perf_counter()
-            if not force and now - last_pub[0] < 0.25:
-                return
-            last_pub[0] = now
-            with self.lock:
-                st = self.state
-                st.update({"t": round(t_rel[0], 3), "flows": dict(counters), "bytes": bytes_out[0],
-                           "wall": round(now - wall0, 2)})
-                snap = dict(st)
-            EVENTS.publish({"type": "replay", **snap})
-
-        t_rel = [0.0]
-
-        cot_batch, gmti_batch = {}, {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
-        app_batch_at = [time.perf_counter()]
-        totals = {"cot": 0, "gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0}
-
-        def flush_app(force=False):
-            now = time.perf_counter()
-            if not force and now - app_batch_at[0] < 0.2:
-                return
-            app_batch_at[0] = now
-            if cot_batch:
-                EVENTS.publish({"type": "cot", "t": round(t_rel[0], 3), "events": list(cot_batch.values()),
-                                "total": totals["cot"]})
-                cot_batch.clear()
-            if gmti_batch["pkts"]:
-                plots = gmti_batch["plots"]
-                if len(plots) > 4000:                          # décimation d'affichage
-                    plots = plots[::len(plots) // 4000 + 1]
-                ev = {"type": "gmti", "t": round(t_rel[0], 3), "plots": plots, "sensor": gmti_batch["sensor"],
-                      "dwells": gmti_batch["dwells"][-40:], "pkts": gmti_batch["pkts"],
-                      "total_plots": totals["gmti_plots"], "total_pkts": totals["gmti_pkts"],
-                      "total_dwells": totals["gmti_dwells"]}
-                if live is not None:
-                    try:
-                        ev["live"] = live.snapshot()
-                    except Exception as e:
-                        ev["live"] = {"tracks": [], "stats": {"error": str(e)}}
-                EVENTS.publish(ev)
-                gmti_batch.update({"plots": [], "sensor": None, "pkts": 0, "dwells": []})
-
-        skip_state = {"cot": {}, "n": 0, "first": None}
-
-        def on_skip(ts, proto, dport, pl):
-            """Rembobinage à blanc (avant start_at) : état des trackers et du CoT sans affichage."""
-            if skip_state["first"] is None:
-                skip_state["first"] = ts
-                t_cap0[0] = ts                                        # l'horloge relative garde l'origine du pcap
-            skip_state["n"] += 1
-            key = "%s/%s" % (proto.lower(), dport)
-            if watch is not None and key not in watch:
-                return
-            if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
-                ev = decode_cot(pl)
-                if ev:
-                    ev["src"] = key; skip_state["cot"][ev["uid"] or ("#%d" % skip_state["n"])] = ev
-            elif live is not None and gmti_pcap_to_csv is not None and len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
-                if gmti_pcap_to_csv.looks_like_4607(pl):
-                    try:
-                        live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
-                    except Exception:
-                        pass
-
-        def on_packet(ts, proto, dport, pl, tgts):
-            if t_cap0[0] is None:
-                t_cap0[0] = ts
-            if skip_state["cot"]:                                     # état CoT reconstitué au point de reprise
-                EVENTS.publish({"type": "cot", "t": round(ts - t_cap0[0], 3), "events": list(skip_state["cot"].values()),
-                                "total": len(skip_state["cot"]), "resumed": True})
-                skip_state["cot"] = {}
-            t_rel[0] = ts - t_cap0[0]
-            key = "%s/%s" % (proto.lower(), dport)
-            if tgts:
-                counters[key] = counters.get(key, 0) + 1
-                bytes_out[0] += len(pl) * len(tgts)
-            if proto == "UDP" and dport in taps:
-                tsdata = v9._ts_from_udp(pl)
-                if tsdata:
-                    video_bus(dport).publish(bytes(tsdata))
-            elif watch is not None and key not in watch:
-                pass                                              # flux non coché : ni émis, ni affiché
-            elif pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
-                ev = decode_cot(pl)
-                if ev:
-                    ev["src"] = key; totals["cot"] += 1
-                    cot_batch[ev["uid"] or ("#%d" % totals["cot"])] = ev
-            elif len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
-                g = decode_gmti(pl)
-                if g is not None:
-                    plots, sensor, dw = g
-                    gmti_batch["plots"].extend(plots); gmti_batch["pkts"] += 1
-                    gmti_batch["dwells"].extend(dw)
-                    if live is not None and gmti_pcap_to_csv is not None:
-                        try:
-                            live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
-                        except Exception as e:
-                            EVENTS.publish({"type": "log", "msg": "pistage temps réel : %s" % e})
-                    if sensor:
-                        gmti_batch["sensor"] = sensor
-                    totals["gmti_plots"] += len(plots); totals["gmti_pkts"] += 1; totals["gmti_dwells"] += len(dw)
-            flush_app()
-            publish()
+        sink = PacketSink(self, taps, watch, live)
 
         def on_progress(sent, passes):
             with self.lock:
                 self.state["sent"], self.state["passes"] = sent, passes
                 if passes > 1 and self.state.get("_pass") != passes:
                     self.state["_pass"] = passes
-                    t_cap0[0] = None
+                    sink.t_cap0 = None
 
         def log(msg):
             EVENTS.publish({"type": "log", "msg": str(msg)})
@@ -1299,21 +1194,301 @@ class ReplayEngine:
             if start_at:
                 EVENTS.publish({"type": "log", "msg": "saut à t=%.1f s : rembobinage à blanc (état pistes/CoT reconstitué)…" % start_at})
             pcap_replay.do_routed_replay(pcap, args, table, should_stop=self.stop_event.is_set,
-                                         on_progress=on_progress, log=log, on_packet=on_packet,
-                                         start_at=start_at, on_skip=on_skip if start_at else None,
+                                         on_progress=on_progress, log=log, on_packet=sink.on_packet,
+                                         start_at=start_at, on_skip=sink.on_skip if start_at else None,
                                          is_paused=lambda: self.paused)
         except Exception as e:
             EVENTS.publish({"type": "log", "msg": "ERREUR rejeu : %s" % e})
         finally:
-            flush_app(force=True)
+            sink.flush_app(force=True)
             with self.lock:
                 self.state["running"] = False
                 self.state["stopped"] = self.stop_event.is_set()
-            publish(force=True)
+            sink.publish(force=True)
             EVENTS.publish({"type": "end", "stopped": self.stop_event.is_set()})
 
 
+class PacketSink:
+    """Consommateurs applicatifs d'un flux de paquets — COMMUNS au rejeu de pcap et à l'écoute
+    réseau live : taps vidéo (→ /ws/video), CoT, plots/dwells GMTI + pistage temps réel
+    (LiveTracker), compteurs, publication des événements sur /ws/events. `engine` fournit
+    lock/state (le statut publié sous type "replay")."""
+
+    def __init__(self, engine, taps, watch, live):
+        self.engine = engine
+        self.taps = set(int(t) for t in taps)
+        self.watch = watch                       # set de clés "udp/1237" | None = tout
+        self.live = live                         # LiveTracker | None
+        self.counters = {}; self.t_cap0 = None; self.last_pub = 0.0
+        self.wall0 = time.perf_counter(); self.bytes_out = 0; self.t_rel = 0.0
+        self.cot_batch = {}; self.gmti_batch = {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
+        self.app_batch_at = time.perf_counter()
+        self.totals = {"cot": 0, "gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0}
+        self.skip_state = {"cot": {}, "n": 0, "first": None}
+
+    # -- réglages à chaud (écoute live : cocher/décocher un flux sans redémarrer) --
+    def follow(self, taps=None, watch=None, track=None):
+        """taps/watch : None = inchangé ; track : None = inchangé, False = arrêt, dict = (re)démarrage."""
+        if taps is not None:
+            self.taps = set(int(t) for t in taps)
+        if watch is not None:
+            self.watch = set(str(w).lower() for w in watch)
+        if track is not None:
+            if track is False:
+                self.live = None
+            else:
+                try:
+                    if self.live is None or self.live.profile != (track.get("profile") or "defaut") or self.live.overrides != (track.get("overrides") or {}):
+                        self.live = LiveTracker(track.get("profile") or "defaut", track.get("overrides") or {})
+                except Exception as e:
+                    EVENTS.publish({"type": "log", "msg": "pistage temps réel indisponible : %s" % e})
+
+    def publish(self, force=False):
+        now = time.perf_counter()
+        if not force and now - self.last_pub < 0.25:
+            return
+        self.last_pub = now
+        with self.engine.lock:
+            self.engine.state.update({"t": round(self.t_rel, 3), "flows": dict(self.counters), "bytes": self.bytes_out,
+                                      "wall": round(now - self.wall0, 2)})
+        EVENTS.publish({"type": "replay", **self.engine.status()})     # status() : + champs propres au live
+
+    def flush_app(self, force=False):
+        now = time.perf_counter()
+        if not force and now - self.app_batch_at < 0.2:
+            return
+        self.app_batch_at = now
+        if self.cot_batch:
+            EVENTS.publish({"type": "cot", "t": round(self.t_rel, 3), "events": list(self.cot_batch.values()),
+                            "total": self.totals["cot"]})
+            self.cot_batch.clear()
+        gb = self.gmti_batch
+        if gb["pkts"]:
+            plots = gb["plots"]
+            if len(plots) > 4000:                          # décimation d'affichage
+                plots = plots[::len(plots) // 4000 + 1]
+            ev = {"type": "gmti", "t": round(self.t_rel, 3), "plots": plots, "sensor": gb["sensor"],
+                  "dwells": gb["dwells"][-40:], "pkts": gb["pkts"],
+                  "total_plots": self.totals["gmti_plots"], "total_pkts": self.totals["gmti_pkts"],
+                  "total_dwells": self.totals["gmti_dwells"]}
+            if self.live is not None:
+                try:
+                    ev["live"] = self.live.snapshot()
+                except Exception as e:
+                    ev["live"] = {"tracks": [], "stats": {"error": str(e)}}
+            EVENTS.publish(ev)
+            self.gmti_batch = {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
+
+    def on_skip(self, ts, proto, dport, pl):
+        """Rembobinage à blanc (avant start_at) : état des trackers et du CoT sans affichage."""
+        ss = self.skip_state
+        if ss["first"] is None:
+            ss["first"] = ts
+            self.t_cap0 = ts                                      # l'horloge relative garde l'origine du pcap
+        ss["n"] += 1
+        key = "%s/%s" % (proto.lower(), dport)
+        if self.watch is not None and key not in self.watch:
+            return
+        if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
+            ev = decode_cot(pl)
+            if ev:
+                ev["src"] = key; ss["cot"][ev["uid"] or ("#%d" % ss["n"])] = ev
+        elif self.live is not None and gmti_pcap_to_csv is not None and len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
+            if gmti_pcap_to_csv.looks_like_4607(pl):
+                try:
+                    self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                except Exception:
+                    pass
+
+    def on_packet(self, ts, proto, dport, pl, tgts):
+        if self.t_cap0 is None:
+            self.t_cap0 = ts
+        if self.skip_state["cot"]:                                # état CoT reconstitué au point de reprise
+            EVENTS.publish({"type": "cot", "t": round(ts - self.t_cap0, 3), "events": list(self.skip_state["cot"].values()),
+                            "total": len(self.skip_state["cot"]), "resumed": True})
+            self.skip_state["cot"] = {}
+        self.t_rel = ts - self.t_cap0
+        key = "%s/%s" % (proto.lower(), dport)
+        if tgts:
+            self.counters[key] = self.counters.get(key, 0) + 1
+            self.bytes_out += len(pl) * len(tgts)
+        if proto == "UDP" and dport in self.taps:
+            tsdata = v9._ts_from_udp(pl)
+            if tsdata:
+                video_bus(dport).publish(bytes(tsdata))
+        elif self.watch is not None and key not in self.watch:
+            pass                                                  # flux non coché : ni émis, ni affiché
+        elif pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
+            ev = decode_cot(pl)
+            if ev:
+                ev["src"] = key; self.totals["cot"] += 1
+                self.cot_batch[ev["uid"] or ("#%d" % self.totals["cot"])] = ev
+        elif len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
+            g = decode_gmti(pl)
+            if g is not None:
+                plots, sensor, dw = g
+                gb = self.gmti_batch
+                gb["plots"].extend(plots); gb["pkts"] += 1
+                gb["dwells"].extend(dw)
+                if self.live is not None and gmti_pcap_to_csv is not None:
+                    try:
+                        self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                    except Exception as e:
+                        EVENTS.publish({"type": "log", "msg": "pistage temps réel : %s" % e})
+                if sensor:
+                    gb["sensor"] = sensor
+                self.totals["gmti_plots"] += len(plots); self.totals["gmti_pkts"] += 1; self.totals["gmti_dwells"] += len(dw)
+        self.flush_app()
+        self.publish()
+
+
+class LiveEngine:
+    """Écoute réseau LIVE (net_capture) : mêmes consommateurs que le rejeu (PacketSink), plus une
+    table de flux découverts au fil de l'eau (comme l'analyse d'un pcap, en continu) et un
+    enregistrement pcap glissant optionnel. Un seul à la fois ; exclusif avec le rejeu."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.state = {"running": False}
+        self.cap = None; self.sink = None; self.writer = None
+        self.flows = {}                     # (proto, dport) -> {pkts, bytes, cls Counter, dsts set, srcs set, first, last}
+        self.flow_lock = threading.Lock()
+        self.stop_event = threading.Event(); self.thread = None
+
+    def status(self):
+        with self.lock:
+            st = dict(self.state)
+        st["live"] = True
+        if self.cap is not None:
+            st["captured"] = self.cap.n_frames; st["captured_bytes"] = self.cap.n_bytes; st["mode"] = self.cap.mode
+        if self.writer is not None:
+            st["recording"] = self.writer.current(); st["rec_files"] = list(self.writer.files)
+        return st
+
+    def flows_summary(self):
+        with self.flow_lock:
+            items = sorted(self.flows.items(), key=lambda kv: -kv[1]["bytes"])
+            rows = []
+            for (proto, dport), st in items:
+                rows.append({"proto": proto, "dport": dport, "dominant": st["cls"].most_common(1)[0][0],
+                             "pkts": st["pkts"], "bytes": st["bytes"], "dsts": sorted(st["dsts"]), "srcs": sorted(st["srcs"]),
+                             "first": st["first"], "last": st["last"], "rate": st.get("rate", 0.0)})
+            return rows
+
+    def start(self, iface=None, ip=None, groups=(), ports=(), backend="auto", record=None,
+              taps=(), watch=None, track=None):
+        if net_capture is None:
+            raise ValueError("module net_capture indisponible")
+        with self.lock:
+            if self.state.get("running"):
+                raise ValueError("une écoute est déjà en cours")
+            if ENGINE.status().get("running"):
+                raise ValueError("un rejeu est en cours : l'arrêter d'abord")
+            live = None
+            if track:
+                try:
+                    live = LiveTracker(track.get("profile") or "defaut", track.get("overrides") or {})
+                except Exception as e:
+                    raise ValueError("pistage temps réel indisponible : %s" % e)
+            wset = None if watch is None else set(str(w).lower() for w in watch)
+            self.stop_event.clear()
+            self.flows = {}
+            self.state = {"running": True, "live": True, "iface": iface, "ip": ip, "groups": list(groups or []),
+                          "ports": list(ports or []), "taps": list(taps), "watch": watch, "track": track,
+                          "sent": 0, "passes": 1, "t": 0.0, "started": time.time(), "speed": 1, "paused": False, "loop": False,
+                          "record": bool(record)}
+            self.sink = PacketSink(self, taps, wset, live)
+            self.writer = None
+            if record:
+                d = record.get("dir") or os.path.join(tempfile.gettempdir(), "pcap_web_live")
+                self.writer = net_capture.PcapWriter(d, record.get("prefix") or "live", record.get("max_mb") or 200, record.get("keep") or 5)
+            self.cap = net_capture.Capture(self._on_frame, iface=iface, ip=ip, groups=groups, ports=ports, backend=backend,
+                                           log=lambda m: EVENTS.publish({"type": "log", "msg": "écoute : %s" % m}))
+            try:
+                mode = self.cap.start()
+            except OSError as e:
+                self.state = {"running": False, "live": True, "error": str(e)}
+                self.cap = None
+                raise ValueError("écoute impossible : %s" % e)
+            self.state["mode"] = mode
+        EVENTS.publish({"type": "log", "msg": "écoute réseau démarrée (%s)%s" % (mode, (" — enregistrement " + self.writer.dir) if self.writer else "")})
+        self.thread = threading.Thread(target=self._ticker, daemon=True); self.thread.start()
+        EVENTS.publish({"type": "replay", **self.status()})
+
+    def _on_frame(self, ts, frame):
+        if self.writer is not None:
+            try:
+                self.writer.write(ts, frame)
+            except Exception as e:
+                EVENTS.publish({"type": "log", "msg": "enregistrement : %s" % e}); self.writer = None
+        r = pcap_analyze.parse(1, frame)
+        if not r:
+            return
+        proto, src, sport, dst, dport, pl = r
+        cls = pcap_analyze.classify(pl)
+        with self.flow_lock:
+            st = self.flows.get((proto, dport))
+            if st is None:
+                import collections
+                st = self.flows[(proto, dport)] = {"pkts": 0, "bytes": 0, "cls": collections.Counter(), "dsts": set(), "srcs": set(),
+                                                   "first": ts, "last": ts, "_win": []}
+                new = True
+            else:
+                new = False
+            st["pkts"] += 1; st["bytes"] += len(pl); st["cls"][cls] += 1
+            st["dsts"].add(dst); st["srcs"].add(src); st["last"] = ts
+        if new:
+            EVENTS.publish({"type": "log", "msg": "nouveau flux : %s/%s %s (%s → %s)" % (proto.lower(), dport, cls, src, dst)})
+        if proto == "UDP" and self.sink is not None:
+            self.sink.on_packet(ts, proto, dport, pl, ())
+
+    def _ticker(self):
+        """Publication périodique du statut + table des flux (débits), même sans paquet."""
+        last = {}
+        while not self.stop_event.is_set():
+            time.sleep(1.0)
+            with self.flow_lock:
+                for k, st in self.flows.items():
+                    prev = last.get(k, (st["bytes"], time.time()))
+                    dt = max(1e-3, time.time() - prev[1])
+                    st["rate"] = round((st["bytes"] - prev[0]) * 8 / dt / 1000.0, 1)      # kbit/s
+                    last[k] = (st["bytes"], time.time())
+            if self.sink is not None:
+                self.sink.flush_app(force=True)
+            with self.lock:
+                self.state["t"] = round(time.time() - self.state.get("started", time.time()), 1)
+                if self.cap is not None and self.cap.err:
+                    self.state["error"] = self.cap.err
+            EVENTS.publish({"type": "replay", **self.status(), "flows_live": self.flows_summary()})
+
+    def follow(self, taps=None, watch=None, track=None):
+        if self.sink is None:
+            raise ValueError("aucune écoute en cours")
+        self.sink.follow(taps, watch, track)
+        with self.lock:
+            if taps is not None: self.state["taps"] = list(taps)
+            if watch is not None: self.state["watch"] = list(watch)
+            if track is not None: self.state["track"] = None if track is False else track
+        return self.status()
+
+    def stop(self):
+        self.stop_event.set()
+        cap, self.cap = self.cap, None
+        if cap is not None:
+            cap.stop()
+        if self.writer is not None:
+            self.writer.close()
+        if self.sink is not None:
+            self.sink.flush_app(force=True)
+        with self.lock:
+            self.state["running"] = False; self.state["stopped"] = True
+        EVENTS.publish({"type": "replay", **self.status(), "flows_live": self.flows_summary()})
+        EVENTS.publish({"type": "end", "stopped": True, "live": True})
+        return self.status()
+
+
 ENGINE = ReplayEngine()
+LIVE = LiveEngine()
 
 
 def flows_summary(path, limit=0):
@@ -1413,7 +1588,7 @@ class Handler(BaseHTTPRequestHandler):
                 st = settings_load()
                 default = self.default_pcap or (st.get("last_pcap") if st.get("last_pcap") and os.path.isfile(st["last_pcap"]) else None)
                 return self._json({"default_pcap": default, "default_limit": self.default_limit,
-                                   "basemap": basemap_load(), "replay": ENGINE.status(), "settings": st})
+                                   "basemap": basemap_load(), "replay": ENGINE.status(), "live": LIVE.status(), "settings": st})
             if u.path == "/api/settings":
                 return self._json(settings_load())
             if u.path == "/api/browse":
@@ -1479,6 +1654,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/replay/status":
                 return self._json(ENGINE.status())
+            if u.path == "/api/live/status":
+                st = LIVE.status(); st["flows_live"] = LIVE.flows_summary(); return self._json(st)
+            if u.path == "/api/live/ifaces":
+                return self._json({"ifaces": net_capture.list_interfaces() if net_capture else [],
+                                   "platform": sys.platform, "raw_hint": ("administrateur requis (SIO_RCVALL)" if sys.platform.startswith("win") else "CAP_NET_RAW ou root requis (AF_PACKET)")})
             if u.path == "/ws/events":
                 return self._ws_events()
             if u.path == "/ws/video":
@@ -1523,6 +1703,14 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/replay/stop":
                 ENGINE.stop()
                 return self._json({"ok": True})
+            if u.path == "/api/live/start":
+                LIVE.start(body.get("iface") or None, body.get("ip") or None, body.get("groups") or [], body.get("ports") or [],
+                           body.get("backend") or "auto", body.get("record") or None, body.get("taps", []), body.get("watch"), body.get("track"))
+                return self._json(LIVE.status())
+            if u.path == "/api/live/stop":
+                return self._json(LIVE.stop())
+            if u.path == "/api/live/follow":
+                return self._json(LIVE.follow(body.get("taps"), body.get("watch"), body.get("track")))
             if u.path == "/api/replay/pause":
                 ENGINE.pause(bool(body.get("paused", True)))
                 return self._json(ENGINE.status())

@@ -10,6 +10,14 @@
 <div id="app">
   <header>
     <div><span class="title" title="Console pcap — analyse 4607 / 4609 / CoT · rejeu UDP · ISRBOX / 33e ESRA">◉ Console pcap</span></div>
+    <select id="source" title="Source : un fichier pcap (analyse, lecture, rejeu) ou l'écoute directe du réseau (la console reçoit les flux comme GeoEvent / le serveur vidéo — pas de fichier)">
+      <option value="file">Fichier pcap</option>
+      <option value="live">Écoute réseau (live)</option>
+    </select>
+    <span id="live-ctl" hidden>
+      <select id="live-iface" title="interface / IP locale écoutée (Linux : nom d'interface, AF_PACKET+BPF ; Windows : IP, SIO_RCVALL — administrateur)"></select>
+      <button id="live-more" title="options d'écoute : groupes multicast, ports (repli UDP), enregistrement pcap glissant">⋯ options</button>
+    </span>
     <input id="pcap" type="text" list="recent" placeholder="chemin du pcap (…\Captures\xxx.pcap)">
     <datalist id="recent"></datalist>
     <button id="btn-browse" title="parcourir les captures (explorateur côté serveur)">Parcourir…</button>
@@ -86,6 +94,18 @@
       <div class="body">
         <div class="hint" title="Coché = rejoué : le flux est décodé et affiché dans l'IHM (vidéo, CoT, GMTI) ; en mode « Rejeu + émission » il est aussi envoyé en UDP/TCP vers chaque cible IP:port (pré-remplies avec les destinations originales du pcap ; modifiables ; + pour un fan-out). Non coché = ni émis, ni affiché."><b>Coché = rejoué</b> · cibles <b>IP:port</b> pré-remplies (destinations du pcap), modifiables, « + » = fan-out — utilisées en mode <b>Rejeu + émission</b>.
           <label class="chk" style="float:right"><input type="checkbox" id="flows-all"> tout<span id="flows-all-n"></span></label></div>
+        <div id="live-opts" class="live-opts" hidden>
+          <label>Groupes multicast <input id="live-groups" type="text" placeholder="239.1.2.3:5454, 239.1.2.4 (abonnement IGMP)" title="groupes à rejoindre (IP[:port], séparés par des virgules) — l'abonnement fait passer les trames, la capture raw les voit"></label>
+          <label>Ports (repli sockets UDP) <input id="live-ports" type="text" placeholder="5454, 6789 — utilisé seulement si la capture raw est refusée" title="backend de repli : sockets UDP classiques (en unicast un seul processus reçoit un port !)"></label>
+          <label>Backend <select id="live-backend"><option value="auto">auto (raw, sinon UDP)</option><option value="raw">raw uniquement</option><option value="udp">sockets UDP</option></select></label>
+          <label class="chk"><input type="checkbox" id="live-rec"> enregistrer en pcap glissant</label>
+          <span id="live-rec-opts">
+            <label>dossier <input id="live-rec-dir" type="text" placeholder="(temp)/pcap_web_live" style="width:200px"></label>
+            <label>taille max <input id="live-rec-mb" type="number" value="200" min="10" style="width:60px"> Mo</label>
+            <label>fichiers gardés <input id="live-rec-keep" type="number" value="5" min="1" style="width:50px"></label>
+          </span>
+          <div class="muted">Linux : <span class="mono">setcap cap_net_raw+ep $(readlink -f $(which python3))</span> ou root · Windows : lancer en administrateur. Les flux apparaissent au fil de l'eau ; coché = suivi (décodé/affiché) ; clic sur un flux vidéo = lecture.</div>
+        </div>
         <table class="flows"><tbody id="flows-body"><tr><td class="muted">Analyser un pcap.</td></tr></tbody></table>
         <div class="row"><label class="chk"><input type="checkbox" id="rebase"> recaler l'heure CoT (time/start/stale → maintenant)</label></div>
         <div class="row" id="replay-stats"></div>

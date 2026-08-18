@@ -16,6 +16,17 @@ input[type=text] { min-width: 0; }
 label.chk { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
 #app { display: grid; height: 100%; grid-template-rows: auto auto 1fr auto;
   grid-template-columns: 420px 6px 1fr; grid-template-areas: "hdr hdr hdr" "sb sb sb" "left gutter right" "tl tl tl"; }
+/* ── Écoute réseau live ── */
+body.live-mode #pcap, body.live-mode #recent, body.live-mode #btn-browse, body.live-mode #btn-load, body.live-mode #mode, body.live-mode #speed, body.live-mode #loop, body.live-mode label[for=loop], body.live-mode #btn-pause { display: none; }
+body.live-mode label.chk:has(#loop) { display: none; }
+body.live-mode .flows td.tg, body.live-mode #rebase { display: none; }
+body.live-mode #replay .hint { display: none; }
+.live-opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 6px 0; font-size: 12px; }
+.live-opts label { display: inline-flex; align-items: center; gap: 4px; }
+.live-opts input[type=text] { width: 260px; }
+#live-ctl select { max-width: 180px; }
+.flows td.rate { color: var(--muted); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.flows tr.vid td.name { color: var(--accent); cursor: pointer; }
 #statusbar { grid-area: sb; display: flex; align-items: center; gap: 10px; padding: 3px 12px; background: var(--panel); border-bottom: 1px solid var(--border); min-height: 26px; font-size: 12px; }
 #statusbar #status { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-state { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 12px; border: 1px solid var(--border); color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }

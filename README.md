@@ -241,6 +241,21 @@ selon l'action (résumé vivant dans chaque onglet) :
   lat/lon ; **mesure de distance** (📏 : clics successifs, distance et gisement par segment,
   cumul, double-clic / Échap pour terminer, ✕ pour effacer).
 
+### Écoute réseau (live, sans fichier) — `net_capture.py`
+
+Source « **Écoute réseau (live)** » dans l'en-tête : la console reçoit les flux directement du
+réseau (comme GeoEvent / le serveur vidéo — pas de fichier), les découvre au fil de l'eau (table
+« Rejeu — routage » : flux, protocole, débit ; coché = suivi, rien coché = tout ; clic sur un flux
+MPEG-TS = lecture vidéo + KLV décodé dans le navigateur), plots/dwells + **pistage temps réel**,
+CoT — mêmes consommateurs que le rejeu (`PacketSink`). Options (⋯) : **groupes multicast**
+(abonnement IGMP, `IP[:port]`), **ports** (repli sockets UDP), **enregistrement pcap glissant**
+(dossier, taille max, N fichiers ; le dernier fichier est proposé dans le champ pcap à l'arrêt).
+Capture (`net_capture.py`, stdlib) : Linux `AF_PACKET` + filtre BPF « udp » dans le noyau
+(`setcap cap_net_raw+ep $(readlink -f $(which python3))` ou root — n'interfère pas avec les autres
+sockets ; cible : serveur vidéo AlmaLinux) ; Windows `SIO_RCVALL` (administrateur ; poste de dev) ;
+repli sockets UDP (en unicast un seul processus reçoit un port ! → flux dupliqués ou multicast).
+`?source=live` ouvre directement ce mode ; une écoute en cours est reprise au rechargement de la page.
+
 Notes : Chrome gèle le média d'un onglet masqué/occulté — garder l'onglet visible pendant
 un rejeu live ; H.265 n'est pas lu en MSE par tous les navigateurs (les flux ISRBOX sont H.264).
 La console Tkinter `pcap_console.py` reste disponible (mêmes modules métier).

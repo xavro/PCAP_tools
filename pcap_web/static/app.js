@@ -12,6 +12,87 @@
   const status = (msg, warn) => { const s = $("status"); s.textContent = msg; s.style.color = warn ? "var(--warn)" : ""; s.title = msg; };
   // Pastille d'état de lecture/rejeu (barre sous l'en-tête) : ■ arrêt · ▶ lecture · ● rejeu + émission · ⏸ pause
   function setState(kind, text) { const el = $("sb-state"); el.className = "sb-state " + kind; el.textContent = text; }
+  // ── Écoute réseau (live) : source, flux découverts, suivi à chaud ─────────────
+  const lv = { on: false, checked: new Set(), keys: "", ifaces: [] };
+  const isLive = () => $("source").value === "live";
+  function liveUi() {
+    const on = isLive();
+    document.body.classList.toggle("live-mode", on);
+    $("live-ctl").hidden = !on; $("live-opts").hidden = !on || !lv.optsOpen;
+    $("btn-play").textContent = on ? "▶ Écouter" : "▶ Lire";
+    if (on && !lv.ifaces.length) api("/api/live/ifaces").then(r => { lv.ifaces = r.ifaces || []; const sel = $("live-iface"); sel.innerHTML = "";
+      r.ifaces.forEach(i => { const o = document.createElement("option"); o.value = i.name; o.dataset.ip = i.ip || ""; o.textContent = i.ip && i.ip !== i.name ? `${i.name} (${i.ip})` : i.name; sel.appendChild(o); });
+      const o = document.createElement("option"); o.value = ""; o.textContent = "(toutes / auto)"; sel.insertBefore(o, sel.firstChild); sel.value = "";
+      status(`écoute réseau : ${r.raw_hint}`); }).catch(e => status("interfaces : " + e.message, true));
+    if (on) { $("flows-body").innerHTML = `<tr><td class="muted">▶ Écouter : les flux reçus apparaissent ici au fil de l'eau.</td></tr>`; $("replay-sum").textContent = "écoute arrêtée"; }
+    drawTimeline();
+  }
+  function liveRecord() {
+    if (!$("live-rec").checked) return null;
+    return { dir: $("live-rec-dir").value.trim() || null, max_mb: parseInt($("live-rec-mb").value, 10) || 200, keep: parseInt($("live-rec-keep").value, 10) || 5 };
+  }
+  async function liveStart() {
+    stopPlayer(); playbackStop();
+    const iface = $("live-iface").value || null; const opt = $("live-iface").selectedOptions[0]; const ip = opt && opt.dataset.ip || null;
+    const groups = $("live-groups").value.split(",").map(s => s.trim()).filter(Boolean);
+    const ports = $("live-ports").value.split(",").map(s => parseInt(s, 10)).filter(n => n > 0);
+    const track = $("gmti-live").checked ? { profile: $("gmti-profile").value || "defaut", overrides: gs.ov } : null;
+    state.log = []; $("replay-log").textContent = ""; resetCot(); resetGmti(); resetLive(); fitOnce = false; state.retries = 0;
+    lv.checked = new Set(); lv.keys = ""; state.flows = []; state.cur = null; state.videoOn = false; state.emitting = false; state.mode = "replay";
+    try {
+      const st = await withBusy("démarrage de l'écoute réseau…", () => api("/api/live/start", { iface: iface || null, ip: ip || null,
+        groups, ports, backend: $("live-backend").value, record: liveRecord(), taps: [], watch: null, track }), ["btn-play"]);
+      lv.on = true; state.replay = st; renderReplay();
+      status(`écoute réseau active (${st.mode || ""})${st.recording ? " · enregistrement " + st.recording : ""}`);
+      $("mode-badge").textContent = "● ÉCOUTE RÉSEAU — cliquer un flux vidéo pour le lire"; $("mode-badge").className = "overlay live";
+      if (track) { showTab("gmti"); $("gmti-live-body").textContent = `pistage temps réel actif — profil ${track.profile}`; }
+    } catch (e) { status("écoute : " + e.message, true); }
+  }
+  async function liveStop() {
+    lv.on = false; stopPlayer();
+    try { const st = await api("/api/live/stop", {}); if (st.rec_files && st.rec_files.length) { status(`écoute arrêtée — enregistrement : ${st.rec_files[st.rec_files.length - 1]}`); $("pcap").value = st.rec_files[st.rec_files.length - 1]; } else status("écoute arrêtée"); }
+    catch (e) { status("arrêt écoute : " + e.message, true); }
+    setState("stopped", "■ arrêt");
+  }
+  async function liveFollow(patch) {
+    if (!lv.on) return;
+    try { await api("/api/live/follow", patch); } catch (e) { status("suivi : " + e.message, true); }
+  }
+  function liveWatchList() {   // coché = suivi ; rien coché → tout
+    const all = state.flows.map(f => `${f.proto.toLowerCase()}/${f.dport}`);
+    const sel = all.filter(k => lv.checked.has(k));
+    return sel.length ? sel : all;
+  }
+  async function liveTap(fl) {
+    if (!(fl.proto === "UDP" && /MPEG/.test(fl.dominant))) return;
+    state.cur = { dport: fl.dport, dst: (fl.dsts || [])[0] || "", duration_s: 0 };
+    state.videoOn = true; state.retries = 0;
+    await liveFollow({ taps: [fl.dport] });               // le suivi (coches) est inchangé : seule la vidéo est tapée
+    $("video-wrap").hidden = false; $("right").style.gridTemplateRows = ""; setTimeout(() => map.invalidateSize(), 50);
+    startPlayer(`${WS}/ws/video?dport=${fl.dport}`, true); showTab("fmv"); markTapRow();
+    status(`vidéo live : udp/${fl.dport}`);
+  }
+  function liveFlows(rows) {
+    if (!rows) return;
+    state.flows = rows.map(r => Object.assign({}, r, { live: true }));
+    const keys = state.flows.map(f => `${f.proto.toLowerCase()}/${f.dport}`).join("|");
+    if (keys !== lv.keys) { lv.keys = keys; renderFlows(); renderLiveInventory(); }
+    else document.querySelectorAll("#flows-body tr[data-i]").forEach(tr => { const f = state.flows[tr.dataset.i]; const c = tr.querySelector(".cnt"); if (c) c.textContent = f.pkts; const rt = tr.querySelector(".rate"); if (rt) rt.textContent = liveRate(f); });
+    $("replay-sum").textContent = `● écoute — ${state.flows.length} flux · t=${((state.replay && state.replay.t) || 0).toFixed(0)} s`;
+  }
+  const liveRate = f => f.rate >= 1000 ? `${(f.rate / 1000).toFixed(1)} Mb/s` : `${(f.rate || 0).toFixed(0)} kb/s`;
+  function renderLiveInventory() {
+    const body = $("inv-body"); body.innerHTML = "";
+    const vids = state.flows.filter(f => f.proto === "UDP" && /MPEG/.test(f.dominant));
+    $("inv-sum").textContent = `${vids.length} flux TS`;
+    if (!vids.length) { body.innerHTML = `<div class="muted">aucun flux MPEG-TS reçu pour l'instant.</div>`; return; }
+    vids.forEach(s => {
+      const d = document.createElement("div"); d.className = "stream" + (state.cur && state.cur.dport === s.dport ? " sel" : "");
+      d.innerHTML = `<div class="hd">UDP → ${(s.dsts || []).join(", ")}:${s.dport}</div><div>${(s.bytes / 1e6).toFixed(1)} Mo · ${s.pkts} datagrammes · ${liveRate(s)} · de ${(s.srcs || []).join(", ")}</div><div class="muted">clic = lecture (KLV décodé dans le navigateur)</div>`;
+      d.onclick = () => liveTap(s);
+      body.appendChild(d);
+    });
+  }
   const fmt = (v, d = 5) => (v == null || isNaN(v)) ? "—" : Number(v).toFixed(d);
   const utc = us => us ? new Date(us / 1000).toISOString().replace("T", " ").replace("Z", "") : "—";
   // ── Indicateur d'activité (barre + pastille), compteur d'opérations en cours ──
@@ -601,6 +682,16 @@
       // Cibles pré-remplies avec les destinations ORIGINALES du pcap (IP:port), modifiables ;
       // « + » ajoute un destinataire (fan-out). L'émission n'a lieu que si « émettre » est coché.
       const dsts = (fl.dsts && fl.dsts.length ? fl.dsts : []).map(d => `${d}:${fl.dport}`);
+      if (fl.live) {
+        const key = `${fl.proto.toLowerCase()}/${fl.dport}`; const vid = fl.proto === "UDP" && /MPEG/.test(fl.dominant);
+        if (vid) tr.classList.add("vid");
+        tr.innerHTML = `<td><input type="checkbox" class="fl-on" title="coché = suivi (décodé / affiché) ; rien de coché = tout"${lv.checked.has(key) ? " checked" : ""}></td>` +
+          `<td class="name" title="${vid ? "clic = lire cette vidéo" : ""}">${key} ${fl.dominant}${vid ? " ▶" : ""}</td><td class="cnt">${fl.pkts}</td><td class="rate">${liveRate(fl)}</td>`;
+        body.appendChild(tr);
+        tr.querySelector(".fl-on").addEventListener("change", ev => { if (ev.target.checked) lv.checked.add(key); else lv.checked.delete(key); liveFollow({ watch: liveWatchList() }); });
+        if (vid) tr.querySelector(".name").addEventListener("click", () => liveTap(fl));
+        return;
+      }
       tr.innerHTML = `<td><input type="checkbox" class="fl-on" title="coché = rejoué (affiché dans l'IHM)"></td><td class="name">${fl.proto.toLowerCase()}/${fl.dport} ${fl.dominant}</td>` +
         `<td class="cnt">${fl.pkts}</td><td class="tg"><div class="tgbox">` +
         `<span class="tgs">${(dsts.length ? dsts : [""]).map(d => `<span class="tgw"><input type="text" class="fl-tg" value="${d}" placeholder="IP[:port]" title="cible IP[:port] — pré-remplie avec la destination du pcap ; modifiable"><button class="tg-del" title="retirer cette cible">×</button></span>`).join("")}</span>` +
@@ -698,6 +789,7 @@
   video.addEventListener("ended", () => { if (pb.on && $("loop").checked) playbackSeek(0); });
 
   async function play() {
+    if (isLive()) return liveStart();
     if (!state.pcap) return status("analyser un pcap d'abord", true);
     const sel = $("mode").value; const emitting = sel === "emit";
     if (sel === "play") return playbackStart();
@@ -852,6 +944,7 @@
   }
 
   async function stopAll() {
+    if (lv.on) return liveStop();
     playbackStop(); setState("stopped", "■ arrêt");
     stopPlayer();
     try { await api("/api/replay/stop", {}); } catch (e) {}
@@ -914,13 +1007,15 @@
   }
   function onEvent(ev) {
     if (ev.type === "hello") { state.replay = ev.replay; renderReplay(); }
+    else if (ev.type === "replay" && ev.live) { state.replay = ev; if (ev.running) { lv.on = true; liveFlows(ev.flows_live); setState("playing", `● écoute réseau · ${ev.mode || ""} · ${ev.captured || 0} trames · t=${(ev.t || 0).toFixed(0)} s` + (ev.recording ? " · ⏺" : "")); if (ev.error) status("écoute : " + ev.error, true); } else { lv.on = false; } }
     else if (ev.type === "replay") { state.replay = ev; renderReplay(); if (state.seeking && ev.t > 0) { state.seeking = false; if (state.seekEnd) { state.seekEnd(); state.seekEnd = null; } }
       $("btn-pause").textContent = ev.paused ? "▶" : "⏸"; $("btn-pause").disabled = !ev.running;
       if (ev.running && !pb.on) setState(ev.paused ? "paused" : (state.emitting ? "emitting" : "playing"), (ev.paused ? "⏸ rejeu en pause" : (state.emitting ? "● rejeu + émission UDP/TCP" : "● rejeu IHM")) + ` ×${ev.speed || "max"} · t=${(ev.t || 0).toFixed(1)} s` + (ev.sent ? ` · ${ev.sent} émis` : "")); }
     else if (ev.type === "log") { state.log.push(ev.msg); if (state.log.length > 200) state.log.shift();
       const el = $("replay-log"); el.textContent = state.log.slice(-40).join("\n"); el.scrollTop = el.scrollHeight; }
     else if (ev.type === "cot") { onCotBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
-    else if (ev.type === "gmti") { onGmtiBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
+    else if (ev.type === "gmti") { onGmtiBatch(ev); if (!fitOnce && (!state.cur || lv.on)) { fitOnce = true; fitView(); } }
+    else if (ev.type === "end" && ev.live) { lv.on = false; stopPlayer(); state.replay = { running: false }; setState("stopped", "■ arrêt"); $("replay-sum").textContent = `écoute arrêtée — ${state.flows.length} flux vus`; }
     else if (ev.type === "end") {
       if (state.seeking) return;                          // fin du run interrompu par un saut : ignorée
       status(ev.stopped ? "rejeu arrêté" : "rejeu terminé"); if (state.mode === "replay") stopPlayer(); state.replay = { running: false }; renderReplay(); $("btn-pause").disabled = true; setState("stopped", ev.stopped ? "■ arrêt" : "■ terminé"); }
@@ -941,6 +1036,7 @@
   // temps du start_at du rejeu pour rester en temps de capture sur la timeline.
   const vOff = () => pb.on ? pb.vOffset : ((state.mode === "replay" && state.replay && state.replay.start_at) ? state.replay.start_at : 0);
   function duration() {
+    if (lv.on) return Math.max(10, (state.replay && state.replay.t) || 0);
     if (pb.on && pb.tl) return pb.tl.duration || (state.flowsDur || 0);
     if (state.mode === "replay") return Math.max(state.flowsDur || 0, (state.replay && state.replay.t) || 0, vOff() + video.currentTime);
     return (isFinite(video.duration) && video.duration > 0) ? video.duration : (state.cur ? state.cur.duration_s : 0);
@@ -977,6 +1073,7 @@
     const D = duration(); if (!D) return;
     const t = (ev.offsetX / tl.clientWidth) * D;
     if (pb.on) return playbackSeek(t);
+    if (lv.on) return;                                     // écoute live : pas de saut
     if (state.replay && state.replay.running) seekReplay(t);
   });
   tl.style.cursor = "pointer";
@@ -1074,18 +1171,25 @@
   document.addEventListener("keydown", e => { if (e.key === "Escape") $("browse-dlg").hidden = true; });
   function fillRecent(list) { const dl = $("recent"); dl.innerHTML = ""; (list || []).forEach(r => { const o = document.createElement("option"); o.value = r; dl.appendChild(o); }); }
 
-  window.__dbg = { state, gs, map, fitTracks, drawTracks, pb };          // accès console (débogage / tests)
+  window.__dbg = { state, gs, map, fitTracks, drawTracks, pb, lv };          // accès console (débogage / tests)
 
   // ── Init ─────────────────────────────────────────────────────────────────────
   $("btn-load").addEventListener("click", load);
+  $("source").addEventListener("change", liveUi);
+  $("live-more").addEventListener("click", () => { lv.optsOpen = !lv.optsOpen; $("live-opts").hidden = !lv.optsOpen; });
+  $("live-rec").addEventListener("change", () => { $("live-rec-opts").style.opacity = $("live-rec").checked ? "1" : ".5"; });
+  $("gmti-live").addEventListener("change", () => { if (lv.on) liveFollow({ track: $("gmti-live").checked ? { profile: $("gmti-profile").value || "defaut", overrides: gs.ov } : false }); });
   $("pcap").addEventListener("keydown", e => { if (e.key === "Enter") load(); });
   $("stream").addEventListener("change", e => selectStream(e.target.value));
   $("btn-play").addEventListener("click", play);
   $("btn-stop").addEventListener("click", stopAll);
   $("mode").addEventListener("change", () => { state.mode = $("mode").value === "play" ? "play" : "replay"; drawTimeline(); document.body.classList.toggle("emit-mode", $("mode").value === "emit"); });
+  const qs0 = new URLSearchParams(location.search);
   api("/api/config").then(c => {
     state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();
     fillRecent(c.settings && c.settings.recent);
+    if (c.live && c.live.running) { $("source").value = "live"; liveUi(); lv.on = true; state.mode = "replay"; state.replay = c.live; if (!gs.prof) loadProfiles(); status("écoute réseau en cours (reprise de session)"); return; }
+    if (qs0.get("source") === "live") { $("source").value = "live"; liveUi(); if (!gs.prof) loadProfiles(); return; }
     const qs = new URLSearchParams(location.search), auto = qs.get("autoplay");   // ?autoplay=file|replay · ?tab=gmti · ?track=<profil>[&ab=<profil>][&editor=1]
     if (c.default_pcap) { $("pcap").value = c.default_pcap; load().then(async () => {
       if (qs.get("tab")) showTab(qs.get("tab"));
