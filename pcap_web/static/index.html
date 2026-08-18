@@ -26,11 +26,14 @@
     <button id="btn-play" class="accent">▶ Lire</button>
     <button id="btn-pause" title="pause / reprise du rejeu (la vidéo fichier a ses propres commandes)" disabled>⏸</button>
     <button id="btn-stop" class="danger">■ Stop</button>
-    <span id="status">prêt</span>
-    <span id="busy" class="busy" hidden><i class="spin"></i><span id="busy-txt">en cours…</span></span>
     <button id="btn-settings" title="paramètres de l'application">⚙ Paramètres</button>
     <div id="busybar" class="busybar" hidden></div>
   </header>
+  <div id="statusbar">
+    <span id="sb-state" class="sb-state stopped">■ arrêt</span>
+    <span id="busy" class="busy" hidden><i class="spin"></i><span id="busy-txt">en cours…</span></span>
+    <span id="status">prêt</span>
+  </div>
   <div class="settings" id="settings" hidden>
     <div class="st-head"><b>⚙ Paramètres</b><button id="st-close">✕</button></div>
     <div class="st-body">

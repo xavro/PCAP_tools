@@ -9,7 +9,9 @@
     mode: "file", sets: [], applied: -1, tableAt: 0, flows: [], flowsDur: 0, replay: null,
     bmLayer: null, bmOverlay: null, bmCfg: null, evws: null, log: [], retries: 0, seeking: false, videoOn: false, emitting: false };
 
-  const status = (msg, warn) => { const s = $("status"); s.textContent = msg; s.style.color = warn ? "var(--warn)" : ""; };
+  const status = (msg, warn) => { const s = $("status"); s.textContent = msg; s.style.color = warn ? "var(--warn)" : ""; s.title = msg; };
+  // Pastille d'état de lecture/rejeu (barre sous l'en-tête) : ■ arrêt · ▶ lecture · ● rejeu + émission · ⏸ pause
+  function setState(kind, text) { const el = $("sb-state"); el.className = "sb-state " + kind; el.textContent = text; }
   const fmt = (v, d = 5) => (v == null || isNaN(v)) ? "—" : Number(v).toFixed(d);
   const utc = us => us ? new Date(us / 1000).toISOString().replace("T", " ").replace("Z", "") : "—";
   // ── Indicateur d'activité (barre + pastille), compteur d'opérations en cours ──
@@ -736,6 +738,7 @@
     else { $("mode-badge").textContent = "LECTURE — sans vidéo"; $("mode-badge").className = "overlay"; }
     if (pb.videoOn) { $("mode-badge").textContent = "LECTURE — vidéo fichier (seek image) · IHM seule"; }
     $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";
+    setState("playing", `▶ lecture ×${$("speed").value || "max"} · IHM seule`);
     $("tl-mode").textContent = `lecture ×${$("speed").value || "max"} — ${checked.length} flux, ${tl.cot.length} events CoT, ${tl.dwells.length} dwells, ${pb.tracks.length} pistes` + (tl.tracks_error ? ` (pistes : ${tl.tracks_error})` : "") + " · clic timeline = saut, ⏸ = pause";
     $("tl-d").textContent = tl.duration.toFixed(1);
     if (gmtiChecked && trackQ) { showTab("gmti"); $("gmti-live-body").textContent = `lecture : pistes du run hors ligne (profil ${profile}${ovq ? "*" : ""}) datées sur la capture`; }
@@ -748,7 +751,7 @@
     (pb.tl.dwells || []).slice(0, 500).forEach(d => { if (d[2]) pts.push(d[2]); if (d[1] && d[1][0] != null) pts.push(d[1]); });
     if (!state.cur && pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15));
   }
-  function playbackStop() { pb.on = false; $("btn-pause").disabled = true; }
+  function playbackStop() { if (pb.on) setState("stopped", "■ arrêt"); pb.on = false; $("btn-pause").disabled = true; }
   function playbackSeek(t) {
     if (!pb.on) return; t = Math.max(0, Math.min(t, pb.tl.duration));
     pb.t = t; pb.wall = performance.now();
@@ -762,8 +765,9 @@
     pb.paused = paused; if (pb.videoOn && state.player) { if (paused) video.pause(); else video.play().catch(() => {}); }
     if (!paused) pb.wall = performance.now();
     $("btn-pause").textContent = paused ? "▶" : "⏸"; status(paused ? "lecture en pause" : "lecture reprise");
+    setState(paused ? "paused" : "playing", paused ? `⏸ lecture en pause · t=${pb.t.toFixed(1)} s` : `▶ lecture ×${$("speed").value || "max"} · IHM seule`);
   }
-  function playbackSpeed() { if (pb.videoOn && state.player) video.playbackRate = speedVal() || 16; pb.wall = performance.now(); }
+  function playbackSpeed() { if (pb.videoOn && state.player) video.playbackRate = speedVal() || 16; pb.wall = performance.now(); if (pb.on && !pb.paused) setState("playing", `▶ lecture ×${$("speed").value || "max"} · IHM seule`); }
   function playbackTick() {
     if (!pb.on) return;
     let t;
@@ -813,7 +817,7 @@
   }
 
   async function stopAll() {
-    playbackStop();
+    playbackStop(); setState("stopped", "■ arrêt");
     stopPlayer();
     try { await api("/api/replay/stop", {}); } catch (e) {}
     status("arrêté");
@@ -876,14 +880,15 @@
   function onEvent(ev) {
     if (ev.type === "hello") { state.replay = ev.replay; renderReplay(); }
     else if (ev.type === "replay") { state.replay = ev; renderReplay(); if (state.seeking && ev.t > 0) { state.seeking = false; if (state.seekEnd) { state.seekEnd(); state.seekEnd = null; } }
-      $("btn-pause").textContent = ev.paused ? "▶" : "⏸"; $("btn-pause").disabled = !ev.running; }
+      $("btn-pause").textContent = ev.paused ? "▶" : "⏸"; $("btn-pause").disabled = !ev.running;
+      if (ev.running && !pb.on) setState(ev.paused ? "paused" : (state.emitting ? "emitting" : "playing"), (ev.paused ? "⏸ rejeu en pause" : (state.emitting ? "● rejeu + émission UDP/TCP" : "● rejeu IHM")) + ` ×${ev.speed || "max"} · t=${(ev.t || 0).toFixed(1)} s` + (ev.sent ? ` · ${ev.sent} émis` : "")); }
     else if (ev.type === "log") { state.log.push(ev.msg); if (state.log.length > 200) state.log.shift();
       const el = $("replay-log"); el.textContent = state.log.slice(-40).join("\n"); el.scrollTop = el.scrollHeight; }
     else if (ev.type === "cot") { onCotBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
     else if (ev.type === "gmti") { onGmtiBatch(ev); if (!fitOnce && !state.cur) { fitOnce = true; fitView(); } }
     else if (ev.type === "end") {
       if (state.seeking) return;                          // fin du run interrompu par un saut : ignorée
-      status(ev.stopped ? "rejeu arrêté" : "rejeu terminé"); if (state.mode === "replay") stopPlayer(); state.replay = { running: false }; renderReplay(); $("btn-pause").disabled = true; }
+      status(ev.stopped ? "rejeu arrêté" : "rejeu terminé"); if (state.mode === "replay") stopPlayer(); state.replay = { running: false }; renderReplay(); $("btn-pause").disabled = true; setState("stopped", ev.stopped ? "■ arrêt" : "■ terminé"); }
   }
   function renderReplay() {
     const r = state.replay || {};

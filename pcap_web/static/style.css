@@ -14,8 +14,15 @@ button.accent { background: var(--accent); color: #001018; border-color: var(--a
 button.danger { color: var(--danger); }
 input[type=text] { min-width: 0; }
 label.chk { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
-#app { display: grid; height: 100%; grid-template-rows: auto 1fr auto;
-  grid-template-columns: 420px 6px 1fr; grid-template-areas: "hdr hdr hdr" "left gutter right" "tl tl tl"; }
+#app { display: grid; height: 100%; grid-template-rows: auto auto 1fr auto;
+  grid-template-columns: 420px 6px 1fr; grid-template-areas: "hdr hdr hdr" "sb sb sb" "left gutter right" "tl tl tl"; }
+#statusbar { grid-area: sb; display: flex; align-items: center; gap: 10px; padding: 3px 12px; background: var(--panel); border-bottom: 1px solid var(--border); min-height: 26px; font-size: 12px; }
+#statusbar #status { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-state { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 12px; border: 1px solid var(--border); color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.sb-state.playing { color: var(--ok); border-color: var(--ok); background: rgba(124,255,107,.08); }
+.sb-state.emitting { color: var(--warn); border-color: var(--warn); background: rgba(255,213,79,.08); }
+.sb-state.paused { color: var(--accent); border-color: var(--accent); }
+.sb-state.stopped { color: var(--muted); }
 #gutter { grid-area: gutter; cursor: col-resize; background: var(--border); }
 #gutter:hover { background: var(--accent); }
 header { grid-area: hdr; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
@@ -23,7 +30,7 @@ header { grid-area: hdr; display: flex; align-items: center; gap: 8px; padding: 
 header .title { color: var(--accent); font-weight: 600; font-size: 15px; margin-right: 8px; }
 header .sub { color: var(--muted); font-size: 11px; display: block; }
 header input#pcap { flex: 1 1 320px; }
-#status { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 13px; }
+
 #left { grid-area: left; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
 #right { grid-area: right; display: grid; grid-template-rows: 1fr minmax(240px, 42%); min-height: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; }

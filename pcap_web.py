@@ -627,12 +627,20 @@ def timeline_tracks(entry, profile, overrides, tl):
     T_ = sys.modules["tracker"]
     names = {T_.TENTATIVE: "T", T_.CONFIRMED: "C", T_.SOLID: "S", T_.COASTING: "K", T_.DEAD: "D"}
     out = []
-    for tid, tr in (res.get("_objs") or {}).items():
-        hist, ever = [], False
-        for (t, x, y, st, hit) in tr.history:
+    MAX_PER_TRACK = 240                                  # sous-échantillonnage du coasting (les hits et
+    for tid, tr in (res.get("_objs") or {}).items():     # changements d'état sont toujours conservés)
+        h = tr.history
+        n = len(h)
+        step = max(1, n // MAX_PER_TRACK)
+        hist, ever, last_nm = [], False, None
+        for i, (t, x, y, st, hit) in enumerate(h):
             nm = names.get(st, "T")
             if nm in ("C", "S"):
                 ever = True
+            keep = hit or nm != last_nm or i == n - 1 or i == 0 or (i % step == 0)
+            last_nm = nm
+            if not keep:
+                continue
             la, lo = fr.to_ll(float(x), float(y))
             hist.append([round(float(t) + off - t0, 3), round(la, 6), round(lo, 6), nm, 1 if hit else 0, 1 if ever else 0])
         if hist:
