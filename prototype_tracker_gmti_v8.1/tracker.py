@@ -12,7 +12,88 @@ Portage processor GeoEvent : la classe Tracker est volontairement autonome
 import itertools
 import math
 import numpy as np
-from scipy.optimize import linear_sum_assignment
+try:
+    from scipy.optimize import linear_sum_assignment
+except ImportError:                                  # scipy absent (serveur video AlmaLinux) : repli pur Python
+    linear_sum_assignment = None
+
+
+def _hungarian(cost):
+    """Affectation optimale a cout minimal quand scipy manque : la matrice (tres creuse : le
+    gating met BIG presque partout) est decoupee en composantes connexes pistes/plots reliees
+    par un cout fini, chacune resolue par le hongrois dense (_hungarian_dense, port du Java).
+    Meme cout total que scipy ; renvoie (rows, cols) des paires retenues (cout < 1e9)."""
+    BIG = 1e9
+    n_rows, n_cols = cost.shape
+    if n_rows == 0 or n_cols == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    fin = cost < BIG
+    parent = list(range(n_rows + n_cols))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    ri, cj = np.nonzero(fin)
+    for i, j in zip(ri.tolist(), cj.tolist()):
+        a, b = find(i), find(n_rows + j)
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+    comps = {}
+    for i in set(ri.tolist()):
+        comps.setdefault(find(i), [[], []])[0].append(i)
+    for j in set(cj.tolist()):
+        comps.setdefault(find(n_rows + j), [[], []])[1].append(j)
+    rows, cols = [], []
+    for rs, cs in comps.values():
+        rs.sort(); cs.sort()
+        sub = cost[np.ix_(rs, cs)]
+        r, c = _hungarian_dense(sub)
+        rows.extend(rs[k] for k in r); cols.extend(cs[k] for k in c)
+    order = np.argsort(rows, kind="stable")
+    return np.array(rows, dtype=int)[order], np.array(cols, dtype=int)[order]
+
+
+def _hungarian_dense(cost):
+    """Hongrois O(n^3) — port 1:1 de Hungarian.java (receiver GeoEvent), memes ex aequo."""
+    BIG = 1e9
+    n_rows, n_cols = cost.shape
+    n = max(n_rows, n_cols)
+    if n == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    a = np.full((n + 1, n + 1), BIG)
+    a[1:n_rows + 1, 1:n_cols + 1] = cost
+    INF = float("inf")
+    u = np.zeros(n + 1); v = np.zeros(n + 1); p = np.zeros(n + 1, dtype=int); way = np.zeros(n + 1, dtype=int)
+    idx = np.arange(n + 1)
+    for i in range(1, n + 1):
+        p[0] = i; j0 = 0
+        minv = np.full(n + 1, INF); used = np.zeros(n + 1, dtype=bool)
+        while True:
+            used[j0] = True
+            i0 = p[j0]
+            free = ~used; free[0] = False
+            cur = a[i0] - u[i0] - v                       # vectorise sur les colonnes libres
+            better = free & (cur < minv)
+            minv[better] = cur[better]; way[better] = j0
+            cand = np.where(free, minv, INF)
+            j1 = int(np.argmin(cand)); delta = cand[j1]   # premier minimum = meme choix que la boucle Java
+            u[p[used]] += delta; v[used] -= delta
+            minv[free] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while True:
+            j1 = way[j0]; p[j0] = p[j1]; j0 = j1
+            if j0 == 0:
+                break
+    rows, cols = [], []
+    for j in range(1, n + 1):
+        i = p[j]
+        if 1 <= i <= n_rows and j <= n_cols and cost[i - 1, j - 1] < BIG:
+            rows.append(i - 1); cols.append(j - 1)
+    order = np.argsort(rows, kind="stable")
+    return np.array(rows, dtype=int)[order], np.array(cols, dtype=int)[order]
 
 # ----------------------------------------------------------------------
 # Parametres a tuner (les valeurs par defaut sont des points de depart)
@@ -288,7 +369,7 @@ class Tracker:
         assigned_t, assigned_p = set(), set()
         pairs = []
         if n_t and n_p:
-            rows, cols = linear_sum_assignment(cost)
+            rows, cols = linear_sum_assignment(cost) if linear_sum_assignment is not None else _hungarian(cost)
             for i, j in zip(rows, cols):
                 if cost[i, j] < BIG:
                     pairs.append((i, j)); assigned_t.add(i); assigned_p.add(j)

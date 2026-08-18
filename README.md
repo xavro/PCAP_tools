@@ -278,9 +278,9 @@ python prototype_tracker_gmti_v8.1/stanag4607_extract.py capture.pcap --rapport 
 | Pour lancer… | Il faut |
 |---|---|
 | `pcap_analyze.py`, `pcap_replay.py`, `gmti_pcap_to_csv.py` | **rien** — bibliothèque standard Python 3 (≥ 3.7) |
-| `prototype_tracker_gmti_v8.1/demo.py` + `tracker.py` | `numpy`, `scipy` (≥ 1.13), `matplotlib` (≥ 3.8) — versions compatibles numpy 2.x |
+| `prototype_tracker_gmti_v8.1/demo.py` + `tracker.py` | `numpy` ; `scipy` **optionnel** (sans scipy, hongrois pur Python/numpy — port de `Hungarian.java`, résultats identiques, ~20 % plus lent) ; `matplotlib` (≥ 3.8) pour `demo.py` |
 | `pcap_console.py` | **rien** (Tkinter livré avec Python) ; onglet GMTI → `numpy`, `scipy` ; thème sombre Windows 11 → `sv-ttk` (optionnel) |
-| `pcap_web.py` (branche `web-console`) | **rien** côté serveur ; navigateur moderne (MSE) ; tracker → `numpy`, `scipy` |
+| `pcap_web.py` (branche `web-console`) | **rien** côté serveur ; navigateur moderne (MSE) ; tracker → `numpy` (+ `scipy` si disponible). AlmaLinux : `sudo dnf install python3-numpy` (scipy : `python3-scipy` si le dépôt le fournit, sinon `pip3 install scipy`, sinon on s'en passe) |
 
 ```bash
 pip install scipy matplotlib          # numpy est tiré en dépendance
