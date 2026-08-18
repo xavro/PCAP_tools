@@ -64,9 +64,14 @@ Toujours **une variable à la fois**, A/B contre le profil de départ, noter la 
 | 9 | `ghostSnrDb` / `ghostDistM` (fantômes) | 0 / 15 / **20** / 30 · 300 / 400 | `échos fantômes rejetés` ; les échos 20–39 dB à ±250 m du navire (Doppler ±6–9 m/s) disparaissent, les pistes « satellites » à 6 m/s aussi ; vérifier qu'aucune cible réelle faible ne disparaît |
 | 10 | `measPosStdMin` (plancher σ mesure) | 5 / 60 / **100** / 150 | cible étendue : les échos proue/poupe (~300 m) doivent rester dans une même piste ; trop haut = piste molle |
 | 11 | `snrRefDb` (pondération SNR) | 0 / 60 | écho faible cru moins précisément (à comparer avec 9 : redondant si les fantômes sont déjà rejetés) |
+| 12 | `gateMaxM` (plafond métrique du gate) | 250 / **500** / 800 | avec σ_range 4607 ≈ 100 m les échos forts s'étalent à ±400 m le long de la route : un plafond à 250 m fait naître des pistes parallèles ; le plafond doit couvrir étendue + dispersion mesure |
+| 13 | `absorbDwells` / `absorbDistM` (absorption) | 0 / 3 / **5** / 8 · 450 / 600 | `pistes absorbées` ; une seule piste vivante sur le navire (les pistes proue/poupe co-mobiles pendant N dwells sont fusionnées en 1, la survivante se recentre et porte l'étendue) ; 3 = trop tôt (absorbe des pistes jeunes puis fragmente) |
 
-Résultat de référence pétrolier (2026-08-18, `maritime` = cluster 150 · fantômes 20 dB/400 m · σ_min 100 m · fusion 450 m) :
-63 échos fantômes rejetés, **2 pistes** (proue/poupe, ~300 m, même cap) fusionnées en **1 contact**, écart↔centre image ~30–120 m.
+Résultat de référence pétrolier (2026-08-18, `maritime` = gate 500 m · cluster 200 · fantômes 25 dB/500 m · σ_min 100 m ·
+absorption 5 dwells/450 m · fusion 450 m) : 63 échos fantômes rejetés, 2 pistes absorbées, **1 seule piste vivante**
+(109 hits sur 113 dwells, étendue portée ~390 m), écart à la route moyenne des échos 80 m (39 m en fin), vitesse
+sous-estimée au début (accelStd 0.05 : convergence lente — essayer 0.1–0.2). Étape précédente (sans gate 500/absorption) :
+2 pistes proue/poupe fusionnées en 1 contact.
 Sans fantômes ni plancher σ : 8 pistes dont 4 « satellites » à 6 m/s. Constat : SNR bimodal (20–39 dB = artefacts, 60–89 dB = coque).
 
 Attendu M1 : 1 piste (ou 1 contact) sur le pétrolier, écart↔centre image moyen < 100 m, pas de piste
@@ -116,8 +121,8 @@ le même fichier est déposé sur le serveur GeoEvent (propriété `profilesFile
 
 ## 5. Points de vigilance connus
 
-- Le pré-clustering (`clusterDistM`), la suppression des fantômes (`ghostSnrDb`) et la pondération SNR
-  (`snrRefDb`) n'existent pas encore côté Java : un profil qui les active ne passera pas la parité tant
+- Le pré-clustering (`clusterDistM`), la suppression des fantômes (`ghostSnrDb`), la pondération SNR
+  (`snrRefDb`) et l'absorption de pistes (`absorbDwells`, dans `Tracker.step` après l'affectation) n'existent pas encore côté Java : un profil qui les active ne passera pas la parité tant
   que l'étage `prepare_plots` (déclutter → fantômes → SNR → clustering) n'est pas porté dans
   `Tracker.process` — à faire une fois les valeurs validées sur le banc. `measPosStdMin` est déjà porté.
 - Le décodage rejette les target reports hors zone de dwell (sentinelles) — compteur dans l'inventaire ;

@@ -188,7 +188,10 @@ selon l'action (résumé vivant dans chaque onglet) :
   centre image vidéo** en direct (vérité KLV). **Suppression des échos fantômes** (`ghostSnrDb`/`ghostDistM` : écho plus faible de N dB qu'un écho
   fort du même dwell → rejeté) et **pondération SNR de la mesure** (`snrRefDb`/`snrScaleMax`) ; étage
   d'entrée commun `prepare_plots` (déclutter → fantômes → SNR → clustering) partagé par le banc, le pistage
-  temps réel et l'oracle de parité. Cahier de tests : `docs/CAHIER-TESTS-GMTI.md`.
+  temps réel et l'oracle de parité. **Absorption de pistes co-mobiles** (`absorbDwells`/`absorbDistM`/`absorbDvMps`/`absorbHeadingDeg` :
+  deux pistes proches, même vitesse, même cap pendant N dwells = un objet → la plus riche absorbe l'autre, se
+  recentre et porte l'étendue qui élargit gate et covariance de mesure : 1 navire = 1 piste, pas seulement
+  1 contact). Cahier de tests : `docs/CAHIER-TESTS-GMTI.md`.
   **Plots aberrants filtrés à l'extraction** (`gmti_pcap_to_csv.target_plausible`, partagé avec
   `stanag4607_extract`) : target reports hors de la zone de dwell (D22-25 + marge) ou > 500 km du
   capteur, sentinelles (0,0) — certains émetteurs annoncent plus de cibles que le dwell n'en

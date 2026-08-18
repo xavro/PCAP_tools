@@ -42,6 +42,13 @@ class Params:
     ROT_MAX_GROUND  = 3.0     # vitesse sol max du critere rotateur fixe (eoliennes, etc.)
     MIN_SPEED_INIT  = 0.0     # m/s : filtre optionnel des plots quasi statiques a l'init
     V_INIT_STD      = 20.0    # ecart-type vitesse a la naissance d'une piste (m/s) (= initVelStd Java)
+    # -- absorption de pistes co-mobiles (cible etendue : proue/poupe d'un gros navire) --
+    ABSORB_DWELLS   = 0       # nb de dwells consecutifs ou deux pistes affichables sont proches ET
+                              # co-mobiles avant que la plus jeune soit ABSORBEE (0 = off) (= absorbDwells Java)
+    ABSORB_DIST_M   = 400.0   # distance max entre les deux pistes (= absorbDistM Java)
+    ABSORB_DV_MPS   = 2.0     # |delta vitesse sol| max (= absorbDvMps Java)
+    ABSORB_HD_DEG   = 30.0    # |delta cap| max, teste seulement si les deux vont a >= ABSORB_SLOW_MPS (= absorbHeadingDeg Java)
+    ABSORB_SLOW_MPS = 3.0     # en dessous, le cap n'est pas significatif (= absorbSlowMps Java)
 
 
 # ----------------------------------------------------------------------
@@ -83,6 +90,13 @@ class Track:
         self.gates = []                                     # (t, S 2x2 innovation, d2)
         self.last_hit_idx = 0
         self._hit = True
+        # Cible etendue : apres absorption d'une piste co-mobile, la piste porte une ETENDUE (m)
+        # qui gonfle la covariance de mesure et le gate metrique -> les echos des deux extremites
+        # restent associes a la meme piste (qui converge vers le centre de la cible).
+        self.extent = 0.0
+        self.absorbed = []                  # ids des pistes absorbees
+        self.dead_absorbed = False          # tuee par absorption
+        self._pair = {}                     # id autre piste -> nb de dwells consecutifs co-mobiles
 
     # --- Modele vitesse constante ---
     def predict(self, t):
@@ -95,18 +109,25 @@ class Track:
         self.P = F @ self.P @ F.T + Q
         self.t = t
 
+    def _R(self, plot):
+        """Covariance de mesure effective : R du plot + etendue de la cible ((extent/2)^2 I)."""
+        if self.extent > 0.0:
+            e = (self.extent / 2.0) ** 2
+            return plot.R + e * _I2
+        return plot.R
+
     def innovation(self, plot):
         """Retourne (d2 Mahalanobis, y, S) entre le plot et la prediction."""
         H = _H
         y = np.array([plot.x, plot.y]) - H @ self.x
-        S = H @ self.P @ H.T + plot.R
+        S = H @ self.P @ H.T + self._R(plot)
         d2 = float(y @ np.linalg.solve(S, y))
         return d2, y, S
 
     def update(self, plot):
         H = _H
         y = np.array([plot.x, plot.y]) - H @ self.x
-        S = H @ self.P @ H.T + plot.R
+        S = H @ self.P @ H.T + self._R(plot)
         try:
             d2 = float(y @ np.linalg.solve(S, y))
         except np.linalg.LinAlgError:
@@ -143,6 +164,8 @@ class Track:
 
     @property
     def state(self):
+        if self.dead_absorbed:
+            return DEAD
         if Params.DELETE_SEC is not None:
             if self.t - self.t_last_update > Params.DELETE_SEC:
                 return DEAD
@@ -221,7 +244,7 @@ class Tracker:
             for j, pl in enumerate(plots):
                 grid.setdefault((int(pl.x // cell), int(pl.y // cell)), []).append(j)
             for i, tr in enumerate(self.tracks):
-                gate_m = tr.gate_max + Params.GATE_GROW_MPS * (tr.t - tr.t_last_update)
+                gate_m = tr.gate_max + Params.GATE_GROW_MPS * (tr.t - tr.t_last_update) + tr.extent / 2.0
                 px, py = tr.x[0], tr.x[1]
                 cx, cy = int(px // cell), int(py // cell)
                 rad = int(gate_m // cell) + 1
@@ -256,12 +279,68 @@ class Tracker:
             if j not in assigned_p:
                 self.tracks.append(Track(pl, t))
 
-        # --- Journalisation + menage ---
+        # --- Journalisation + absorption + menage ---
         for tr in self.tracks:
             tr.log()
+        self._absorb()
         dead = [tr for tr in self.tracks if tr.state == DEAD]
         self.archive.extend(dead)
         self.tracks = [tr for tr in self.tracks if tr.state != DEAD]
+
+    def _absorb(self):
+        """Absorption des pistes co-mobiles (cible etendue). Deux pistes affichables (confirmees au
+        moins une fois) qui restent a moins de ABSORB_DIST_M, a vitesses egales (ABSORB_DV_MPS) et de
+        meme cap (ABSORB_HD_DEG, si toutes deux >= ABSORB_SLOW_MPS) pendant ABSORB_DWELLS dwells
+        consecutifs sont un seul objet : la piste la plus riche (hits, puis la plus ancienne)
+        absorbe l'autre, herite de ses hits et porte l'etendue (distance entre les deux) qui
+        elargit son gate/sa covariance de mesure -> une seule piste, centree sur la cible."""
+        if Params.ABSORB_DWELLS <= 0:
+            return
+        live = [tr for tr in self.tracks
+                if tr.confirmed_ever and tr.state in (CONFIRMED, SOLID, COASTING)]
+        if len(live) < 2:
+            return
+        seen = {tr.id: set() for tr in live}
+        killed = set()
+        for i in range(len(live)):
+            a = live[i]
+            if a.id in killed:
+                continue
+            for j in range(i + 1, len(live)):
+                b = live[j]
+                if b.id in killed or a.id in killed:
+                    continue
+                d = math.hypot(a.x[0] - b.x[0], a.x[1] - b.x[1])
+                ok = d < Params.ABSORB_DIST_M
+                if ok:
+                    sa, sb = a.speed(), b.speed()
+                    ok = abs(sa - sb) < Params.ABSORB_DV_MPS
+                    if ok and min(sa, sb) >= Params.ABSORB_SLOW_MPS:
+                        ha = math.degrees(math.atan2(a.x[2], a.x[3])); hb = math.degrees(math.atan2(b.x[2], b.x[3]))
+                        dh = abs(ha - hb) % 360.0
+                        ok = (360.0 - dh if dh > 180.0 else dh) < Params.ABSORB_HD_DEG
+                if not ok:
+                    a._pair.pop(b.id, None); b._pair.pop(a.id, None)
+                    continue
+                n = a._pair.get(b.id, 0) + 1
+                a._pair[b.id] = n; b._pair[a.id] = n
+                seen[a.id].add(b.id); seen[b.id].add(a.id)
+                if n >= Params.ABSORB_DWELLS:
+                    keep, gone = (a, b) if (a.hits, -a.id) >= (b.hits, -b.id) else (b, a)
+                    keep.extent = max(keep.extent, d)
+                    # recentrage : la piste survivante se place au milieu des deux (centre de la
+                    # cible etendue) ; sa vitesse est conservee, sa covariance position s'elargit
+                    keep.x[0] = 0.5 * (keep.x[0] + gone.x[0]); keep.x[1] = 0.5 * (keep.x[1] + gone.x[1])
+                    keep.P[0, 0] += (d / 4.0) ** 2; keep.P[1, 1] += (d / 4.0) ** 2
+                    keep.hits += gone.hits
+                    keep.absorbed.append(gone.id); keep.absorbed.extend(gone.absorbed)
+                    keep._pair.pop(gone.id, None)
+                    gone.dead_absorbed = True; gone.absorbed_into = keep.id
+                    killed.add(gone.id)
+        for tr in live:                       # paires non revues ce dwell : compteur remis a zero
+            for oid in list(tr._pair):
+                if oid not in seen.get(tr.id, ()):
+                    del tr._pair[oid]
 
     def confirmed_tracks(self):
         return [tr for tr in self.tracks if tr.state in (CONFIRMED, SOLID)]

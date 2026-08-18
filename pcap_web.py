@@ -1091,6 +1091,7 @@ class LiveTracker:
     def _stats(self, tent, conf, solid, coast):
         return {"profile": self.profile, "overrides": self.overrides, "n_dwells": self.n_dwells, "n_plots": self.n_plots,
                 "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t, "n_clustered": self.n_clustered, "n_ghosts": self.n_ghosts,
+                "n_absorbed": sum(1 for a in self.tk.archive if getattr(a, "dead_absorbed", False)) if self.tk else 0,
                 "tentative": tent, "confirmed": conf, "solid": solid, "coasting": coast,
                 "archived": len(self.tk.archive) if self.tk else 0}
 

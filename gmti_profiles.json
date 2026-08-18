@@ -37,23 +37,30 @@
     "ghostSnrDb": 0.0,
     "ghostDistM": 400.0,
     "snrRefDb": 0.0,
-    "snrScaleMax": 4.0
+    "snrScaleMax": 4.0,
+    "absorbDwells": 0,
+    "absorbDistM": 400.0,
+    "absorbDvMps": 2.0,
+    "absorbHeadingDeg": 30.0,
+    "absorbSlowMps": 3.0
   },
   "profiles": {
     "defaut": {},
     "maritime": {
       "gateChi2": 7,
-      "gateMaxM": 250,
+      "gateMaxM": 500,
       "confirmM": 4,
       "confirmN": 6,
       "deleteMisses": 12,
       "accelStd": 0.05,
       "initVelStd": 4,
-      "mergeMaxDistM": 450.0,
-      "clusterDistM": 150.0,
-      "ghostSnrDb": 20.0,
-      "ghostDistM": 400.0,
-      "measPosStdMin": 100.0
+      "measPosStdMin": 100,
+      "mergeMaxDistM": 450,
+      "clusterDistM": 200,
+      "ghostSnrDb": 25,
+      "ghostDistM": 500,
+      "absorbDwells": 5,
+      "absorbDistM": 450.0
     },
     "routier": {
       "accelStd": 2.0,
@@ -283,6 +290,31 @@
       "group": "gate",
       "unit": "×",
       "doc": "Facteur max appliqué à σ_mesure par la pondération SNR."
+    },
+    "absorbDwells": {
+      "group": "fusion",
+      "unit": "dwells",
+      "doc": "ABSORPTION de pistes co-mobiles (cible étendue : proue/poupe d'un gros navire = deux centres de réflexion à ~300 m). Deux pistes affichables restées proches (absorbDistM), à même vitesse (absorbDvMps) et même cap (absorbHeadingDeg) pendant N dwells consécutifs sont UN objet : la plus riche absorbe l'autre (hérite des hits) et porte l'étendue (distance entre elles) qui élargit son gate et sa covariance de mesure → une seule piste, centrée sur la cible. 0 = désactivé. Différence avec mergeMaxDistM : la fusion 'contact' garde 2 pistes et publie 1 contact ; l'absorption ne laisse qu'1 piste (irréversible pour la piste absorbée)."
+    },
+    "absorbDistM": {
+      "group": "fusion",
+      "unit": "m",
+      "doc": "Distance max entre les deux pistes pour l'absorption (≈ longueur de la plus grande cible attendue)."
+    },
+    "absorbDvMps": {
+      "group": "fusion",
+      "unit": "m/s",
+      "doc": "|Δ vitesse sol| max entre les deux pistes."
+    },
+    "absorbHeadingDeg": {
+      "group": "fusion",
+      "unit": "°",
+      "doc": "|Δ cap| max, testé seulement si les deux pistes vont à ≥ absorbSlowMps."
+    },
+    "absorbSlowMps": {
+      "group": "fusion",
+      "unit": "m/s",
+      "doc": "En dessous de cette vitesse, le cap n'est pas significatif (critère de cap ignoré)."
     }
   }
 }

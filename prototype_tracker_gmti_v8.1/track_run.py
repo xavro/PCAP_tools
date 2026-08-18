@@ -27,6 +27,8 @@ JAVA2PY = {
     "airSpeedMps": "AIR_SPEED_MPS", "airVlosMps": "AIR_VLOS_MPS", "airConfirm": "AIR_CONFIRM",
     "airQAccel": "AIR_Q_ACCEL", "airGateMaxM": "AIR_GATE_MAX_M", "airMinGround": "AIR_MIN_GROUND",
     "rotMaxGround": "ROT_MAX_GROUND",
+    "absorbDwells": "ABSORB_DWELLS", "absorbDistM": "ABSORB_DIST_M", "absorbDvMps": "ABSORB_DV_MPS",
+    "absorbHeadingDeg": "ABSORB_HD_DEG", "absorbSlowMps": "ABSORB_SLOW_MPS",
 }
 PY2JAVA = {v: k for k, v in JAVA2PY.items()}
 # Paramètres « processor » (hors noyau Kalman) : déclutter, fusion, affichage — portés ici
@@ -423,6 +425,8 @@ def run_tracking(path, profile="defaut", overrides=None):
             "hits": tr.hits,
             "etat": etat,
             "vel": (float(tr.x[2]), float(tr.x[3])),        # dernier état (m/s ENU) : projection
+            "absorbed": list(tr.absorbed), "extent_m": round(float(tr.extent), 1),
+            "absorbed_into": getattr(tr, "absorbed_into", None),
             "pts": [(float(x), float(y)) for (_t, x, y, _st, _hit) in traj],
             "smooth": [(float(x), float(y)) for (_t, x, y) in T.rts_smooth(tr)],
             "is_air": bool(getattr(tr, "is_air", False)),
@@ -500,6 +504,7 @@ def metrics(res):
     coast = sum(t.get("n_coast", 0) for t in tr); pts_total = sum(len(t["pts"]) for t in tr)
     m = {"n_tracks": n, "n_rejected": res["n_rejected"], "n_plots": len(res["raw"]), "n_dwells": res.get("n_dwells", 0),
          "n_filtered": res.get("n_filtered", 0), "n_clustered": res.get("n_clustered", 0), "n_ghosts": res.get("n_ghosts", 0),
+         "n_absorbed": sum(1 for t in res["tracks"] if t.get("absorbed_into")),
          "hits_total": sum(hits), "hits_mean": sum(hits) / n, "hits_median": sorted(hits)[n // 2],
          "solid": sum(1 for t in tr if t["etat"] == T.SOLID), "confirmed": sum(1 for t in tr if t["etat"] == T.CONFIRMED),
          "coasting_end": sum(1 for t in tr if t["etat"] == T.COASTING),
