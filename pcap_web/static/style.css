@@ -81,7 +81,7 @@ footer { grid-area: tl; border-top: 1px solid var(--border); background: var(--p
 .muted { color: var(--muted); }
 table.flows { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; table-layout: fixed; }
 table.flows td.name { overflow: hidden; text-overflow: ellipsis; }
-table.flows td:first-child { width: 22px; } table.flows td.cnt { width: 62px; } table.flows td.tg { width: 40%; }
+table.flows td:first-child { width: 22px; } table.flows td.cnt { width: 50px; } table.flows td.tg { width: 44%; white-space: normal; }
 table.flows td { padding: 2px 4px; border-bottom: 1px solid #1f262f; white-space: nowrap; }
 table.flows td.cnt { text-align: right; color: var(--muted); }
 table.flows input[type=text] { width: 100%; padding: 2px 6px; font-family: var(--mono); font-size: 13px; }
@@ -254,3 +254,14 @@ button:disabled, button[disabled] { opacity: .5; cursor: not-allowed; }
 .st-body label.chk { flex-direction: row; align-items: center; }
 .st-body select, .st-body input[type=text] { width: 100%; }
 .st-body .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; }
+
+/* ── cibles de rejeu : émettre + destinataires multiples ── */
+table.flows td.tg .tgbox { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 3px; width: 100%; }
+table.flows .emit { font-size: 11px; color: var(--muted); margin: 3px 0 0; gap: 2px; white-space: nowrap; }
+table.flows .tgs { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+table.flows .tgw { display: flex; gap: 2px; align-items: center; }
+table.flows .tgw input[type=text] { flex: 1; min-width: 0; width: 100%; padding: 1px 4px; font-size: 12px; }
+table.flows .tg-del, table.flows .tg-add { padding: 0 5px; line-height: 18px; font-size: 12px; flex: 0 0 auto; }
+table.flows .tg-add { margin-top: 1px; }
+table.flows tr:has(.fl-emit:checked) td.name { color: var(--warn); }
+table.flows tr:has(.fl-emit:checked) .emit { color: var(--warn); }

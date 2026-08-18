@@ -150,9 +150,10 @@ tableau **KLV MISB 0601** à sa droite (2/3 – 1/3), et à gauche le panneau **
 suivi d'**onglets par source** — FMV 4609 · GMTI 4607 · CoT — sélectionnés automatiquement
 selon l'action (résumé vivant dans chaque onglet) :
 
-- **Rejeu — routage** : flux applicatifs (`pcap_analyze`). **Coché = rejoué** : émis en
-  UDP/TCP vers `IP[:port]` (virgule = fan-out) si une cible est renseignée, sinon seulement
-  *vu dans l'IHM* (vidéo, CoT, GMTI) ; non coché = ni émis, ni affiché. Vitesse ×1…max,
+- **Rejeu — routage** : flux applicatifs (`pcap_analyze`). **Coché = rejoué** (décodé et affiché
+  dans l'IHM : vidéo, CoT, GMTI) ; **↗ émettre** = envoyé en UDP/TCP vers les cibles `IP:port`,
+  **pré-remplies avec les destinations originales du pcap**, modifiables, « + » pour ajouter des
+  destinataires (fan-out) ; non coché = ni émis, ni affiché. Vitesse ×1…max,
   boucle, recalage d'heure CoT. *Un moteur unique* (`pcap_replay.do_routed_replay` + hook
   `on_packet`) émet **et** alimente l'IHM par WebSocket (serveur RFC 6455 stdlib) :
   `/ws/video` (TS binaire du flux vidéo → mpegts.js, *ce que voit le client*) et

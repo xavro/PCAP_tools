@@ -556,10 +556,22 @@
       const fl = state.flows[i];
       if (!all && !isApp(fl)) { hidden++; return; }
       const tr = document.createElement("tr"); tr.dataset.i = i;
-      const dst = fl.dsts && fl.dsts.length ? fl.dsts[0] : "";
-      tr.innerHTML = `<td><input type="checkbox" class="fl-on"></td><td class="name">${fl.proto.toLowerCase()}/${fl.dport} ${fl.dominant}</td>` +
-        `<td class="cnt">${fl.pkts}</td><td class="tg"><input type="text" class="fl-tg" placeholder="${dst ? "cible (ex. " + dst + ") — vide = IHM seule" : "IP[:port] — vide = IHM seule"}" title="cible(s) IP[:port], virgule = fan-out ; vide = pas d'émission, affichage IHM seul"></td>`;
+      // Cibles pré-remplies avec les destinations ORIGINALES du pcap (IP:port), modifiables ;
+      // « + » ajoute un destinataire (fan-out). L'émission n'a lieu que si « émettre » est coché.
+      const dsts = (fl.dsts && fl.dsts.length ? fl.dsts : []).map(d => `${d}:${fl.dport}`);
+      tr.innerHTML = `<td><input type="checkbox" class="fl-on" title="coché = rejoué (affiché dans l'IHM)"></td><td class="name">${fl.proto.toLowerCase()}/${fl.dport} ${fl.dominant}</td>` +
+        `<td class="cnt">${fl.pkts}</td><td class="tg"><div class="tgbox"><label class="chk emit" title="émettre en ${fl.proto} vers les cibles ci-contre (sinon IHM seule)"><input type="checkbox" class="fl-emit">↗</label>` +
+        `<span class="tgs">${(dsts.length ? dsts : [""]).map(d => `<span class="tgw"><input type="text" class="fl-tg" value="${d}" placeholder="IP[:port]" title="cible IP[:port] — pré-remplie avec la destination du pcap ; modifiable"><button class="tg-del" title="retirer cette cible">×</button></span>`).join("")}</span>` +
+        `<button class="tg-add" title="ajouter un destinataire (fan-out)">+</button></div></td>`;
       body.appendChild(tr);
+      tr.querySelector(".tg-add").addEventListener("click", () => {
+        const w = document.createElement("span"); w.className = "tgw";
+        w.innerHTML = `<input type="text" class="fl-tg" value="" placeholder="IP[:port]"><button class="tg-del" title="retirer cette cible">×</button>`;
+        tr.querySelector(".tgs").appendChild(w); w.querySelector("input").focus(); wireDel(w);
+      });
+      tr.querySelectorAll(".tgw").forEach(wireDel);
+      function wireDel(w) { w.querySelector(".tg-del").addEventListener("click", () => { const all = tr.querySelectorAll(".tgw"); if (all.length > 1) w.remove(); else w.querySelector("input").value = ""; }); }
+      tr.querySelector(".fl-emit").addEventListener("change", e => { if (e.target.checked) tr.querySelector(".fl-on").checked = true; });
     });
     $("flows-all").parentElement.title = hidden ? `${hidden} flux non applicatifs (binaire/vide) masqués` : "tous les flux affichés";
     $("flows-all-n").textContent = hidden ? ` (+${hidden})` : "";
@@ -574,7 +586,8 @@
   function checkedFlows() {
     return Array.from(document.querySelectorAll("#flows-body tr[data-i]")).filter(tr => tr.querySelector(".fl-on").checked).map(tr => {
       const fl = state.flows[tr.dataset.i];
-      const targets = tr.querySelector(".fl-tg").value.split(",").map(s => s.trim()).filter(Boolean);
+      const emit = tr.querySelector(".fl-emit").checked;
+      const targets = emit ? Array.from(tr.querySelectorAll(".fl-tg")).flatMap(i => i.value.split(",")).map(s => s.trim()).filter(Boolean) : [];
       return { proto: fl.proto, dport: fl.dport, dominant: fl.dominant, targets, key: `${fl.proto.toLowerCase()}/${fl.dport}` }; });
   }
   function routesFromUI() { return checkedFlows().filter(f => f.targets.length).map(f => ({ proto: f.proto, dport: f.dport, targets: f.targets })); }
