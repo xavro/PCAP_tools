@@ -194,6 +194,12 @@ def _state_name(st):
             T.COASTING: "COASTING", T.DEAD: "DEAD"}.get(st, str(st))
 
 
+def _clamp_std(v):
+    lo = float(CURRENT.get("measPosStdMin", PROC_DEFAULTS["measPosStdMin"]) or 0.0)
+    hi = float(CURRENT.get("measPosStdMax", PROC_DEFAULTS["measPosStdMax"]) or 1e9)
+    return min(max(v, lo), hi)
+
+
 def csv_dwells(path):
     rows = []
     with open(path, newline="") as f:
@@ -222,7 +228,10 @@ def csv_dwells(path):
             R = None
             if r.get("sensor_lat"):
                 sx, sy = frame.to_xy(float(r["sensor_lat"]), float(r["sensor_lon"]))
-                R = T.covariance_from_4607((sx, sy), (x, y), sig_r, sig_x)
+                # Parité Java (Tracker.measurementCov / clampStd) : les incertitudes portée/travers
+                # sont BORNÉES à [measPosStdMin, measPosStdMax] pour la covariance orientée
+                # (P0 garde max(σ) non borné, comme le Java).
+                R = T.covariance_from_4607((sx, sy), (x, y), _clamp_std(sig_r), _clamp_std(sig_x))
             plots.append(T.Plot(x, y, r_pos=max(sig_r, sig_x), R=R,
                                 vel_los=fget(r, "vel_los_cms", 0) / 100.0,
                                 snr=fget(r, "snr_db", None),

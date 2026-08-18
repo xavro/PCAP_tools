@@ -188,6 +188,26 @@ selon l'action (résumé vivant dans chaque onglet) :
   Mahalanobis, ellipses de gate χ² du profil, chronologie hit/miss par dwell (état), tableau
   t / Δt / état / vitesse / d² / v_LOS / SNR / classe, résumé (durée, vitesses, d² moyen) (secteur capteur → centre,
   ± étendue distance/angle D24/D25, fondu des dernières dwells, ligne capteur → centre).
+- **Réglage → prod (procédure)** — le banc et le processor GeoEvent partagent la même table de
+  profils et le même oracle :
+  1. *Régler* dans l'onglet GMTI (⚙ paramètres, Relancer, A/B, inspection) ; **💾 Enregistrer**
+     sous un nom → `gmti_profiles.json` (noms `TrackerConfig`).
+  2. *Prouver la parité* : **⤓ oracle de parité** (fenêtre en secondes, 300 s par défaut) →
+     `parity_<nom>.zip` = `<nom>.input.csv` (plots décodés) + `<nom>.expected.csv` (pistes
+     affichables par dwell, tracker Python de référence) + `<nom>.profile.json` (config effective,
+     surcharges comprises). Copier les trois fichiers dans
+     `Receiver4607-geoevent-adapter/src/test/resources/parity/custom/`, puis `mvn clean test` :
+     `TrackerParityTest.parite_cas_personnalises` rejoue chaque cas dans le tracker Java avec la
+     config JSON et exige la parité (même nombre de pistes, ≤ 1 m, mêmes flags). Un cas trop long
+     (capture entière) rend le test lent (comparaison O(n²) par dwell) : garder une fenêtre.
+  3. *Déployer* : copier `gmti_profiles.json` sur le serveur GeoEvent, renseigner la propriété
+     **« Fichier de profils (gmti_profiles.json) »** du processeur *GMTI Track* (chemin absolu) et le
+     profil ; redémarrer le service. Les profils du fichier priment sur ceux codés dans
+     `Profiles.java` — un nouveau réglage = un nouveau fichier, **sans recompilation**.
+  Le processor lit le JSON avec `ProfilesJson`/`MiniJson` (sans dépendance) ; champs inconnus
+  signalés. Point de vigilance trouvé grâce à ce circuit : le Java borne les incertitudes 4607 à
+  `[measPosStdMin, measPosStdMax]` (5–200 m) pour la covariance de mesure — le Python fait
+  désormais de même (`track_run._clamp_std`), sinon la parité casse sur les captures à σ_range < 5 m.
 - **CoT** : analyse statique (`cot_extract`) — objets colorés par affiliation MIL-STD-2525,
   traces par uid, tableau, inventaire des types, **XML du dernier event** au clic ; en rejeu :
   objets/traces vivants (fraîcheur), même code couleur.

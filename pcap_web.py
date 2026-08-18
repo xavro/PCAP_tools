@@ -43,6 +43,8 @@ API :
   GET/POST /api/gmti/profiles   profils du tracker (source unique gmti_profiles.json, partagée avec le Java)
   GET /api/gmti/track/detail?pcap=&profile=&overrides=&id=  inspection d'une piste (historique, plots
                                 associés + d², gates 2σ, vitesses)
+  GET /api/gmti/parity.zip?pcap=&profile=&overrides=&name=  oracle de parité pour TrackerParityTest (Java) :
+                                <nom>.input.csv + <nom>.expected.csv + <nom>.profile.json
   GET /api/cot/scan?pcap=&filter=     analyse CoT statique (objets, traces, inventaire des types)
   GET /api/cot/event?pcap=&uid=       dernier event XML d'un uid
   GET /api/fused/export.geojson?pcap=&profile=  fusion GMTI + CoT + capteur vidéo (WGS84)
@@ -472,6 +474,80 @@ def gmti_track(entry, profile, overrides=None):
     return out
 
 
+def gmti_parity_zip(entry, profile, overrides, name=None, seconds=300.0):
+    """Oracle de parité pour le test Java TrackerParityTest (cas personnalisé) : zip contenant
+    <nom>.input.csv (plots décodés, schéma gmti_pcap_to_csv), <nom>.expected.csv (pistes affichables
+    par dwell, tracker Python de référence avec profil + surcharges) et <nom>.profile.json (config
+    effective, noms TrackerConfig). À déposer dans src/test/resources/parity/custom/ du receiver."""
+    import io, zipfile
+    if entry["csv"] is None:
+        raise ValueError(entry["error"] or "GMTI non décodé")
+    tr = load_track_run()
+    d = _tracker_dir()
+    pe = _load_module_from(os.path.join(d, "parity_export.py"), "parity_export")
+    name = "".join(c if (c.isalnum() or c in "_-") else "_" for c in (name or profile))
+    if overrides:
+        name = name if name != profile else name + "_custom"
+    tag = hashlib.md5((name + entry["csv"] + str(seconds)).encode()).hexdigest()[:8]
+    tmp = os.path.join(tempfile.gettempdir(), "pcap_web_parity_%s.csv" % tag)
+    # Fenêtre temporelle (le test JUnit compare dwell par dwell en O(n²) : on borne le cas à
+    # `seconds` de dwell_time à partir du premier plot ; 0 = toute la capture).
+    src = entry["csv"]
+    if seconds and seconds > 0:
+        src = os.path.join(tempfile.gettempdir(), "pcap_web_parity_in_%s.csv" % tag)
+        t0 = None
+        with open(entry["csv"], encoding="utf-8") as f:            # 1re passe : plus ancien dwell_time
+            f.readline()
+            for line in f:
+                try:
+                    tms = int(line.split(";", 1)[0])
+                except ValueError:
+                    continue
+                t0 = tms if t0 is None else min(t0, tms)
+        with open(entry["csv"], encoding="utf-8") as f, open(src, "w", encoding="utf-8") as g:
+            hdr = f.readline(); g.write(hdr)
+            for line in f:
+                try:
+                    tms = int(line.split(";", 1)[0])
+                except ValueError:
+                    continue
+                if t0 is not None and tms - t0 <= seconds * 1000.0:
+                    g.write(line)
+    with TRACK_LOCK:
+        pe.export(src, profile, tmp, overrides or None)
+        cfg = tr.java_config(profile, overrides or None)
+    with open(src, "rb") as f:
+        inp = f.read()
+    with open(tmp, "rb") as f:
+        exp = f.read()
+    n_exp = max(0, exp.count(b"\n") - 1)
+    if n_exp == 0:
+        raise ValueError("aucune piste affichable dans la fenêtre (%s s) avec ce profil : élargir la fenêtre "
+                         "(0 = capture entière) ou changer de profil" % seconds)
+    prof = {"profile": profile, "overrides": overrides or {}, "config": cfg,
+            "_doc": "Config effective (noms TrackerConfig.java) utilisée pour produire <nom>.expected.csv "
+                    "avec le tracker Python v8.1 de référence. TrackerParityTest.parite_cas_personnalises() "
+                    "l'applique telle quelle (ProfilesJson.apply)."}
+    readme = ("Oracle de parité tracker Python v8.1 -> Java (Receiver4607-geoevent-adapter)\n"
+              "cas : %s | profil : %s%s | %d lignes attendues | fenetre : %s\n\n"
+              "1. Copier %s.input.csv, %s.expected.csv, %s.profile.json dans\n"
+              "   Receiver4607-geoevent-adapter/src/test/resources/parity/custom/\n"
+              "2. mvn test  (TrackerParityTest.parite_cas_personnalises)\n"
+              "   -> parité OK = le processor Java reproduit ce réglage sur cette capture (<= 1 m, flags identiques).\n"
+              "3. Pour la prod : déposer gmti_profiles.json sur le serveur GeoEvent et renseigner la propriété\n"
+              "   « profilesFile » du processeur (chemin absolu), profil = %s.\n"
+              % (name, profile, " + surcharges" if overrides else "", n_exp,
+                 ("%g s de dwell_time depuis le premier plot" % seconds) if seconds and seconds > 0 else "capture entiere",
+                 name, name, name, profile))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("%s.input.csv" % name, inp)
+        z.writestr("%s.expected.csv" % name, exp)
+        z.writestr("%s.profile.json" % name, json.dumps(prof, indent=2, ensure_ascii=False))
+        z.writestr("README-parite.txt", readme)
+    return name, buf.getvalue(), n_exp
+
+
 def gmti_track_detail(entry, profile, overrides, track_id):
     key = profile + "|" + json.dumps(overrides or {}, sort_keys=True)
     res = (entry.get("res") or {}).get(key)
@@ -857,7 +933,7 @@ class LiveTracker:
                     x, y = self.frame.to_xy(r["lat"], r["lon"])
                     sig_r = (r["sig_range_cm"] / 100.0) if r["sig_range_cm"] else T.Params.R_POS_DEFAULT
                     sig_x = (r["sig_xrange_dm"] / 10.0) if r["sig_xrange_dm"] else T.Params.R_POS_DEFAULT
-                    R = T.covariance_from_4607(sxy, (x, y), sig_r, sig_x) if sxy else None
+                    R = T.covariance_from_4607(sxy, (x, y), self.tr._clamp_std(sig_r), self.tr._clamp_std(sig_x)) if sxy else None
                     plots.append(T.Plot(x, y, r_pos=max(sig_r, sig_x), R=R,
                                         vel_los=(r["vel_los_cms"] or 0) / 100.0, snr=r["snr_db"], classification=r["classification"]))
                 self.tk.step(t, plots)
@@ -1189,6 +1265,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(gmti_track(gmti_decode(path, limit), profile, ov))
             if u.path == "/api/gmti/profiles":
                 return self._json(gmti_profiles())
+            if u.path == "/api/gmti/parity.zip":
+                path = self._pcap(q); limit = int(q.get("limit", ["0"])[0] or 0)
+                profile = q.get("profile", ["defaut"])[0]
+                ov = json.loads(q.get("overrides", ["{}"])[0] or "{}")
+                name, data, n = gmti_parity_zip(gmti_decode(path, limit), profile, ov, q.get("name", [None])[0],
+                                                float(q.get("seconds", ["300"])[0] or 0))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", "attachment; filename=\"parity_%s.zip\"" % name)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/gmti/track/detail":
                 path = self._pcap(q); limit = int(q.get("limit", ["0"])[0] or 0)
                 profile = q.get("profile", ["defaut"])[0]

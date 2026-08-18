@@ -25,8 +25,9 @@ import track_run as TR
 DISPLAYABLE = {T.CONFIRMED, T.SOLID, T.COASTING}
 
 
-def export(csv_in, profile, csv_out):
-    TR.apply_profile(profile, None)
+def export(csv_in, profile, csv_out, overrides=None):
+    """`overrides` : surcharges (noms Java TrackerConfig ou Params) — mêmes que le banc web."""
+    TR.apply_profile(profile, overrides)
     import itertools
     T.Track._ids = itertools.count(1)
     tk = T.Tracker()

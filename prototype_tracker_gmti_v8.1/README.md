@@ -32,7 +32,9 @@ autre chemin), avec les **noms de champs Java** de `TrackerConfig` (traduits ver
 accepte des surcharges (noms Java ou Params), applique le déclutter (minSnrDb, classFilter) et la
 fusion `TrackMerger` (port de TrackMerger.java), et renvoie `config`, `contacts`, `metrics`.
 Les défauts de `Params` (profil « defaut ») sont alignés sur `TrackerConfig.java` : Q_ACCEL 3,
-V_INIT_STD 20, DELETE_MISSES 8, GATE_MAX_M 300, R_POS_DEFAULT 30.
+V_INIT_STD 20, DELETE_MISSES 8, GATE_MAX_M 300, R_POS_DEFAULT 30. Comme le Java, `csv_dwells`
+borne les incertitudes portée/travers à [measPosStdMin, measPosStdMax] pour la covariance orientée.
+`parity_export.export(csv, profil, sortie, overrides)` accepte les surcharges du banc.
 
 ## Paramètres à tuner (classe `Params`, tracker.py)
 

@@ -315,6 +315,14 @@
     try { gs.prof = await api("/api/gmti/profiles", { name, params: null }); gs.ov = {}; await loadProfiles(); renderEditor(); $("ed-msg").textContent = `profil « ${name} » supprimé`; }
     catch (e) { $("ed-msg").textContent = "suppression : " + e.message; }
   });
+  $("ed-parity").addEventListener("click", () => {
+    if (!state.pcap) return status("analyser un pcap d'abord", true);
+    const profile = $("gmti-profile").value || "defaut", ovq = Object.keys(gs.ov).length ? `&overrides=${encodeURIComponent(JSON.stringify(gs.ov))}` : "";
+    const name = ($("ed-name").value.trim() || profile);
+    status("export de l'oracle de parité (rejeu du tracker Python)… quelques secondes");
+    const secs = prompt("Fenêtre du cas de parité (secondes de dwell_time depuis le premier plot ; 0 = capture entière — attention, le test JUnit est en O(n²) par dwell) :", "300"); if (secs === null) return;
+    const a = document.createElement("a"); a.href = `/api/gmti/parity.zip?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${ovq}&name=${encodeURIComponent(name)}&seconds=${encodeURIComponent(secs)}${limQ()}`; a.click();
+  });
   $("ed-export").addEventListener("click", () => {
     if (!gs.prof) return; const profile = $("gmti-profile").value || "defaut";
     const cfg = Object.assign(effective(profile), gs.ov); const blob = new Blob([JSON.stringify({ profile, config: cfg }, null, 2)], { type: "application/json" });
