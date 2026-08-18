@@ -575,6 +575,13 @@
     const profile = $("gmti-profile").value || "defaut";
     download(`/api/fused/export.geojson?pcap=${encodeURIComponent(state.pcap)}&profile=${profile}${limQ()}`, "fusion.geojson", "export GeoJSON fusion (GMTI + CoT + vidéo)…").then(() => status("GeoJSON exporté")).catch(e => status("export : " + e.message, true));
   });
+  $("btn-publish").addEventListener("click", async () => {
+    const url = $("stratus-url").value.trim();
+    $("publish-msg").textContent = "publication…";
+    try { const r = await withBusy("publication des profils vers StratusServer…", () => api("/api/gmti/publish", { url }), ["btn-publish"]);
+      $("publish-msg").textContent = `OK → ${r.remote && r.remote.path ? r.remote.path : r.url} · profils : ${(r.profiles || []).join(", ")}`; status("profils publiés vers StratusServer"); }
+    catch (e) { $("publish-msg").textContent = "échec : " + e.message; status("publication : " + e.message, true); }
+  });
   $("btn-ts").addEventListener("click", () => {
     if (!state.cur) return status("pas de flux vidéo sélectionné", true);
     const a = document.createElement("a"); a.href = `/video.ts?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}&download=1`; a.download = `flux_${state.cur.dport}.ts`; a.click();
@@ -1188,6 +1195,7 @@
   api("/api/config").then(c => {
     state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();
     fillRecent(c.settings && c.settings.recent);
+    if (c.settings && c.settings.stratus_url) $("stratus-url").value = c.settings.stratus_url;
     if (c.live && c.live.running) { $("source").value = "live"; liveUi(); lv.on = true; state.mode = "replay"; state.replay = c.live; if (!gs.prof) loadProfiles(); status("écoute réseau en cours (reprise de session)"); return; }
     if (qs0.get("source") === "live") { $("source").value = "live"; liveUi(); if (!gs.prof) loadProfiles(); return; }
     const qs = new URLSearchParams(location.search), auto = qs.get("autoplay");   // ?autoplay=file|replay · ?tab=gmti · ?track=<profil>[&ab=<profil>][&editor=1]

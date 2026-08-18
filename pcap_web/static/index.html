@@ -77,6 +77,11 @@
         <div class="row"><span class="muted">Profils GMTI : « ⤓ JSON » et « ⤓ oracle de parité » sont dans l'onglet GMTI 4607 → ⚙ paramètres du profil.</span></div>
       </section>
       <section>
+        <h4>StratusServer (service GMTI)</h4>
+        <label>URL <input id="stratus-url" type="text" placeholder="https://stratus.isrbox:8443"></label>
+        <div class="row"><button id="btn-publish" class="accent" title="PUT {URL}/api/gmti/profiles : dépose gmti_profiles.json (source unique) et le recharge à chaud côté service — les opérateurs voient les nouveaux réglages au dwell suivant">⤴ Publier gmti_profiles.json</button><span id="publish-msg" class="muted">dépôt + rechargement à chaud (pistes conservées) ; certificat auto-signé accepté</span></div>
+      </section>
+      <section>
         <h4>Fichiers &amp; réglages locaux</h4>
         <div class="mono muted" id="st-files">—</div>
       </section>

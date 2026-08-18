@@ -446,6 +446,31 @@ def gmti_profile_save(name, params):
     return gmti_profiles()
 
 
+def gmti_publish(url, insecure=True):
+    """Publie gmti_profiles.json (source unique) vers StratusServer : PUT {url}/api/gmti/profiles →
+    dépôt + rechargement à chaud côté service (les pistes en cours sont conservées)."""
+    import ssl
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        raise ValueError("URL StratusServer manquante (⚙ Paramètres → StratusServer)")
+    tr = load_track_run()
+    data = tr.load_profiles()
+    if not data.get("profiles"):
+        raise ValueError("gmti_profiles.json introuvable ou vide")
+    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url + "/api/gmti/profiles", data=body, method="PUT", headers={"Content-Type": "application/json"})
+    ctx = ssl._create_unverified_context() if (insecure and url.startswith("https")) else None
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
+            res = json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        raise ValueError("StratusServer %s : %s" % (e.code, e.read().decode("utf-8", "replace")[:300]))
+    except (urllib.error.URLError, OSError) as e:
+        raise ValueError("StratusServer injoignable : %s" % e)
+    settings_save({"stratus_url": url})
+    return {"ok": True, "url": url, "remote": res, "profiles": list(data.get("profiles", {}).keys())}
+
+
 def gmti_track(entry, profile, overrides=None):
     """Déroule le tracker (profil + surcharges, noms Java) sur le CSV décodé → pistes/plots en lat/lon."""
     if entry["csv"] is None:
@@ -1566,6 +1591,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(settings_save(body))
             if u.path == "/api/gmti/profiles":
                 return self._json(gmti_profile_save(body.get("name"), body.get("params")))
+            if u.path == "/api/gmti/publish":
+                return self._json(gmti_publish(body.get("url") or (settings_load().get("stratus_url") or ""), bool(body.get("insecure", True))))
             if u.path == "/api/basemap":
                 cfg = basemap_save(body)
                 self.__class__.basemap_cfg = cfg
