@@ -133,10 +133,10 @@
     if ($("gmti-dwell").checked && b.dwells && b.dwells.length) {
       b.dwells.forEach(d => {
         let ly;
-        if (d.poly) ly = L.polygon(d.poly, { color: "#7cff6b", weight: 1.2, fillColor: "#7cff6b", fillOpacity: .10, opacity: .9, renderer: canvasR });
-        else ly = L.circleMarker(d.center, { radius: 5, color: "#7cff6b", weight: 1, fill: false, renderer: canvasR });
-        ly.addTo(lyDwell);                              // pas d'infobulle : les dwells défilent sous la souris (gêne)
-        ly.options.interactive = false;
+        // Non interactifs (pas d'infobulle ni de survol) : les dwells défilent sans cesse sous la souris.
+        if (d.poly) ly = L.polygon(d.poly, { color: "#7cff6b", weight: 1.2, fillColor: "#7cff6b", fillOpacity: .10, opacity: .9, renderer: canvasR, interactive: false });
+        else ly = L.circleMarker(d.center, { radius: 5, color: "#7cff6b", weight: 1, fill: false, renderer: canvasR, interactive: false });
+        ly.addTo(lyDwell);
         gmti.dwells.push(ly);
         if (b.sensor && d.center) { dwellLine.setLatLngs([b.sensor, d.center]); if (!dwellLine._map) dwellLine.addTo(lyDwell); }
       });
