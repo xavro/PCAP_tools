@@ -34,7 +34,7 @@ except Exception:
 # --------------------------------------------------------------------------
 
 def iter_frames(path):
-    with open(path, "rb") as f:
+    with open(path, "rb", buffering=16 * 1024 * 1024) as f:      # gros tampon : FS lent (bind mount WSL, NFS)
         magic = f.read(4)
         if magic in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4",
                      b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"):

@@ -20,7 +20,10 @@ __all__ = ["iter_frames", "parse", "udp_payload"]
 
 def iter_frames(path):
     """Yield (ts_float, linktype, frame_bytes) pour chaque paquet capturé."""
-    with open(path, "rb") as f:
+    # Tampon de lecture large (16 Mo) : la lecture trame par trame (2 read() par paquet) sur un
+    # système de fichiers distant/lent (bind mount Docker sur /mnt/c en WSL, NFS…) est dominée par
+    # le nombre d'appels ; 8 Ko par défaut → des centaines de milliers de lectures sur un pcap vidéo.
+    with open(path, "rb", buffering=16 * 1024 * 1024) as f:
         magic = f.read(4)
         if magic in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4",
                      b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"):
