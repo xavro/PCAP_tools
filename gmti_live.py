@@ -24,6 +24,9 @@ class LiveTracker:
         self.tk = None; self.frame = None; self.last_t = None; self.merger = None
         self.n_dwells = 0; self.n_plots = 0; self.n_resets = 0; self.n_filtered = 0; self.n_clustered = 0; self.n_ghosts = 0
         self.cfg = None
+        self.tail_states = 300          # longueur de traîne (états) ; 0 = toute la piste (plafonné)
+        self.tail_points = 120          # points max transportés par traîne (décimation, fin dense)
+        self._tail_cache = {}           # id -> (n_states_calcules, [(t,x,y)...] lissés, n)
 
     def _apply(self):
         self.cfg = self.tr.apply_profile(self.profile, self.overrides)
@@ -88,10 +91,37 @@ class LiveTracker:
                 self.tk.step(t, plots)
                 self.last_t = t; self.n_dwells += 1; self.n_plots += len(plots)
 
-    def snapshot(self, tail=30, smooth=True):
+    def _tail(self, tr, n, smooth):
+        """Traîne d'une piste : `n` derniers états (0 = tous, max 2000), lissée (RTS) avec cache —
+        recalcul complet seulement si >= 3 nouveaux états depuis le dernier calcul, sinon réutilisation
+        + ajout des états filtrés récents ; puis décimation à tail_points (les derniers restent denses)."""
+        T = self.T
+        n_all = len(tr.states)
+        n = min(n_all, 2000) if not n or n <= 0 else min(n, n_all, 2000)
+        if smooth and hasattr(T, "rts_tail"):
+            c = self._tail_cache.get(tr.id)
+            if c is not None and 0 <= n_all - c[0] < 3 and c[2] == n:
+                pts = list(c[1]) + [(t_, x_[0], x_[1]) for (t_, x_, _P) in tr.states[c[0]:]]
+            else:
+                try:
+                    pts = T.rts_tail(tr, n)
+                except Exception:
+                    pts = [(t_, x_[0], x_[1]) for (t_, x_, _P) in tr.states[-n:]]
+                self._tail_cache[tr.id] = (n_all, pts, n)
+        else:
+            pts = [(t_, x_[0], x_[1]) for (t_, x_, _P) in tr.states[-n:]]
+        m = self.tail_points
+        if m and len(pts) > m:                       # décimation : 3/4 du budget sur l'ancien, 1/4 dense à la fin
+            dense = max(10, m // 4); old = pts[:-dense]; step = max(1, len(old) // (m - dense))
+            pts = old[::step] + pts[-dense:]
+        return [[round(a, 6), round(b, 6)] for a, b in (self.frame.to_ll(float(x), float(y)) for (_t, x, y) in pts)]
+
+    def snapshot(self, tail=None, smooth=True):
         """Pistes vivantes (état, position, vitesse, cap, traîne) + contacts fusionnés.
-        smooth=True : traîne lissée (RTS à retard fixe sur les `tail` derniers états, tracker.rts_tail) —
-        la position courante reste l'estimée filtrée ; smooth=False : historique brut du filtre."""
+        tail : longueur de traîne en états (None = self.tail_states ; 0 = toute la piste) ; smooth=True :
+        traîne lissée (RTS, tracker.rts_tail, cache) — la position courante reste l'estimée filtrée."""
+        if tail is None:
+            tail = self.tail_states
         T = self.T
         if self.tk is None or self.frame is None:
             return {"tracks": [], "contacts": None, "stats": self._stats(0, 0, 0, 0)}
@@ -110,13 +140,7 @@ class LiveTracker:
                     counts["EVER"] += 1
                 sp = float(tr.speed())
                 la, lo = self.frame.to_ll(float(tr.x[0]), float(tr.x[1]))
-                if smooth and hasattr(T, "rts_tail"):
-                    try:
-                        hist = [(t_, x_, y_, None, None) for (t_, x_, y_) in T.rts_tail(tr, tail)]
-                    except Exception:
-                        hist = tr.history[-tail:]
-                else:
-                    hist = tr.history[-tail:]
+                tail_ll = self._tail(tr, tail, smooth)
                 o = {"id": tr.id, "lat": round(la, 6), "lon": round(lo, 6), "speed": round(sp, 1),
                      "heading": round((math.degrees(math.atan2(tr.x[2], tr.x[3])) + 360.0) % 360.0, 1),
                      "state": name, "hits": tr.hits, "misses": tr.misses, "ever": bool(tr.confirmed_ever),
@@ -124,7 +148,7 @@ class LiveTracker:
                      "age_s": round(max(0.0, (self.last_t or 0) - tr.t_last_update), 1),
                      "extent_m": round(float(getattr(tr, "extent", 0.0)), 1), "absorbed": list(getattr(tr, "absorbed", [])),
                      "cls": tr.dominant_class() if hasattr(tr, "dominant_class") else None,
-                     "tail": [[round(a, 6), round(b, 6)] for a, b in (self.frame.to_ll(float(x), float(y)) for (_t, x, y, _s, _h) in hist)]}
+                     "tail": tail_ll}
                 out.append(o)
                 if tr.confirmed_ever and name != "TENTATIVE" and (min_speed <= 0 or sp >= min_speed):   # affichables (comme le processor)
                     outs.append({"track_id": tr.id, "x": float(tr.x[0]), "y": float(tr.x[1]), "speed": sp, "heading": o["heading"],
@@ -141,6 +165,9 @@ class LiveTracker:
                 contacts = [{"id": c["id"], "n": c["n"], "lat": round(self.frame.to_ll(c["x"], c["y"])[0], 6),
                              "lon": round(self.frame.to_ll(c["x"], c["y"])[1], 6), "members": c["members"]} for c in cs if c["n"] > 1]
             st_ = self._stats(counts["TENTATIVE"], counts["CONFIRMED"], counts["SOLID"], counts["COASTING"]); st_["displayable"] = counts["EVER"]
+            alive = {tr.id for tr in self.tk.tracks}
+            for k in [k for k in self._tail_cache if k not in alive]:
+                del self._tail_cache[k]
             return {"tracks": out, "contacts": contacts, "stats": st_}
 
     def _stats(self, tent, conf, solid, coast):
