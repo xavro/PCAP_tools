@@ -13,7 +13,6 @@
     <!-- Navigation StratusServer (visible seulement quand la console est servie sous un préfixe, ex. /console/) -->
     <button id="stx-burger" class="stx-burger" hidden aria-label="Menu StratusServer" aria-expanded="false" title="Menu (pages StratusServer)"><span></span><span></span><span></span></button>
     <div><span class="title" title="Console pcap — analyse 4607 / 4609 / CoT · rejeu UDP · ISRBOX / 33e ESRA">◉ Console pcap</span></div>
-    <button id="btn-settings" class="icon" title="Paramètres de l'application" aria-label="Paramètres">⚙</button>
     <select id="source" title="Source : un fichier pcap (analyse, lecture, rejeu) ou l'écoute directe du réseau (la console reçoit les flux comme GeoEvent / le serveur vidéo — pas de fichier)">
       <option value="file">Fichier pcap</option>
       <option value="live">Écoute réseau (live)</option>
@@ -38,6 +37,7 @@
     <button id="btn-play" class="accent">▶ Lire</button>
     <button id="btn-pause" title="pause / reprise du rejeu (la vidéo fichier a ses propres commandes)" disabled>⏸</button>
     <button id="btn-stop" class="danger">■ Stop</button>
+    <button id="btn-settings" class="icon" title="Paramètres de l'application" aria-label="Paramètres">⚙</button>
     <div id="busybar" class="busybar" hidden></div>
   </header>
   <div class="stx-drawer-backdrop" id="stx-backdrop" hidden></div>
