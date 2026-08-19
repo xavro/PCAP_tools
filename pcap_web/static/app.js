@@ -11,6 +11,7 @@
   const WS = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + BASE.replace(/\/$/, "");
   // Navigation StratusServer : seulement si la console est servie sous un préfixe (/console/) ; liens relatifs (../)
   if (BASE !== "/") {
+    const fav = $("favicon"); if (fav) fav.href = BASE + "../static/images/favicon.ico";   // favicon StratusServer
     const burger = $("stx-burger"), drawer = $("stx-drawer"), backdrop = $("stx-backdrop");
     burger.hidden = false;
     const open = on => { drawer.classList.toggle("open", on); backdrop.hidden = !on; burger.setAttribute("aria-expanded", on ? "true" : "false"); drawer.setAttribute("aria-hidden", on ? "false" : "true"); };
