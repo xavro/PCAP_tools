@@ -88,8 +88,10 @@ class LiveTracker:
                 self.tk.step(t, plots)
                 self.last_t = t; self.n_dwells += 1; self.n_plots += len(plots)
 
-    def snapshot(self, tail=30):
-        """Pistes vivantes (état, position, vitesse, cap, traîne) + contacts fusionnés."""
+    def snapshot(self, tail=30, smooth=True):
+        """Pistes vivantes (état, position, vitesse, cap, traîne) + contacts fusionnés.
+        smooth=True : traîne lissée (RTS à retard fixe sur les `tail` derniers états, tracker.rts_tail) —
+        la position courante reste l'estimée filtrée ; smooth=False : historique brut du filtre."""
         T = self.T
         if self.tk is None or self.frame is None:
             return {"tracks": [], "contacts": None, "stats": self._stats(0, 0, 0, 0)}
@@ -108,7 +110,13 @@ class LiveTracker:
                     counts["EVER"] += 1
                 sp = float(tr.speed())
                 la, lo = self.frame.to_ll(float(tr.x[0]), float(tr.x[1]))
-                hist = tr.history[-tail:]
+                if smooth and hasattr(T, "rts_tail"):
+                    try:
+                        hist = [(t_, x_, y_, None, None) for (t_, x_, y_) in T.rts_tail(tr, tail)]
+                    except Exception:
+                        hist = tr.history[-tail:]
+                else:
+                    hist = tr.history[-tail:]
                 o = {"id": tr.id, "lat": round(la, 6), "lon": round(lo, 6), "speed": round(sp, 1),
                      "heading": round((math.degrees(math.atan2(tr.x[2], tr.x[3])) + 360.0) % 360.0, 1),
                      "state": name, "hits": tr.hits, "misses": tr.misses, "ever": bool(tr.confirmed_ever),

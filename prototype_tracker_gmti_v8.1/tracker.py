@@ -524,8 +524,20 @@ def rts_smooth(track):
     """Lisseur Rauch-Tung-Striebel : passe arriere sur une piste terminee.
     Retourne [(t, x, y)] lisses, tronques a la derniere detection reelle.
     A reserver aux produits trajet/debriefing (hors temps reel, non causal)."""
-    n = track.last_hit_idx + 1
-    st = track.states[:n]
+    return _rts_states(track.states[:track.last_hit_idx + 1], track.q_accel)
+
+
+def rts_tail(track, n=30):
+    """Traine LISSEE d'une piste vivante (affichage temps reel) : passe RTS arriere sur les n
+    derniers etats, ancree sur l'etat filtre COURANT (qui n'est pas modifie). Le passe proche est
+    re-estime avec les mesures qui ont suivi -> la trace ne zigzague plus au gre du bruit de mesure
+    (σ_range ~100 m en 4607) et donne la direction. Retourne [(t, x, y)], du plus ancien au courant."""
+    st = track.states[-max(2, int(n)):]
+    return _rts_states(st, track.q_accel)
+
+
+def _rts_states(st, q_accel):
+    n = len(st)
     if n < 3:
         return [(t, x[0], x[1]) for t, x, _ in st]
     xs = [x.copy() for _, x, _ in st]
@@ -533,7 +545,7 @@ def rts_smooth(track):
     ts = [t for t, _, _ in st]
     x_s, P_s = xs[-1], Ps[-1]
     out = [(ts[-1], x_s[0], x_s[1])]
-    q = track.q_accel ** 2
+    q = q_accel ** 2
     for k in range(n - 2, -1, -1):
         dt = max(ts[k + 1] - ts[k], 1e-3)
         F = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]])
