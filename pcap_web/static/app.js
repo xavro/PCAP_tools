@@ -12,6 +12,7 @@
   // Navigation StratusServer : seulement si la console est servie sous un préfixe (/console/) ; liens relatifs (../)
   if (BASE !== "/") {
     const fav = $("favicon"); if (fav) fav.href = BASE + "../static/images/favicon.ico";   // favicon StratusServer
+    const logo = document.querySelector(".stx-drawer-head img"); if (logo) { logo.onerror = () => { logo.onerror = null; logo.src = U("static/stratus.png"); }; logo.src = BASE + "../static/images/Stratus%20Server.png"; }
     const burger = $("stx-burger"), drawer = $("stx-drawer"), backdrop = $("stx-backdrop");
     burger.hidden = false;
     const open = on => { drawer.classList.toggle("open", on); backdrop.hidden = !on; burger.setAttribute("aria-expanded", on ? "true" : "false"); drawer.setAttribute("aria-hidden", on ? "false" : "true"); };
