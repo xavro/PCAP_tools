@@ -13,6 +13,7 @@
     <!-- Navigation StratusServer (visible seulement quand la console est servie sous un préfixe, ex. /console/) -->
     <button id="stx-burger" class="stx-burger" hidden aria-label="Menu StratusServer" aria-expanded="false" title="Menu (pages StratusServer)"><span></span><span></span><span></span></button>
     <div><span class="title" title="Console pcap — analyse 4607 / 4609 / CoT · rejeu UDP · ISRBOX / 33e ESRA">◉ Console pcap</span></div>
+    <button id="btn-settings" class="icon" title="Paramètres de l'application" aria-label="Paramètres">⚙</button>
     <select id="source" title="Source : un fichier pcap (analyse, lecture, rejeu) ou l'écoute directe du réseau (la console reçoit les flux comme GeoEvent / le serveur vidéo — pas de fichier)">
       <option value="file">Fichier pcap</option>
       <option value="live">Écoute réseau (live)</option>
@@ -23,7 +24,7 @@
     </span>
     <input id="pcap" type="text" list="recent" placeholder="chemin du pcap (…\Captures\xxx.pcap)">
     <datalist id="recent"></datalist>
-    <button id="btn-browse" title="parcourir les captures (explorateur côté serveur)">Parcourir…</button>
+    <button id="btn-browse" class="icon" title="Parcourir les captures (explorateur côté serveur)" aria-label="Parcourir">…</button>
     <button id="btn-load">Analyser</button>
     <select id="stream" title="flux vidéo TS affiché" hidden></select>
     <select id="mode" title="Lecture — IHM seule : toute la ligne de temps est préchargée (vidéo extraite, CoT, dwells/plots GMTI, pistes du tracker) et jouée dans le navigateur — seek instantané, pause, vitesse ; rien n'est émis. Rejeu + émission : le moteur rejoue à la cadence du pcap et envoie les flux cochés en UDP/TCP vers leurs cibles (l'IHM suit en direct).">
@@ -37,7 +38,6 @@
     <button id="btn-play" class="accent">▶ Lire</button>
     <button id="btn-pause" title="pause / reprise du rejeu (la vidéo fichier a ses propres commandes)" disabled>⏸</button>
     <button id="btn-stop" class="danger">■ Stop</button>
-    <button id="btn-settings" title="paramètres de l'application">⚙ Paramètres</button>
     <div id="busybar" class="busybar" hidden></div>
   </header>
   <div class="stx-drawer-backdrop" id="stx-backdrop" hidden></div>

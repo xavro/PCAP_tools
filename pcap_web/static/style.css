@@ -39,6 +39,8 @@ body.live-mode #replay .hint { display: none; }
 header { grid-area: hdr; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
 header .title { color: var(--accent); font-weight: 600; font-size: 15px; margin-right: 8px; }
+header button.icon { padding: 4px 8px; min-width: 30px; font-size: 14px; line-height: 1; }
+header #btn-settings { margin-right: 4px; }
 /* ── Navigation StratusServer (console servie sous /console/) : hamburger + tiroir, même look que _nav.html ── */
 .stx-burger { width: 34px; height: 30px; display: inline-flex; flex-direction: column; justify-content: center; gap: 5px; padding: 0 8px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
 .stx-burger span { display: block; height: 2px; background: var(--fg); border-radius: 1px; transition: transform .15s, opacity .15s; }
