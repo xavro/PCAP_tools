@@ -52,7 +52,7 @@
       "confirmM": 4,
       "confirmN": 6,
       "deleteMisses": 12,
-      "accelStd": 0.05,
+      "accelStd": 0.1,
       "initVelStd": 4,
       "measPosStdMin": 100,
       "mergeMaxDistM": 450,
@@ -60,16 +60,11 @@
       "ghostSnrDb": 25,
       "ghostDistM": 500,
       "absorbDwells": 5,
-      "absorbDistM": 450.0
+      "absorbDistM": 450
     },
     "routier": {
-      "accelStd": 2.0,
-      "initVelStd": 12.0,
-      "confirmM": 3,
-      "confirmN": 5,
-      "deleteMisses": 8,
-      "gateChi2": 9.21,
-      "gateMaxM": 300.0
+      "accelStd": 2,
+      "initVelStd": 12
     },
     "convoi": {
       "accelStd": 0.5,
