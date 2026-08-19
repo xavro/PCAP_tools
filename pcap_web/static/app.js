@@ -9,6 +9,15 @@
   const BASE = location.pathname.replace(/[^/]*$/, "");
   const U = p => BASE + String(p).replace(/^\//, "");
   const WS = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + BASE.replace(/\/$/, "");
+  // Navigation StratusServer : seulement si la console est servie sous un préfixe (/console/) ; liens relatifs (../)
+  if (BASE !== "/") {
+    const burger = $("stx-burger"), drawer = $("stx-drawer"), backdrop = $("stx-backdrop");
+    burger.hidden = false;
+    const open = on => { drawer.classList.toggle("open", on); backdrop.hidden = !on; burger.setAttribute("aria-expanded", on ? "true" : "false"); drawer.setAttribute("aria-hidden", on ? "false" : "true"); };
+    burger.addEventListener("click", () => open(!drawer.classList.contains("open")));
+    $("stx-close").addEventListener("click", () => open(false)); backdrop.addEventListener("click", () => open(false));
+    document.addEventListener("keydown", e => { if (e.key === "Escape") open(false); });
+  }
   const state = { cfg: null, pcap: "", streams: [], cur: null, track: null, player: null,
     mode: "file", sets: [], applied: -1, tableAt: 0, flows: [], flowsDur: 0, replay: null,
     bmLayer: null, bmOverlay: null, bmCfg: null, evws: null, log: [], retries: 0, seeking: false, videoOn: false, emitting: false };

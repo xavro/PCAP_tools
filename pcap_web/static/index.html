@@ -9,6 +9,8 @@
 <body>
 <div id="app">
   <header>
+    <!-- Navigation StratusServer (visible seulement quand la console est servie sous un préfixe, ex. /console/) -->
+    <button id="stx-burger" class="stx-burger" hidden aria-label="Menu StratusServer" aria-expanded="false" title="Menu (pages StratusServer)"><span></span><span></span><span></span></button>
     <div><span class="title" title="Console pcap — analyse 4607 / 4609 / CoT · rejeu UDP · ISRBOX / 33e ESRA">◉ Console pcap</span></div>
     <select id="source" title="Source : un fichier pcap (analyse, lecture, rejeu) ou l'écoute directe du réseau (la console reçoit les flux comme GeoEvent / le serveur vidéo — pas de fichier)">
       <option value="file">Fichier pcap</option>
@@ -37,6 +39,17 @@
     <button id="btn-settings" title="paramètres de l'application">⚙ Paramètres</button>
     <div id="busybar" class="busybar" hidden></div>
   </header>
+  <div class="stx-drawer-backdrop" id="stx-backdrop" hidden></div>
+  <aside class="stx-drawer" id="stx-drawer" aria-hidden="true">
+    <div class="stx-drawer-head"><b>StratusServer</b><small>STANAG 4609 · 4607 · CoT</small><button type="button" class="stx-close" id="stx-close" aria-label="Fermer">✕</button></div>
+    <ul class="stx-links">
+      <li><a href="../"><i>🗂</i> Missions <small>enregistrements, lecture, exports</small></a></li>
+      <li><a href="../api/docs"><i>📘</i> Documentation API <small>endpoints 4609 / 4607 / snaps</small></a></li>
+      <li><a href="./" class="is-active"><i>▶</i> Console pcap <small>analyse, rejeu, écoute, banc GMTI</small></a></li>
+      <li><a href="../health"><i>♥</i> Health Check <small>état des services</small></a></li>
+    </ul>
+    <div class="stx-drawer-foot"><a href="../api/health">/api/health</a><a href="../api/gmti/status">/api/gmti/status</a></div>
+  </aside>
   <div id="statusbar">
     <span id="sb-state" class="sb-state stopped">■ arrêt</span>
     <span id="busy" class="busy" hidden><i class="spin"></i><span id="busy-txt">en cours…</span></span>
