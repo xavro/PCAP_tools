@@ -129,10 +129,17 @@ def scan(path, limit=0):
             return _CACHE[key]
     streams = {}
     n = 0
+    t_start = time.time(); last_log = t_start
+    size_mb = os.path.getsize(path) / 1e6
+    print("[scan] %s (%.0f Mo) : analyse des flux TS…" % (os.path.basename(path), size_mb), flush=True)
     for ts, lt, frame in iter_frames(path):
         n += 1
         if limit and n > limit:
             break
+        if n % 200000 == 0 and time.time() - last_log > 5:          # progression visible dans le journal (conteneur)
+            last_log = time.time()
+            print("[scan] %s : %d trames, %d flux TS, %.0f Mo en mémoire, %.0f s" % (
+                os.path.basename(path), n, len(streams), sum(len(st.buf) for st in streams.values()) / 1e6, time.time() - t_start), flush=True)
         r = parse(lt, frame)
         if not r:
             continue
@@ -151,6 +158,8 @@ def scan(path, limit=0):
         st.t1 = ts
     for st in streams.values():
         st.info = v9.analyze_stream(st.buf)
+    print("[scan] %s : terminé — %d trames, %d flux TS, %.0f Mo en mémoire, %.1f s" % (
+        os.path.basename(path), n, len(streams), sum(len(st.buf) for st in streams.values()) / 1e6, time.time() - t_start), flush=True)
     with _LOCK:
         _CACHE[key] = streams
     return streams
