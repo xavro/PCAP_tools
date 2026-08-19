@@ -366,6 +366,15 @@ def gmti_decode(path, limit=0):
     out = os.path.join(tempfile.gettempdir(), "pcap_web_gmti_%s.csv" % hashlib.md5(repr(key).encode()).hexdigest()[:10])
     entry = {"csv": None, "sink": None, "mode": None, "n_plots": 0, "dwells": 0, "rapport": None,
              "zone": [], "porteur": [], "tracks": {}, "error": None}
+    if is_csv_source(path):                                   # détections déjà décodées (StratusServer / banc)
+        src = csv_source(path)
+        entry.update({"csv": path, "mode": "CSV de détections (StratusServer / banc)", "n_plots": src["n_plots"],
+                      "dwells": len(src["dwells"]), "porteur": list(src["sensors"]),
+                      "rapport": "Source CSV : %d détections, %d dwells, %.0f s (%s → %s)" % (
+                          src["n_plots"], len(src["dwells"]), (src["t1"] or 0) - (src["t0"] or 0), src["t0"], src["t1"])})
+        with _ALOCK:
+            _GMTI[key] = entry
+        return entry
     if os.path.getsize(path) <= EXTRACT_MAX_BYTES:
         try:
             ex = load_extract()
@@ -595,6 +604,15 @@ def timeline_data(path, limit=0, watch=None):
     with _ALOCK:
         if key in _TL_CACHE:
             return _TL_CACHE[key]
+    if is_csv_source(path):
+        src = csv_source(path)
+        t0 = src["t0"]
+        dwells = [[round(d["t"] - t0, 3), d["sensor"], None, None, len(d["plots"]), int(round(d["t"] * 1000)), d["plots"]] for d in src["dwells"]]
+        out = {"t0": t0, "duration": round((src["t1"] or 0) - (t0 or 0), 3), "n_packets": len(src["dwells"]),
+               "cot": [], "dwells": dwells, "dwell_offset": 0.0, "video": [], "source": "csv"}
+        with _ALOCK:
+            _TL_CACHE[key] = out
+        return out
     t0 = None
     cot, dwells, gmti_dt = [], [], []
     n = 0
@@ -770,7 +788,61 @@ def fused_geojson(path, profile, limit=0):
 
 # ── Réglages persistants (dernier pcap, récents, IHM) + explorateur de fichiers ─
 SETTINGS_PATH = os.path.join(HERE, "pcap_web_settings.json")
-PCAP_EXT = (".pcap", ".pcapng", ".cap")
+PCAP_EXT = (".pcap", ".pcapng", ".cap", ".csv")          # .csv = détections GMTI (enregistrement StratusServer / banc)
+BASE_PATH = ""                                             # préfixe d'URL (derrière un reverse proxy : /console)
+CAPTURES_DIR = None                                        # dossier proposé par défaut dans « Parcourir »
+
+
+# ── Source CSV GMTI (schéma gmti_pcap_to_csv : enregistrement StratusServer par mission) ──
+_CSV_CACHE = {}
+
+
+def is_csv_source(path):
+    return bool(path) and path.lower().endswith(".csv")
+
+
+def csv_source(path):
+    """Lit un CSV de détections GMTI (schéma du banc) → dwells triés [(t_s, sensor|None, plots[[lat,lon,vel,snr,cls]])],
+    bornes, nb de plots, positions capteur. Mis en cache (chemin, mtime)."""
+    import csv as _csv
+    key = (os.path.abspath(path), os.path.getmtime(path))
+    with _ALOCK:
+        if key in _CSV_CACHE:
+            return _CSV_CACHE[key]
+    by = {}
+    sensors = []
+    n = 0
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for r in _csv.DictReader(f, delimiter=";"):
+            try:
+                t = int(float(r["dwell_time_ms"]))
+                lat, lon = float(r["lat"]), float(r["lon"])
+            except (KeyError, ValueError):
+                continue
+            k = (t, r.get("revisit_idx", ""), r.get("dwell_idx", ""))
+            d = by.get(k)
+            if d is None:
+                sl = r.get("sensor_lat"), r.get("sensor_lon")
+                sensor = [round(float(sl[0]), 6), round(float(sl[1]), 6)] if sl[0] and sl[1] else None
+                d = by[k] = {"t": t / 1000.0, "sensor": sensor, "plots": []}
+                if sensor and (not sensors or sensors[-1] != sensor):
+                    sensors.append(sensor)
+            def _num(v, scale=1.0):
+                try:
+                    return float(v) * scale if v not in (None, "") else None
+                except ValueError:
+                    return None
+            cls = r.get("classification")
+            d["plots"].append([round(lat, 6), round(lon, 6), _num(r.get("vel_los_cms")), _num(r.get("snr_db")),
+                               int(float(cls)) if cls not in (None, "") else None])
+            n += 1
+    dwells = sorted(by.values(), key=lambda d: d["t"])
+    out = {"dwells": dwells, "n_plots": n, "sensors": sensors,
+           "t0": dwells[0]["t"] if dwells else None, "t1": dwells[-1]["t"] if dwells else None}
+    with _ALOCK:
+        _CSV_CACHE[key] = out
+    return out
+
 
 
 def settings_load():
@@ -797,7 +869,7 @@ def browse(d=None):
     sinon ../Captures, sinon le dossier des outils. Windows : `d=""` liste les lecteurs."""
     if d is None or d == "":
         st = settings_load()
-        last = st.get("last_pcap")
+        last = st.get("last_pcap") or (os.path.join(CAPTURES_DIR, "x") if CAPTURES_DIR and os.path.isdir(CAPTURES_DIR) else None)
         cand = [os.path.dirname(last) if last else None, os.path.join(os.path.dirname(HERE), "Captures"), HERE]
         d = next((c for c in cand if c and os.path.isdir(c)), HERE)
     if d == "::drives" or (d == "/" and os.name == "nt"):
@@ -1361,6 +1433,11 @@ LIVE = LiveEngine()
 
 def flows_summary(path, limit=0):
     """Flux applicatifs (pcap_analyze.scan) → lignes pour le routage."""
+    if is_csv_source(path):
+        src = csv_source(path)
+        return {"npkt": len(src["dwells"]), "duration_s": round((src["t1"] or 0) - (src["t0"] or 0), 3), "truncated": False,
+                "flows": [{"proto": "UDP", "dport": 4607, "dominant": "GMTI/4607 (CSV)", "pkts": len(src["dwells"]),
+                           "bytes": os.path.getsize(path), "dsts": []}], "source": "csv"}
     res = pcap_analyze.scan(path, limit)
     rows = []
     for proto, dport, dominant, pkts, nbytes, dsts in pcap_analyze.port_rows(res["ports"]):
@@ -1444,7 +1521,15 @@ class Handler(BaseHTTPRequestHandler):
             return st
         return max(streams.values(), key=lambda s: len(s.buf))
 
+    def _strip_base(self):
+        """--base-path : accepte les URL préfixées (/console/api/…) en plus des URL nues."""
+        if BASE_PATH and self.path.startswith(BASE_PATH):
+            rest = self.path[len(BASE_PATH):]
+            if rest == "" or rest.startswith("/") or rest.startswith("?"):
+                self.path = rest or "/"
+
     def do_GET(self):
+        self._strip_base()
         u = urllib.parse.urlsplit(self.path)
         q = urllib.parse.parse_qs(u.query)
         try:
@@ -1535,6 +1620,8 @@ class Handler(BaseHTTPRequestHandler):
                 path = self._pcap(q)
                 limit = int(q.get("limit", ["0"])[0] or 0)
                 settings_save({"last_pcap": os.path.abspath(path)})
+                if is_csv_source(path):
+                    return self._json({"pcap": path, "streams": [], "source": "csv"})
                 streams = scan(path, limit)
                 return self._json({"pcap": path, "streams": sorted(
                     (stream_summary(s) for s in streams.values()), key=lambda d: -d["bytes"])})
@@ -1553,6 +1640,7 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def do_POST(self):
+        self._strip_base()
         u = urllib.parse.urlsplit(self.path)
         n = int(self.headers.get("Content-Length") or 0)
         try:
@@ -1564,6 +1652,8 @@ class Handler(BaseHTTPRequestHandler):
                 pcap = body.get("pcap") or self.default_pcap
                 if not pcap or not os.path.isfile(pcap):
                     raise FileNotFoundError("pcap introuvable : %r" % pcap)
+                if is_csv_source(pcap):
+                    raise ValueError("un CSV de détections ne se rejoue pas en UDP : utiliser « Lecture IHM seule » (préchargé)")
                 ENGINE.start(pcap, body.get("routes", []), body.get("speed", 1.0), body.get("loop", False),
                              body.get("rebase", False), body.get("taps", []), body.get("watch"), body.get("track"),
                              float(body.get("start_at", 0.0) or 0.0))
@@ -1757,15 +1847,21 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("pcap", nargs="?", help="capture par défaut")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--host", default="127.0.0.1", help="adresse d'écoute (0.0.0.0 en conteneur)")
+    ap.add_argument("--base-path", default="", help="préfixe d'URL derrière un reverse proxy (ex. /console) ; les URL nues restent acceptées")
+    ap.add_argument("--captures-dir", default=None, help="dossier proposé par défaut dans « Parcourir » (ex. /data/recordings)")
     ap.add_argument("--limit", type=int, default=0, help="nb max de trames lues (0 = tout)")
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
     Handler.default_pcap = os.path.abspath(a.pcap) if a.pcap else None
     Handler.basemap_cfg = basemap_load()
     Handler.default_limit = a.limit
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    global BASE_PATH, CAPTURES_DIR
+    BASE_PATH = ("/" + a.base_path.strip("/")) if a.base_path and a.base_path.strip("/") else ""
+    CAPTURES_DIR = os.path.abspath(a.captures_dir) if a.captures_dir else None
+    srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
-    url = "http://127.0.0.1:%d/" % a.port
+    url = "http://%s:%d%s/" % ("127.0.0.1" if a.host in ("0.0.0.0", "") else a.host, a.port, BASE_PATH)
     print("Console web : %s   (Ctrl+C pour arrêter)" % url)
     if a.pcap:
         print("Pré-analyse de %s…" % a.pcap)

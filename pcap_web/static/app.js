@@ -4,7 +4,11 @@
   "use strict";
   const $ = id => document.getElementById(id);
   const video = $("video");
-  const WS = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+  // Relocalisable : la page peut être servie à la racine (http://hôte:8765/) ou sous un préfixe derrière
+  // un reverse proxy (https://stratus/console/) → toutes les URL sont relatives à BASE (dossier de la page).
+  const BASE = location.pathname.replace(/[^/]*$/, "");
+  const U = p => BASE + String(p).replace(/^\//, "");
+  const WS = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + BASE.replace(/\/$/, "");
   const state = { cfg: null, pcap: "", streams: [], cur: null, track: null, player: null,
     mode: "file", sets: [], applied: -1, tableAt: 0, flows: [], flowsDur: 0, replay: null,
     bmLayer: null, bmOverlay: null, bmCfg: null, evws: null, log: [], retries: 0, seeking: false, videoOn: false, emitting: false };
@@ -110,12 +114,12 @@
   }
   async function download(url, filename, label) {
     return withBusy(label || "export…", async () => {
-      const r = await fetch(url); if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch (e) {} throw new Error(m); }
+      const r = await fetch(U(url)); if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch (e) {} throw new Error(m); }
       const blob = await r.blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     });
   }
   const api = async (url, body) => {
-    const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
+    const r = await fetch(U(url), body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
     const j = await r.json(); if (j.error) throw new Error(j.error); return j;
   };
 
@@ -584,7 +588,7 @@
   });
   $("btn-ts").addEventListener("click", () => {
     if (!state.cur) return status("pas de flux vidéo sélectionné", true);
-    const a = document.createElement("a"); a.href = `/video.ts?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}&download=1`; a.download = `flux_${state.cur.dport}.ts`; a.click();
+    const a = document.createElement("a"); a.href = U(`/video.ts?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}&download=1`); a.download = `flux_${state.cur.dport}.ts`; a.click();
   });
 
   const AGOL = "https://server.arcgisonline.com/ArcGIS/rest/services/{layer}/MapServer/tile/{z}/{y}/{x}";
@@ -602,7 +606,7 @@
     const cfg = state.bmCfg; if (!cfg || cfg.provider !== "mapserver" || !$("basemap").checked) return;
     const b = map.getBounds(), sz = map.getSize();
     const sw = L.CRS.EPSG3857.project(b.getSouthWest()), ne = L.CRS.EPSG3857.project(b.getNorthEast());
-    const url = `/basemap?bbox=${sw.x},${sw.y},${ne.x},${ne.y}&w=${sz.x}&h=${sz.y}&sr=3857&_=${Date.now()}`;
+    const url = U(`/basemap?bbox=${sw.x},${sw.y},${ne.x},${ne.y}&w=${sz.x}&h=${sz.y}&sr=3857&_=${Date.now()}`);
     const img = new Image();
     img.onload = () => {
       const ov = L.imageOverlay(url, [[b.getSouth(), b.getWest()], [b.getNorth(), b.getEast()]], { opacity: .95 }).addTo(map);
@@ -868,7 +872,7 @@
     pb.videoOn = !!(state.cur && checked.some(f => f.proto === "UDP" && f.dport === state.cur.dport));
     const vinfo = pb.videoOn ? (tl.video || []).find(v => v.dport === state.cur.dport) : null;
     pb.vOffset = vinfo ? vinfo.t_offset : 0;
-    if (pb.videoOn) { startPlayer(`/video.ts?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}`, false); video.playbackRate = speedVal() || 1; }
+    if (pb.videoOn) { startPlayer(U(`/video.ts?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}`), false); video.playbackRate = speedVal() || 1; }
     else { $("mode-badge").textContent = "LECTURE — sans vidéo"; $("mode-badge").className = "overlay"; }
     if (pb.videoOn) { $("mode-badge").textContent = "LECTURE — vidéo fichier (seek image) · IHM seule"; }
     $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";

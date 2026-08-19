@@ -142,7 +142,12 @@ scipy en lazy comme la console Tkinter) ; libs JS vendorées dans `pcap_web/stat
 ```bash
 python pcap_web.py ../Captures/capture.pcap [--limit N] [--port 8765]   # ouvre http://127.0.0.1:8765/
 #   ?autoplay=file|replay pour démarrer directement (démo)
+#   --host 0.0.0.0 --base-path /console --captures-dir /data/recordings   # derrière un reverse proxy (StratusServer)
 ```
+
+Source **CSV de détections GMTI** (schéma du banc, tel qu'enregistré par StratusServer dans
+`recordings/{mission}/Metadata/{mission}_gmti_{CR}.csv`) : « Parcourir » les propose, l'analyse donne un flux
+`GMTI/4607 (CSV)`, Décoder/Tracker/A-B/oracle/Lecture IHM fonctionnent (pas de vidéo, pas de zones de dwell, pas de rejeu UDP).
 
 Une **carte unique** (Leaflet ; la légende est cliquable : chaque entrée — trace, empreinte,
 centre image, plots, dwell, pistes, CoT, étiquettes — allume/éteint sa couche), la vidéo avec le
