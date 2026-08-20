@@ -38,8 +38,8 @@ PROC_DEFAULTS = {"mergeMaxDistM": 0.0, "mergeMaxDvMps": 2.0, "mergeMaxHeadingDeg
                  "measPosStdMin": 5.0, "measPosStdMax": 200.0,
                  "clusterDistM": 0.0, "clusterDvMps": 2.5, "clusterMaxSpanM": 400.0, "projectSec": 60.0,
                  "ghostSnrDb": 0.0, "ghostDistM": 400.0, "snrRefDb": 0.0, "snrScaleMax": 4.0}
-PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                                              "gmti_profiles.json")
+EMBEDDED_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gmti_profiles.json")
+PROFILES_JSON = os.environ.get("GMTI_PROFILES") or EMBEDDED_JSON
 CURRENT = {}          # config effective (noms Java) du dernier apply_profile — lue par run_tracking
 
 # Profils de tuning par environnement (repli si gmti_profiles.json absent ; alignés sur demo.py v8).
@@ -74,6 +74,17 @@ def load_profiles(path=None):
     profils embarqués si le fichier manque. Renvoie le dict JSON (defaults/profiles/params)."""
     global _JSON
     path = path or PROFILES_JSON
+    if not os.path.isfile(path) and path != EMBEDDED_JSON and os.path.isfile(EMBEDDED_JSON):
+        # dépôt (GMTI_PROFILES, ex. /data/gmti/gmti_profiles.json) pas encore créé : amorcé depuis la
+        # copie embarquée pour que console et service partagent d'emblée le même fichier éditable
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(EMBEDDED_JSON, encoding="utf-8") as f:
+                seed = f.read()
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(seed)
+        except OSError:
+            path = EMBEDDED_JSON                        # volume absent / lecture seule : repli embarqué
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
