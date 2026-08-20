@@ -46,9 +46,10 @@ def main(argv):
 
     s = open(os.path.join(tdir, "track_run.py"), encoding="utf-8").read()
     s = s.replace("import tracker as T\n", "try:\n    from . import tracker as T\nexcept ImportError:  # exécution hors paquet\n    import tracker as T\n")
-    s = s.replace('PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),\n                                                              "gmti_profiles.json")',
-                  'PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmti_profiles.json")')
-    assert 'os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmti_profiles.json")' in s, "PROFILES_JSON non adapté"
+    # côté Stratus, gmti_profiles.json embarqué est dans le même dossier que track_run.py (pas au-dessus)
+    s = s.replace('EMBEDDED_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gmti_profiles.json")',
+                  'EMBEDDED_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmti_profiles.json")')
+    assert 'EMBEDDED_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmti_profiles.json")' in s, "EMBEDDED_JSON non adapté"
     open(os.path.join(dst, "track_run.py"), "w", encoding="utf-8").write(hdr % (os.path.basename(tdir) + "/track_run.py") + s)
 
     s = open(os.path.join(HERE, "gmti_live.py"), encoding="utf-8").read()
