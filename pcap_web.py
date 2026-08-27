@@ -1579,7 +1579,7 @@ class FollowStream:
     seulement des compteurs et un index clairsemé (1 point / 0,5 s de capture) :
     ts → (segment, offset de l'enregistrement, octets TS cumulés avant lui). Le DVR relit le disque
     à partir du point d'index ; la RAM reste bornée quelle que soit la durée de la mission."""
-    __slots__ = ("dst", "dport", "t0", "t1", "nbytes", "npkts", "idx_ts", "idx_seg", "idx_off", "idx_cum", "last_idx", "lock", "resume_pos")
+    __slots__ = ("dst", "dport", "t0", "t1", "nbytes", "npkts", "idx_ts", "idx_seg", "idx_off", "idx_cum", "last_idx", "lock", "resume_pos", "fid")
     IDX_STEP_S = 0.5
 
     def __init__(self, dst, dport):
@@ -1587,7 +1587,7 @@ class FollowStream:
         self.dst, self.dport = dst, dport
         self.t0 = self.t1 = None; self.nbytes = 0; self.npkts = 0
         self.idx_ts = array.array("d"); self.idx_seg = array.array("H"); self.idx_off = array.array("Q"); self.idx_cum = array.array("Q")
-        self.last_idx = None; self.resume_pos = None
+        self.last_idx = None; self.resume_pos = None; self.fid = None
         self.lock = threading.Lock()
 
     def note(self, ts, seg_no, rec_off, n):
@@ -1626,11 +1626,18 @@ class FollowEngine:
     en temps de capture ; le client la précharge puis reçoit les ajouts (delta). Le TS vidéo est servi
     en HTTP Range (DVR : retour arrière) et poussé sur /ws/video au bord (direct)."""
 
-    def __init__(self):
+    IDLE_STOP_S = 90.0                                   # arrêt automatique sans client (delta/status) depuis ce délai
+
+    def __init__(self, fid=""):
+        self.fid = fid
         self.lock = threading.Lock()
         self.state = {"running": False}
         self.stop_event = threading.Event(); self.thread = None
+        self.last_touch = time.time()
         self._clear()
+
+    def touch(self):
+        self.last_touch = time.time()
 
     def _clear(self):
         self.t0 = None; self.last_ts = None; self.n_packets = 0
@@ -1646,7 +1653,7 @@ class FollowEngine:
     def status(self):
         with self.lock:
             st = dict(self.state)
-        st.update({"follow": True, "duration": self.duration(), "t0": self.t0, "n_packets": self.n_packets,
+        st.update({"follow": True, "id": self.fid, "duration": self.duration(), "t0": self.t0, "n_packets": self.n_packets,
                    "catching_up": self.catching_up, "segment": self.cur_seg, "segments": list(self.segments),
                    "bytes_read": self.bytes_read, "indexed": self.indexed, "journal": bool(self._tl_f is not None), "journal_loaded": self._tl_loaded, "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
                    "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}})
@@ -1659,7 +1666,7 @@ class FollowEngine:
     def start(self, path, watch=None, track=None, taps=()):
         with self.lock:
             if self.state.get("running"):
-                raise ValueError("un suivi de fichier est déjà en cours")
+                raise ValueError("ce suivi est déjà en cours")
             if ENGINE.status().get("running"):
                 raise ValueError("un rejeu est en cours : l'arrêter d'abord")
             if LIVE.status().get("running"):
@@ -1777,7 +1784,7 @@ class FollowEngine:
                     _k, dport, dst, vts, seg, off, cum = it
                     st = vstreams.get(dport)
                     if st is None:
-                        st = vstreams[dport] = FollowStream(dst, dport); st.t0 = vts
+                        st = vstreams[dport] = FollowStream(dst, dport); st.t0 = vts; st.fid = self.fid
                     st.idx_ts.append(vts); st.idx_seg.append(seg); st.idx_off.append(off); st.idx_cum.append(cum)
                     st.last_idx = vts; st.nbytes = cum; st.t1 = vts; st.resume_pos = (seg, off)
                 elif k == "p":
@@ -1838,7 +1845,7 @@ class FollowEngine:
                 if kind == b"V":
                     st = self.streams.get(dport)
                     if st is None:
-                        st = self.streams[dport] = FollowStream("?", dport); st.t0 = ts
+                        st = self.streams[dport] = FollowStream("?", dport); st.t0 = ts; st.fid = self.fid
                     st.idx_ts.append(ts); st.idx_seg.append(seg); st.idx_off.append(off); st.idx_cum.append(val)
                     st.last_idx = ts; st.nbytes = val; st.t1 = ts; last_v[dport] = (seg, off)
                 else:
@@ -1892,7 +1899,7 @@ class FollowEngine:
         if self.idx_path and os.path.isfile(self.idx_path):
             try:
                 resume = self._load_index()
-                print("[follow] index chargé en %.2fs → reprise %s" % (time.perf_counter() - _t0, resume), flush=True)
+                print("[follow %s] index chargé en %.2fs → reprise %s" % (self.fid, time.perf_counter() - _t0, resume), flush=True)
             except Exception as e:
                 EVENTS.publish({"type": "log", "msg": "suivi : index inutilisable (%s) — rattrapage complet" % e})
                 self.streams = {}; self.cot = []; self.dwells = []; self.tracks = {}; self.track_rows = []; self._idx_last_a = None
@@ -1961,7 +1968,7 @@ class FollowEngine:
             tsdata = v9._ts_from_udp(pl) if (st is not None or len(pl) >= TS_PKT) else None
             if tsdata:
                 if st is None:
-                    st = self.streams[dport] = FollowStream(dst, dport)
+                    st = self.streams[dport] = FollowStream(dst, dport); st.fid = self.fid
                     st.t0 = ts
                 elif st.dst == "?":
                     st.dst = dst
@@ -1973,7 +1980,7 @@ class FollowEngine:
                 if cum is not None:
                     self._tl_write("v", dport, dst, round(ts, 6), seg_no, rec_off, cum)
                 if not self.catching_up and dport in self.taps:
-                    video_bus(dport).publish(bytes(tsdata))
+                    video_bus("%s:%d" % (self.fid, dport)).publish(bytes(tsdata))
                 return
         key = "%s/%s" % (proto.lower(), dport)
         if self.watch is not None and key not in self.watch:
@@ -2130,7 +2137,64 @@ class FollowEngine:
         return self.status()
 
 
-FOLLOW = FollowEngine()
+FOLLOWS = {}                                          # id → FollowEngine (un par mission suivie, partagé)
+FOLLOWS_LOCK = threading.Lock()
+
+
+def follow_id(path):
+    seg = follow_segments(path)
+    base = seg[0] if seg else path
+    return hashlib.md5(os.path.abspath(base).encode("utf-8")).hexdigest()[:10]
+
+
+def follow_get(fid):
+    with FOLLOWS_LOCK:
+        eng = FOLLOWS.get(fid or "")
+        if eng is None and fid in ("1", "", None) and len(FOLLOWS) == 1:   # compatibilité : un seul suivi → implicite
+            eng = next(iter(FOLLOWS.values()))
+    if eng is None:
+        raise ValueError("suivi inconnu (id %s)" % fid)
+    eng.touch()
+    return eng
+
+
+def follow_start(path, watch=None, track=None, taps=()):
+    """Démarre — ou REJOINT — le suivi de cette mission : un moteur par mission, partagé par tous les
+    visionneurs (taps cumulés) ; la configuration (flux suivis, profil) est celle du premier arrivé."""
+    fid = follow_id(path)
+    with FOLLOWS_LOCK:
+        eng = FOLLOWS.get(fid)
+        if eng is not None and eng.state.get("running"):
+            eng.touch()
+            if taps:
+                eng.follow(taps=set(eng.taps) | set(int(t) for t in taps))
+            st = eng.status(); st["joined"] = True
+            return st
+        eng = FOLLOWS[fid] = FollowEngine(fid)
+    eng.start(path, watch, track, taps)
+    return eng.status()
+
+
+def follow_reaper():
+    """Arrête les suivis sans client depuis IDLE_STOP_S (les visionneurs signalent leur présence à chaque delta)."""
+    while True:
+        time.sleep(15.0)
+        now = time.time()
+        with FOLLOWS_LOCK:
+            idle = [f for f, e in FOLLOWS.items() if e.state.get("running") and now - e.last_touch > FollowEngine.IDLE_STOP_S]
+            dead = [f for f, e in FOLLOWS.items() if not e.state.get("running") and now - e.last_touch > 600]
+            for f in dead:
+                FOLLOWS.pop(f, None)
+        for f in idle:
+            try:
+                eng = FOLLOWS.get(f)
+                if eng is not None:
+                    eng.stop(); EVENTS.publish({"type": "log", "msg": "suivi %s arrêté (plus de visionneur)" % f})
+            except Exception:
+                pass
+
+
+threading.Thread(target=follow_reaper, name="follow_reaper", daemon=True).start()
 
 
 def flows_summary(path, limit=0):
@@ -2210,8 +2274,8 @@ class Handler(BaseHTTPRequestHandler):
         return p
 
     def _stream(self, q):
-        if q.get("follow", ["0"])[0] in ("1", "true"):
-            return FOLLOW.stream(q.get("dport", [None])[0])
+        if q.get("follow", [""])[0]:
+            return follow_get(q["follow"][0]).stream(q.get("dport", [None])[0])
         path = self._pcap(q)
         limit = int(q.get("limit", ["0"])[0] or 0)
         streams = scan(path, limit)
@@ -2258,7 +2322,7 @@ class Handler(BaseHTTPRequestHandler):
                 st = settings_load()
                 default = self.default_pcap or (st.get("last_pcap") if st.get("last_pcap") and os.path.isfile(st["last_pcap"]) else None)
                 return self._json({"default_pcap": default, "default_limit": self.default_limit,
-                                   "basemap": basemap_load(), "replay": ENGINE.status(), "live": LIVE.status(), "follow": FOLLOW.status(), "settings": st})
+                                   "basemap": basemap_load(), "replay": ENGINE.status(), "live": LIVE.status(), "follows": [e.status() for e in list(FOLLOWS.values())], "settings": st})
             if u.path == "/api/settings":
                 return self._json(settings_load())
             if u.path == "/api/browse":
@@ -2324,12 +2388,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/replay/status":
                 return self._json(ENGINE.status())
+            if u.path == "/api/follow/list":
+                return self._json({"follows": [e.status() for e in list(FOLLOWS.values())]})
             if u.path == "/api/follow/status":
-                return self._json(FOLLOW.status())
+                return self._json(follow_get(q.get("id", [""])[0]).status())
             if u.path == "/api/follow/timeline":
-                return self._json(FOLLOW.timeline())
+                return self._json(follow_get(q.get("id", [""])[0]).timeline())
             if u.path == "/api/follow/delta":
-                return self._json(FOLLOW.delta(int(q.get("cot", ["0"])[0] or 0), int(q.get("dw", ["0"])[0] or 0), int(q.get("tr", ["0"])[0] or 0)))
+                return self._json(follow_get(q.get("id", [""])[0]).delta(int(q.get("cot", ["0"])[0] or 0), int(q.get("dw", ["0"])[0] or 0), int(q.get("tr", ["0"])[0] or 0)))
             if u.path == "/api/live/status":
                 st = LIVE.status(); st["flows_live"] = LIVE.flows_summary(); return self._json(st)
             if u.path == "/api/live/ifaces":
@@ -2338,7 +2404,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/ws/events":
                 return self._ws_events()
             if u.path == "/ws/video":
-                return self._ws_video(int(q.get("dport", ["0"])[0] or 0))
+                return self._ws_video(int(q.get("dport", ["0"])[0] or 0), q.get("follow", [None])[0] or None)
             if u.path == "/api/streams":
                 path = self._pcap(q)
                 limit = int(q.get("limit", ["0"])[0] or 0)
@@ -2396,12 +2462,18 @@ class Handler(BaseHTTPRequestHandler):
                     raise FileNotFoundError("pcap introuvable : %r" % pcap)
                 if is_csv_source(pcap):
                     raise ValueError("un CSV ne se suit pas : ouvrir le pcap de la capture")
-                FOLLOW.start(pcap, body.get("watch"), body.get("track"), body.get("taps") or [])
-                return self._json(FOLLOW.status())
+                return self._json(follow_start(pcap, body.get("watch"), body.get("track"), body.get("taps") or []))
             if u.path == "/api/follow/stop":
-                return self._json(FOLLOW.stop())
+                # Un visionneur qui part ne coupe pas les autres : le moteur s'arrête seul sans client (reaper) ;
+                # force=true = arrêt immédiat (console d'analyse).
+                eng = follow_get(body.get("id"))
+                if body.get("force"):
+                    return self._json(eng.stop())
+                eng.last_touch = time.time() - FollowEngine.IDLE_STOP_S + 20.0     # arrêt dans ~20 s si personne d'autre
+                st = eng.status(); st["detached"] = True
+                return self._json(st)
             if u.path == "/api/follow/follow":
-                return self._json(FOLLOW.follow(body.get("taps"), body.get("track")))
+                return self._json(follow_get(body.get("id")).follow(body.get("taps"), body.get("track")))
             if u.path == "/api/live/follow":
                 return self._json(LIVE.follow(body.get("taps"), body.get("watch"), body.get("track")))
             if u.path == "/api/replay/pause":
@@ -2469,12 +2541,12 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             EVENTS.unsubscribe(q)
 
-    def _ws_video(self, dport):
+    def _ws_video(self, dport, fid=None):
         if not dport:
             return self._err(400, "dport requis")
         if not self._ws_handshake():
             return
-        bus = video_bus(dport)
+        bus = video_bus(("%s:%d" % (fid, dport)) if fid else dport)
         q = bus.subscribe(maxsize=4000)
         try:
             self._ws_pump(q, 2, lambda b: b)
@@ -2521,7 +2593,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         pending, plen = [], 0
         try:
-            for b in FOLLOW.iter_ts(st, seg_no, off, skip):
+            for b in FOLLOWS[st.fid].iter_ts(st, seg_no, off, skip):
                 pending.append(b); plen += len(b)
                 if plen >= 256 * 1024:
                     data = b"".join(pending); self.wfile.write(b"%x\r\n" % len(data)); self.wfile.write(data); self.wfile.write(b"\r\n"); self.wfile.flush()
@@ -2536,7 +2608,7 @@ class Handler(BaseHTTPRequestHandler):
     def _count_until(handler, st, seg_no, off, t_abs):
         """Octets TS entre le point d'index et le 1er datagramme daté >= t_abs (≤ 0,5 s de flux)."""
         try:
-            tail = PcapTail(FOLLOW.seg_path(seg_no))
+            tail = PcapTail(FOLLOWS[st.fid].seg_path(seg_no))
         except (OSError, ValueError, TypeError):
             return
         tail.offset = max(24, off)
