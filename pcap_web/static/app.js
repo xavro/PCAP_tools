@@ -981,9 +981,9 @@
       // le serveur sert le TS à partir du datagramme daté t (index du tampon) : le lecteur démarre à 0 = t (saut exact)
       pb.vOffset = t;
       startPlayer(U(`/video.ts?follow=${pb.fid}&dport=${state.cur.dport}&from=${t.toFixed(3)}&_=${Date.now()}`), false, true); video.playbackRate = speedVal() || 1;
-      $("mode-badge").textContent = "DVR — retour arrière sur le fichier en cours (⟫ Direct pour recoller)"; $("mode-badge").className = "overlay";
+      $("mode-badge").textContent = pb.liveMission ? "DVR — retour arrière sur le fichier en cours (⟫ Direct pour recoller)" : "LECTURE — mission terminée (relecture depuis le disque)"; $("mode-badge").className = "overlay";
     }
-    setState("playing", `▶ DVR · t=${t.toFixed(0)} s · ⟫ = direct`);
+    setState("playing", pb.liveMission ? `▶ DVR · t=${t.toFixed(0)} s · ⟫ = direct` : `▶ lecture · t=${t.toFixed(0)} s`);
   }
   async function followStop() {
     if (pb.timer) { clearInterval(pb.timer); pb.timer = null; }
