@@ -816,7 +816,7 @@
     if (state.player) { try { state.player.pause(); state.player.unload(); state.player.detachMediaElement(); state.player.destroy(); } catch (e) {} }
     state.player = null;
   }
-  video.addEventListener("ended", () => { if (pb.on && pb.follow && !pb.edge) return goEdge(); if (pb.on && !pb.follow && $("loop").checked) playbackSeek(0); });
+  video.addEventListener("ended", () => { if (pb.on && pb.follow && !pb.edge) return pb.liveMission ? goEdge() : playbackPause(true); if (pb.on && !pb.follow && $("loop").checked) playbackSeek(0); });
 
   async function play() {
     if (isLive()) return liveStart();
@@ -916,7 +916,8 @@
   // Le serveur rattrape le fichier puis suit sa croissance (et le segment suivant) ; l'IHM précharge la
   // ligne de temps comme en lecture, reçoit les ajouts chaque seconde (delta) et joue la vidéo soit au
   // bord (flux poussé sur /ws/video, comme le live), soit en retour arrière (HTTP Range sur le tampon).
-  async function followStart() {
+  async function followStart(opts) {
+    opts = opts || {};
     const checked = checkedFlows();
     if (!checked.length) return status("cocher au moins un flux à suivre", true);
     stopPlayer(); if (state.replay && state.replay.running) { try { await api("/api/replay/stop", {}); } catch (e) {} }
@@ -927,16 +928,18 @@
     const taps = pb.videoOn ? [state.cur.dport] : [];
     let tl;
     try {
-      const st0 = await withBusy("démarrage du suivi du fichier…", () => api("/api/follow/start", { pcap: state.pcap, watch, track, taps }), ["btn-play"]);
-      pb.fid = st0.id;                                                          // suivi PAR MISSION, partagé entre visionneurs
+      let st0;
+      if (opts.pre) { st0 = opts.pre; pb.fid = st0.id; if (taps.length) await api("/api/follow/follow", { id: pb.fid, taps }); }   // déjà ouvert (page opérateur)
+      else { st0 = await withBusy("démarrage du suivi du fichier…", () => api("/api/follow/start", { pcap: state.pcap, watch, track, taps }), ["btn-play"]); pb.fid = st0.id; }
       if (st0.joined) status("suivi déjà en cours pour cette mission : rejoint");
       tl = await withBusy("rattrapage du fichier (CoT, GMTI, pistes, vidéo)…", followWaitCatchup, ["btn-play"]);
     } catch (e) { return status("suivi : " + e.message, true); }
     pb.tl = tl; pb.tracks = tl.tracks || []; pb.seq = tl.seq; pb.on = true; pb.follow = true; pb.paused = false; pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; state.retries = 0;
     state.mode = "play"; resetCot(); resetGmti(); resetLive(); fitOnce = false;
-    $("btn-edge").hidden = false; $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";
+    pb.liveMission = opts.live !== false;                                       // false : mission terminée (lecture depuis le début, pas de « direct »)
+    $("btn-edge").hidden = !pb.liveMission; $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";
     if (gmtiChecked && track) { showTab("gmti"); $("gmti-live-body").textContent = `suivi : pistes du tracker temps réel (profil ${track.profile}) datées sur la capture`; }
-    goEdge();
+    if (pb.liveMission) goEdge(); else { pb.edge = false; pb.t = 0; pb.wall = performance.now(); goDvr(0); resetCot(); resetGmti(); resetLive(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; }
     if (pb.timer) clearInterval(pb.timer); pb.timer = setInterval(followPoll, 1000); followPoll();
     status(`suivi du fichier démarré : ${checked.map(f => f.key).join(", ")} — ${tl.duration.toFixed(0)} s déjà capturées`);
     fitTimeline();
@@ -960,7 +963,7 @@
     (d.track_rows || []).forEach(([id, row]) => { const tr = pb.tracks.find(t => t.id === id); if (tr) tr.hist.push(row); });
     pb.seq = d.seq; pb.tl.duration = d.duration; pb.tl.video = d.video; pb.edgeAge = d.edge_age_s; if (d.coverage) pb.tl.coverage = d.coverage;
     $("tl-mode").textContent = `suivi du fichier${d.segment ? " · " + d.segment : ""} — ${pb.tl.cot.length} events CoT, ${pb.tl.dwells.length} dwells, ${pb.tracks.length} pistes · `
-      + (pb.edge ? "● DIRECT" : `DVR t=${pb.t.toFixed(0)} s`) + ` · bord ${d.duration.toFixed(0)} s`
+      + (pb.edge ? "● DIRECT" : (pb.liveMission ? `DVR t=${pb.t.toFixed(0)} s` : `lecture t=${pb.t.toFixed(0)} s`)) + (pb.liveMission ? ` · bord ${d.duration.toFixed(0)} s` : ` · ${d.duration.toFixed(0)} s`)
       + (d.edge_age_s != null && d.edge_age_s > 5 ? ` (fichier figé depuis ${d.edge_age_s.toFixed(0)} s)` : "") + " · clic timeline = retour arrière, ⟫ = direct";
   }
   function goEdge() {                                      // recolle au bord : lecteur ws (flux poussé au fil de l'écriture), état reconstitué à t = bord
@@ -991,7 +994,7 @@
   function playbackSeek(t) {
     if (!pb.on) return; t = Math.max(0, Math.min(t, pb.tl.duration));
     if (pb.follow) {
-      if (t >= pb.tl.duration - 3) { goEdge(); return status("retour au direct"); }
+      if (pb.liveMission && t >= pb.tl.duration - 3) { goEdge(); return status("retour au direct"); }
       pb.t = t; pb.wall = performance.now(); goDvr(t);
       resetCot(); resetGmti(); resetLive(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; playbackRender(t, true);
       return status(`DVR : saut à t=${t.toFixed(1)} s`);
@@ -1332,11 +1335,23 @@
     document.title = `STRATUS - ${name || pcap.split(/[\\/]/).pop()}`;
     if (qs.get("profile")) { const s = $("gmti-profile"); s.innerHTML = `<option value="${qs.get("profile")}">${qs.get("profile")}</option>`; s.value = qs.get("profile"); }
     $("gmti-live").checked = true;
-    $("pcap").value = pcap; await load();
-    if (!state.streams.length && !state.flows.length) return;
+    $("pcap").value = pcap; state.pcap = pcap; stopPlayer();
     const live = qs.get("live") === "1" || qs.get("live") === "true";
-    $("mode").value = live ? "follow" : "play"; $("mode").dispatchEvent(new Event("change"));
-    if (qs.get("autoplay") !== "0") setTimeout(play, 300);
+    // Ouverture PAR LE SUIVI (live ou terminée) : index + journal, lecture disque — aucune analyse, rien en RAM.
+    const track = { profile: $("gmti-profile").value || "defaut", overrides: {} };
+    let st;
+    try {
+      st = await withBusy("ouverture de la mission…", () => api("/api/follow/start", { pcap, watch: null, track, taps: [] }), ["btn-play"]);
+      pb.fid = st.id;
+      for (let i = 0; i < 7200 && st.catching_up; i++) { await new Promise(r => setTimeout(r, 500)); st = await api(`/api/follow/status?id=${pb.fid}`); if (!st.running) throw new Error("suivi arrêté"); status(`rattrapage… ${(st.duration || 0).toFixed(0)} s · ${((st.bytes_read || 0) / 1e6).toFixed(0)} Mo`); }
+    } catch (e) { return status("mission : " + e.message, true); }
+    state.flows = (st.flows || []).map(f => ({ proto: f.proto, dport: f.dport, dominant: f.dominant, pkts: f.pkts, bytes: f.bytes, dsts: f.dsts }));
+    state.streams = (st.streams || []).map(v => ({ dport: v.dport, dst: v.dst, bytes: v.bytes, duration_s: v.duration }));
+    state.cur = state.streams.length ? state.streams.reduce((a, b) => (b.bytes > a.bytes ? b : a)) : null;
+    state.flowsDur = st.duration || 0;
+    $("mode").value = "follow"; state.mode = "play";
+    if (!state.flows.length) return status("mission vide (aucun flux)", true);
+    if (qs.get("autoplay") !== "0") followStart({ pre: st, live });
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────────

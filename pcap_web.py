@@ -1648,12 +1648,14 @@ class FollowEngine:
         self.edge_wall = 0.0
         self._seg_base = None; self._single = None; self.seg_first = 1; self.idx_path = None; self._idx_last_a = None; self.indexed = False
         self.tl_path = None; self._tl_f = None; self._tl_pos = None; self._tl_flush = 0.0; self._tl_loaded = 0; self._id_offset = 0
+        self.flows = {}                                 # (proto, dport) → inventaire (classe dominante, compteurs) — journalisé ("f")
 
     # -- statut --
     def status(self):
         with self.lock:
             st = dict(self.state)
         st.update({"follow": True, "id": self.fid, "duration": self.duration(), "t0": self.t0, "n_packets": self.n_packets,
+                   "streams": self.video_info(), "flows": self.flows_info(),
                    "catching_up": self.catching_up, "segment": self.cur_seg, "segments": list(self.segments),
                    "bytes_read": self.bytes_read, "indexed": self.indexed, "journal": bool(self._tl_f is not None), "journal_loaded": self._tl_loaded, "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
                    "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}})
@@ -1780,6 +1782,10 @@ class FollowEngine:
                 k = it[0]
                 if k == "h":
                     t0 = it[1].get("t0")
+                elif k == "f":                                     # flux (inventaire) — idempotent
+                    _k, proto, dport, cls, dst = it
+                    if (proto, dport) not in self.flows:
+                        self.flows[(proto, dport)] = {"proto": proto, "dport": dport, "dominant": cls, "pkts": 0, "bytes": 0, "dsts": {dst} if dst else set()}
                 elif k == "v":                                     # point d'index vidéo (validé immédiatement : idempotent)
                     _k, dport, dst, vts, seg, off, cum = it
                     st = vstreams.get(dport)
@@ -1977,16 +1983,18 @@ class FollowEngine:
                         return                                     # déjà compté par l'index
                     st.resume_pos = None
                 cum = st.note(ts, seg_no, rec_off, len(tsdata))
+                self._flow("UDP", dport, dst, len(pl), cls="MPEG-TS/4609(video)")
                 if cum is not None:
                     self._tl_write("v", dport, dst, round(ts, 6), seg_no, rec_off, cum)
                 if not self.catching_up and dport in self.taps:
                     video_bus("%s:%d" % (self.fid, dport)).publish(bytes(tsdata))
                 return
         key = "%s/%s" % (proto.lower(), dport)
+        if self._idx_last_a is not None and (seg_no, rec_off) <= self._idx_last_a:
+            return                                                 # déjà relu via l'index / le journal
+        self._flow(proto, dport, dst, len(pl), pl=pl)
         if self.watch is not None and key not in self.watch:
             return
-        if self._idx_last_a is not None and (seg_no, rec_off) <= self._idx_last_a:
-            return                                                 # déjà relu via l'index
         if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
             ev = decode_cot(pl)
             if ev:
@@ -2046,6 +2054,19 @@ class FollowEngine:
                 rec["hits"] = tr.hits; rec["air"] = bool(tr.is_air); rec["rot"] = bool(tr.is_rotator)
                 row = [t_rel, round(la, 6), round(lo, 6), nm, hit, 1 if tr.confirmed_ever else 0, sp, hd]
                 rec["hist"].append(row); self.track_rows.append((tid, row)); self._tl_write("t", tid, row)
+
+    def _flow(self, proto, dport, dst, n, cls=None, pl=None):
+        k = (proto, dport); f = self.flows.get(k)
+        if f is None:
+            f = self.flows[k] = {"proto": proto, "dport": dport, "dominant": cls or pcap_analyze.classify(pl or b""), "pkts": 0, "bytes": 0, "dsts": set()}
+            self._tl_write("f", proto, dport, f["dominant"], dst)
+        f["pkts"] += 1; f["bytes"] += n
+        if len(f["dsts"]) < 8:
+            f["dsts"].add(dst)
+
+    def flows_info(self):
+        return [{"proto": f["proto"], "dport": f["dport"], "dominant": f["dominant"], "pkts": f["pkts"], "bytes": f["bytes"], "dsts": sorted(f["dsts"])}
+                for f in sorted(self.flows.values(), key=lambda f: -f["bytes"])]
 
     # -- vues client --
     def video_info(self):
