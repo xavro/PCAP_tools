@@ -1471,8 +1471,11 @@ class PcapTail:
         out = []
         if self.corrupt:
             return out
+        avail = self.size() - self.offset                      # ne demander QUE ce qui existe : read(64 Mo)
+        if avail < 16:                                         # allouerait 64 Mo à chaque tour au bord du direct
+            return out
         self.f.seek(self.offset)
-        data = self.f.read(max_bytes)
+        data = self.f.read(min(max_bytes, avail))
         pos, n = 0, len(data)
         while n - pos >= 16:
             ts_s, ts_frac, incl, _orig = self.hdr.unpack_from(data, pos)
@@ -1515,7 +1518,7 @@ class FollowStream:
     seulement des compteurs et un index clairsemé (1 point / 0,5 s de capture) :
     ts → (segment, offset de l'enregistrement, octets TS cumulés avant lui). Le DVR relit le disque
     à partir du point d'index ; la RAM reste bornée quelle que soit la durée de la mission."""
-    __slots__ = ("dst", "dport", "t0", "t1", "nbytes", "npkts", "idx_ts", "idx_seg", "idx_off", "idx_cum", "last_idx", "lock")
+    __slots__ = ("dst", "dport", "t0", "t1", "nbytes", "npkts", "idx_ts", "idx_seg", "idx_off", "idx_cum", "last_idx", "lock", "resume_pos")
     IDX_STEP_S = 0.5
 
     def __init__(self, dst, dport):
@@ -1523,7 +1526,7 @@ class FollowStream:
         self.dst, self.dport = dst, dport
         self.t0 = self.t1 = None; self.nbytes = 0; self.npkts = 0
         self.idx_ts = array.array("d"); self.idx_seg = array.array("H"); self.idx_off = array.array("Q"); self.idx_cum = array.array("Q")
-        self.last_idx = None
+        self.last_idx = None; self.resume_pos = None
         self.lock = threading.Lock()
 
     def note(self, ts, seg_no, rec_off, n):
@@ -1539,7 +1542,7 @@ class FollowStream:
         with self.lock:
             i = bisect.bisect_right(self.idx_ts, t_abs) - 1
             if i < 0:
-                return (0, 24, 0) if not len(self.idx_seg) else (self.idx_seg[0], self.idx_off[0], 0)
+                return (1, 24, 0) if not len(self.idx_seg) else (self.idx_seg[0], self.idx_off[0], 0)
             return (self.idx_seg[i], self.idx_off[i], self.idx_cum[i])
 
     def locate_bytes(self, cum):
@@ -1548,7 +1551,7 @@ class FollowStream:
         with self.lock:
             i = bisect.bisect_right(self.idx_cum, cum) - 1
             if i < 0:
-                return (0, 24, 0) if not len(self.idx_seg) else (self.idx_seg[0], self.idx_off[0], 0)
+                return (1, 24, 0) if not len(self.idx_seg) else (self.idx_seg[0], self.idx_off[0], 0)
             return (self.idx_seg[i], self.idx_off[i], self.idx_cum[i])
 
 
@@ -1572,6 +1575,7 @@ class FollowEngine:
         self.streams = {}; self.watch = None; self.taps = set(); self.live = None
         self.segments = []; self.cur_seg = None; self.catching_up = True; self.bytes_read = 0
         self.edge_wall = 0.0
+        self._seg_base = None; self._single = None; self.seg_first = 1; self.idx_path = None; self._idx_last_a = None; self.indexed = False
 
     # -- statut --
     def status(self):
@@ -1579,7 +1583,7 @@ class FollowEngine:
             st = dict(self.state)
         st.update({"follow": True, "duration": self.duration(), "t0": self.t0, "n_packets": self.n_packets,
                    "catching_up": self.catching_up, "segment": self.cur_seg, "segments": list(self.segments),
-                   "bytes_read": self.bytes_read, "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
+                   "bytes_read": self.bytes_read, "indexed": self.indexed, "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
                    "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}})
         return st
 
@@ -1595,6 +1599,8 @@ class FollowEngine:
                 raise ValueError("un rejeu est en cours : l'arrêter d'abord")
             if LIVE.status().get("running"):
                 raise ValueError("une écoute réseau est en cours : l'arrêter d'abord")
+            if self.thread is not None and self.thread.is_alive():   # ancien suivi arrêté : attendre la fin de sa boucle
+                self.stop_event.set(); self.thread.join(5.0)
             self._clear()
             self.watch = None if watch is None else set(str(w).lower() for w in watch)
             self.taps = set(int(t) for t in (taps or []))
@@ -1606,15 +1612,18 @@ class FollowEngine:
                     warn = "pistage indisponible : %s" % e; track = None
             seg = follow_segments(path)
             if seg:
-                base, n = seg
-                self.segments = [os.path.join(os.path.dirname(path), "%s_%03d.pcap" % (os.path.basename(base), n))]
+                base, n = seg                                   # base = dossier/mission (sans _NNN.pcap)
+                self._seg_base = base; self._single = None
+                self.seg_first = 1 if os.path.isfile("%s_001.pcap" % base) else n     # toute la série, même si l'utilisateur a ouvert _003
+                self.idx_path = base + ".idx"                   # index persistant écrit par stratus2-capture (s'il existe)
             else:
-                self.segments = [path]
-            self._seg_base = seg
+                self._seg_base = None; self._single = path; self.seg_first = 1; self.idx_path = None
+            self.segments = [self.seg_path(self.seg_first)]
             self.stop_event.clear()
             self.state = {"running": True, "pcap": path, "watch": watch, "track": track, "taps": list(self.taps),
                           "started": time.time(), "speed": 1, "paused": False, "loop": False, "t": 0.0}
-        EVENTS.publish({"type": "log", "msg": "suivi du fichier : %s%s" % (path, " (série de segments)" if seg else "")})
+        EVENTS.publish({"type": "log", "msg": "suivi du fichier : %s%s%s" % (path, " (série de segments)" if seg else "",
+                                                                        " + index persistant" if (self.idx_path and os.path.isfile(self.idx_path)) else "")})
         if warn:
             EVENTS.publish({"type": "log", "msg": warn})
         self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
@@ -1626,49 +1635,117 @@ class FollowEngine:
         EVENTS.publish({"type": "log", "msg": "suivi du fichier arrêté (%d paquets, %.1f s)" % (self.n_packets, self.duration())})
         return self.status()
 
-    # -- boucle de suivi --
-    def _next_segment(self, cur):
-        seg = self._seg_base
-        if not seg:
-            return None
-        m = _SEG_RE.match(os.path.basename(cur))
-        n = int(m.group(2)) + 1
-        nxt = os.path.join(os.path.dirname(cur), "%s_%03d.pcap" % (m.group(1), n))
-        return nxt if os.path.isfile(nxt) else None
+    # -- segments (numéro du fichier _NNN ; 1 pour un fichier isolé) --
+    def seg_path(self, n):
+        if self._seg_base:
+            return "%s_%03d.pcap" % (self._seg_base, n)
+        return self._single if n == 1 else None
+
+    def _seg_exists(self, n):
+        p = self.seg_path(n)
+        return bool(p) and os.path.isfile(p)
+
+    # -- index persistant (STRIDX01, écrit par stratus2-capture) --
+    IDX_REC = struct.Struct("<cdHQQH")
+
+    def _load_index(self):
+        """Rattrapage instantané : points vidéo → index des flux ; paquets applicatifs → relus un à un
+        (seek direct) pour CoT / dwells / pistes. Renvoie la position (segment, offset) où la lecture
+        séquentielle reprend (≤ 0,5 s avant le bord)."""
+        with open(self.idx_path, "rb") as f:
+            if f.read(8) != b"STRIDX01":
+                raise ValueError("format d'index inconnu")
+            data = f.read()
+        R = self.IDX_REC; n = len(data) // R.size
+        handles = {}; last_v = {}; last_a = None; last_pos = None; n_a = 0
+        try:
+            for i in range(n):
+                kind, ts, seg, off, val, dport = R.unpack_from(data, i * R.size)
+                if self.t0 is None:
+                    self.t0 = ts
+                if kind == b"V":
+                    st = self.streams.get(dport)
+                    if st is None:
+                        st = self.streams[dport] = FollowStream("?", dport); st.t0 = ts
+                    st.idx_ts.append(ts); st.idx_seg.append(seg); st.idx_off.append(off); st.idx_cum.append(val)
+                    st.last_idx = ts; st.nbytes = val; st.t1 = ts; last_v[dport] = (seg, off)
+                else:
+                    f = handles.get(seg)
+                    if f is None:
+                        p = self.seg_path(seg)
+                        if not p or not os.path.isfile(p):
+                            continue
+                        f = handles[seg] = open(p, "rb")
+                    f.seek(off); h = f.read(16)
+                    if len(h) < 16:
+                        continue
+                    ts_s, ts_us, incl, _o = struct.unpack("<IIII", h)
+                    if incl > PcapTail.MAX_INCL:
+                        continue
+                    frame = f.read(incl)
+                    if len(frame) < incl:
+                        continue
+                    self._on_frame(ts_s + ts_us / 1e6, 1, frame, seg, off); n_a += 1
+                    last_a = (seg, off)
+                last_pos = (seg, off) if last_pos is None or (seg, off) > last_pos else last_pos
+                self.last_ts = max(self.last_ts or ts, ts)
+        finally:
+            for f in handles.values():
+                f.close()
+        self._idx_last_a = last_a
+        for dport, pos in last_v.items():
+            self.streams[dport].resume_pos = pos
+        resume = min(last_v.values()) if last_v else last_pos
+        self.indexed = True
+        EVENTS.publish({"type": "log", "msg": "suivi : index chargé — %d flux vidéo, %d paquets applicatifs relus, %.1f s" % (len(last_v), n_a, self.duration())})
+        return resume
 
     def _run(self):
-        cur = self.segments[0]
-        tail = None
-        idle_polls = 0
+        n = self.seg_first
+        tail = None; idle_polls = 0; resume = None
+        _t0 = time.perf_counter()
+        if self.idx_path and os.path.isfile(self.idx_path):
+            try:
+                resume = self._load_index()
+                print("[follow] index chargé en %.2fs → reprise %s" % (time.perf_counter() - _t0, resume), flush=True)
+            except Exception as e:
+                EVENTS.publish({"type": "log", "msg": "suivi : index inutilisable (%s) — rattrapage complet" % e})
+                self.streams = {}; self.cot = []; self.dwells = []; self.tracks = {}; self.track_rows = []; self._idx_last_a = None
+                self.t0 = self.last_ts = None; self.n_packets = 0; resume = None
+            if resume:
+                n = resume[0]
         try:
             while not self.stop_event.is_set():
                 if tail is None:
+                    path = self.seg_path(n)
                     try:
-                        tail = PcapTail(cur)
-                    except (OSError, ValueError) as e:
+                        tail = PcapTail(path)
+                    except (OSError, ValueError, TypeError) as e:
                         EVENTS.publish({"type": "log", "msg": "suivi : %s" % e}); time.sleep(1.0); continue
-                    self.cur_seg = cur
-                    if cur not in self.segments:
-                        self.segments.append(cur)
-                    EVENTS.publish({"type": "log", "msg": "suivi : segment %s" % os.path.basename(cur)})
+                    if resume and resume[0] == n:
+                        tail.offset = max(24, resume[1]); resume = None
+                    self.cur_seg = path
+                    if path not in self.segments:
+                        self.segments.append(path)
+                    print("[follow] %.2fs segment %s offset %d / %d" % (time.perf_counter() - _t0, os.path.basename(path), tail.offset, tail.size()), flush=True)
+                    EVENTS.publish({"type": "log", "msg": "suivi : segment %s" % os.path.basename(path)})
                 frames = tail.read()
                 if frames:
                     idle_polls = 0
-                    seg_no = self.segments.index(cur)
                     for ts, lt, data, rec_off in frames:
-                        self._on_frame(ts, lt, data, seg_no, rec_off)
+                        self._on_frame(ts, lt, data, n, rec_off)
                     self.bytes_read = tail.offset
                     self.edge_wall = time.time()
-                    if self.catching_up and tail.offset >= tail.size():
+                    if self.catching_up and tail.offset >= tail.size() and not self._seg_exists(n + 1):
                         self.catching_up = False
+                        print("[follow] %.2fs rattrapage terminé (%d paquets)" % (time.perf_counter() - _t0, self.n_packets), flush=True)
                         EVENTS.publish({"type": "log", "msg": "suivi : rattrapage terminé (%d paquets, %.1f s) — au bord du direct" % (self.n_packets, self.duration())})
                     continue
                 # pas de nouvelle trame : segment suivant disponible ?
-                nxt = self._next_segment(cur)
-                if nxt is not None and tail.offset >= tail.size():
+                if self._seg_exists(n + 1) and tail.offset >= tail.size():
                     idle_polls += 1
-                    if idle_polls >= 3:                            # 3 tours sans croissance → l'écrivain est passé au suivant
-                        tail.close(); tail = None; cur = nxt; idle_polls = 0
+                    if idle_polls >= 3 or self.catching_up:       # 3 tours sans croissance → l'écrivain est passé au suivant
+                        tail.close(); tail = None; n += 1; idle_polls = 0
                         continue
                 if self.catching_up and tail.offset >= tail.size():
                     self.catching_up = False
@@ -1696,6 +1773,12 @@ class FollowEngine:
                 if st is None:
                     st = self.streams[dport] = FollowStream(dst, dport)
                     st.t0 = ts
+                elif st.dst == "?":
+                    st.dst = dst
+                if st.resume_pos is not None:
+                    if (seg_no, rec_off) < st.resume_pos:
+                        return                                     # déjà compté par l'index
+                    st.resume_pos = None
                 st.note(ts, seg_no, rec_off, len(tsdata))
                 if not self.catching_up and dport in self.taps:
                     video_bus(dport).publish(bytes(tsdata))
@@ -1703,6 +1786,8 @@ class FollowEngine:
         key = "%s/%s" % (proto.lower(), dport)
         if self.watch is not None and key not in self.watch:
             return
+        if self._idx_last_a is not None and (seg_no, rec_off) <= self._idx_last_a:
+            return                                                 # déjà relu via l'index
         if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
             ev = decode_cot(pl)
             if ev:
@@ -1792,24 +1877,22 @@ class FollowEngine:
     # -- lecture disque (DVR) --
     def iter_ts(self, st, seg_no, rec_off, skip=0, t_min=None):
         """TS du flux `st` relu depuis le disque à partir de (segment, offset) : saute `skip` octets
-        (reprise Range) et/ou les datagrammes datés < t_min ; s'arrête au bord (fin des données
-        écrites) ou sur les segments suivants connus."""
-        segs = list(self.segments)
-        i = seg_no
-        while i < len(segs):
+        (reprise Range) et/ou les datagrammes datés < t_min ; enchaîne les segments suivants existants
+        et s'arrête au bord (fin des données écrites)."""
+        n = seg_no
+        while self._seg_exists(n):
             try:
-                tail = PcapTail(segs[i])
+                tail = PcapTail(self.seg_path(n))
             except (OSError, ValueError):
                 return
-            if i == seg_no:
+            if n == seg_no:
                 tail.offset = max(24, rec_off)
             try:
                 while True:
                     frames = tail.read(4 << 20)
                     if not frames:
-                        segs = list(self.segments)                 # un segment suivant est-il apparu ?
-                        if i + 1 < len(segs) and tail.offset >= tail.size():
-                            break
+                        if self._seg_exists(n + 1) and tail.offset >= tail.size():
+                            break                                  # segment suivant
                         return                                     # bord du direct : fin de la ressource
                     for ts, lt, data, _off in frames:
                         r = parse(lt, data)
@@ -1827,7 +1910,7 @@ class FollowEngine:
                         yield bytes(tsdata)
             finally:
                 tail.close()
-            i += 1
+            n += 1
 
     def follow(self, taps=None, track=None):
         if taps is not None:
@@ -2237,8 +2320,8 @@ class Handler(BaseHTTPRequestHandler):
     def _count_until(handler, st, seg_no, off, t_abs):
         """Octets TS entre le point d'index et le 1er datagramme daté >= t_abs (≤ 0,5 s de flux)."""
         try:
-            tail = PcapTail(FOLLOW.segments[seg_no])
-        except (OSError, ValueError, IndexError):
+            tail = PcapTail(FOLLOW.seg_path(seg_no))
+        except (OSError, ValueError, TypeError):
             return
         tail.offset = max(24, off)
         try:
