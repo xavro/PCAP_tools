@@ -950,7 +950,7 @@
     if (d.dwells.length) pb.tl.dwells.push(...d.dwells);
     (d.track_meta || []).forEach(m => { let tr = pb.tracks.find(t => t.id === m.id); if (!tr) pb.tracks.push({ id: m.id, air: m.air, rot: m.rot, hits: m.hits, hist: [] }); else { tr.hits = m.hits; tr.air = m.air; tr.rot = m.rot; } });
     (d.track_rows || []).forEach(([id, row]) => { const tr = pb.tracks.find(t => t.id === id); if (tr) tr.hist.push(row); });
-    pb.seq = d.seq; pb.tl.duration = d.duration; pb.tl.video = d.video; pb.edgeAge = d.edge_age_s;
+    pb.seq = d.seq; pb.tl.duration = d.duration; pb.tl.video = d.video; pb.edgeAge = d.edge_age_s; if (d.coverage) pb.tl.coverage = d.coverage;
     $("tl-mode").textContent = `suivi du fichier${d.segment ? " · " + d.segment : ""} — ${pb.tl.cot.length} events CoT, ${pb.tl.dwells.length} dwells, ${pb.tracks.length} pistes · `
       + (pb.edge ? "● DIRECT" : `DVR t=${pb.t.toFixed(0)} s`) + ` · bord ${d.duration.toFixed(0)} s`
       + (d.edge_age_s != null && d.edge_age_s > 5 ? ` (fichier figé depuis ${d.edge_age_s.toFixed(0)} s)` : "") + " · clic timeline = retour arrière, ⟫ = direct";
@@ -1149,34 +1149,59 @@
     if (state.mode === "replay") return Math.max(state.flowsDur || 0, (state.replay && state.replay.t) || 0, vOff() + video.currentTime);
     return (isFinite(video.duration) && video.duration > 0) ? video.duration : (state.cur ? state.cur.duration_s : 0);
   }
+  // Origine absolue de la ligne de temps (epoch s) : horodatage RÉEL de la mission sur la règle
+  const tlT0 = () => (pb.on && pb.tl && pb.tl.t0) ? pb.tl.t0 : null;
+  const hhmmss = t => { const d = new Date(t * 1000); return isNaN(d) ? "" : d.toISOString().slice(11, 19); };
+  const fmtT = t => { const t0 = tlT0(); return t0 ? hhmmss(t0 + t) : (t >= 3600 ? `${Math.floor(t / 3600)}h${String(Math.floor(t % 3600 / 60)).padStart(2, "0")}` : t >= 60 ? `${Math.floor(t / 60)}m${String(Math.round(t % 60)).padStart(2, "0")}` : `${Math.round(t)}s`); };
+  const LANE_V = { y: 44, h: 7 }, LANE_G = { y: 54, h: 7 }, LANE_X0 = 30;   // pistes de couverture (bas de la barre)
+  function drawBands(bands, lane, color, label, W, x) {
+    ctx.fillStyle = "rgba(255,255,255,.05)"; ctx.fillRect(LANE_X0, lane.y, W - LANE_X0, lane.h);
+    ctx.fillStyle = color;
+    (bands || []).forEach(([a, b]) => { const xa = Math.max(LANE_X0, x(a)), xb = Math.max(xa + 1, x(b)); ctx.fillRect(xa, lane.y, xb - xa, lane.h); });
+    ctx.fillStyle = "#8a9098"; ctx.font = "9px Consolas"; ctx.fillText(label, 2, lane.y + lane.h - 1);
+  }
   function drawTimeline() {
     const W = tl.clientWidth || 800; if (tl.width !== W) tl.width = W; const H = tl.height;
     ctx.clearRect(0, 0, W, H); ctx.fillStyle = "#0e1216"; ctx.fillRect(0, 0, W, H);
     const D = duration(); if (!D) return;
-    const x = t => t / D * W;
+    const x = t => t / D * W; const TOP = 14, BASE = 40;              // règle 0..14 · activité 16..40 · couverture 44..61
     if (pb.on && pb.tl) {                                    // densité CoT + dwells (lecture)
       const bins = new Float32Array(W); pb.tl.cot.forEach(c => { const i = Math.floor(x(c[0])); if (i >= 0 && i < W) bins[i]++; }); pb.tl.dwells.forEach(d => { const i = Math.floor(x(d[0])); if (i >= 0 && i < W) bins[i] += 2; });
       const mx = Math.max(1, ...bins); ctx.fillStyle = "rgba(124,255,107,.35)";
-      for (let i = 0; i < W; i++) if (bins[i]) { const h = 3 + 12 * bins[i] / mx; ctx.fillRect(i, H - 12 - h, 1, h); }
-      ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(pb.t) - 1, 0, 2, H); ctx.fillText("lecture", x(pb.t) + 4, H - 2);
+      for (let i = 0; i < W; i++) if (bins[i]) { const h = 3 + 18 * bins[i] / mx; ctx.fillRect(i, BASE - h, 1, h); }
     }
     if (state.track && state.track.sets.length && (state.mode === "file" || pb.on)) {
       ctx.fillStyle = "rgba(255,213,79,.55)";
       const bins = new Float32Array(W); state.track.sets.forEach(s => { const i = Math.floor(x(s.t)); if (i >= 0 && i < W) bins[i]++; });
       const mx = Math.max(1, ...bins);
-      for (let i = 0; i < W; i++) if (bins[i]) { const h = 4 + 14 * bins[i] / mx; ctx.fillRect(i, H - 12 - h, 1, h); }
+      for (let i = 0; i < W; i++) if (bins[i]) { const h = 4 + 18 * bins[i] / mx; ctx.fillRect(i, BASE - h, 1, h); }
     }
     const off = vOff();
-    ctx.fillStyle = "rgba(0,200,255,.18)";
-    for (let i = 0; i < video.buffered.length; i++) ctx.fillRect(x(off + video.buffered.start(i)), H - 10, x(video.buffered.end(i)) - x(video.buffered.start(i)), 6);
+    ctx.fillStyle = "rgba(0,200,255,.25)";                    // tampon vidéo du lecteur
+    for (let i = 0; i < video.buffered.length; i++) ctx.fillRect(x(off + video.buffered.start(i)), BASE + 1, x(video.buffered.end(i)) - x(video.buffered.start(i)), 2);
     if (state.mode === "replay" || pb.on) {
-      ctx.fillStyle = "rgba(255,213,79,.7)"; state.sets.forEach(s => ctx.fillRect(x(off + s.pts / 1000), H - 30, 1, 10));
-      if (state.replay && state.replay.running) { ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(state.replay.t || 0) - 1, 0, 2, H); ctx.fillText("rejeu", x(state.replay.t || 0) + 4, H - 2); }
+      ctx.fillStyle = "rgba(255,213,79,.7)"; state.sets.forEach(s => ctx.fillRect(x(off + s.pts / 1000), TOP + 2, 1, 6));
     }
-    ctx.fillStyle = "#8a9098"; ctx.font = "10px Consolas"; const step = D > 600 ? 120 : D > 120 ? 30 : D > 30 ? 10 : 5;
-    for (let t = 0; t <= D; t += step) { ctx.fillRect(x(t), 0, 1, 6); ctx.fillText(t + "s", x(t) + 2, 12); }
+    // couverture : réception vidéo 4609 (flux affiché, sinon union) et dwells radar 4607
+    const cov = pb.on && pb.tl && pb.tl.coverage;
+    if (cov) {
+      const vd = cov.video || {}; let vb = state.cur && vd[String(state.cur.dport)];
+      if (!vb) { vb = []; Object.values(vd).forEach(b => vb.push(...b)); vb.sort((a, b) => a[0] - b[0]); }
+      drawBands(vb, LANE_V, "rgba(0,200,255,.75)", "4609", W, x);
+      drawBands(cov.gmti, LANE_G, "rgba(124,255,107,.8)", "4607", W, x);
+    }
+    // règle : horodatage réel de la mission (UTC) si connu, sinon temps relatif
+    ctx.fillStyle = "#8a9098"; ctx.font = "10px Consolas";
+    const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200]; let step = steps.find(s => x(s) >= 70) || 7200;
+    const t0 = tlT0(); const first = t0 ? (step - ((t0 % 86400) % step)) % step : 0;      // graduations alignées sur l'heure ronde
+    for (let t = first; t <= D; t += step) { ctx.fillStyle = "#3a4450"; ctx.fillRect(x(t), TOP, 1, H - TOP); ctx.fillStyle = "#8a9098"; ctx.fillRect(x(t), 0, 1, 6); ctx.fillText(fmtT(t), x(t) + 2, 11); }
+    ctx.fillStyle = "#5a6470"; ctx.fillRect(0, TOP, W, 1);
+    // curseurs
+    if (pb.on && pb.tl) { ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(pb.t) - 1, 0, 2, H); ctx.fillText(pb.follow && pb.edge ? "direct" : "lecture", x(pb.t) + 4, BASE - 2); }
+    if ((state.mode === "replay") && state.replay && state.replay.running) { ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(state.replay.t || 0) - 1, 0, 2, H); ctx.fillText("rejeu", x(state.replay.t || 0) + 4, BASE - 2); }
     ctx.fillStyle = "#00c8ff"; ctx.fillRect(x(off + video.currentTime) - 1, 0, 2, H);
   }
+  tl.addEventListener("mousemove", ev => { const D = duration(); if (!D) { tl.title = ""; return; } const t = (ev.offsetX / tl.clientWidth) * D; tl.title = (tlT0() ? hhmmss(tlT0() + t) + " UTC · " : "") + `t=${t.toFixed(1)} s`; });
   tl.addEventListener("click", ev => {
     const D = duration(); if (!D) return;
     const t = (ev.offsetX / tl.clientWidth) * D;
@@ -1190,6 +1215,7 @@
     const tms = video.currentTime * 1000;
     if (state.sets.length) { const idx = indexAt(tms + 20); if (idx >= 0 && idx !== state.applied) apply(idx, tms); }
     $("tl-t").textContent = (vOff() + video.currentTime).toFixed(3);
+    $("tl-mutc").textContent = tlT0() ? hhmmss(tlT0() + (pb.on ? pb.t : vOff() + video.currentTime)) : "—";
     if (pb.on) $("tl-d").textContent = (pb.tl.duration || 0).toFixed(1); else if (state.mode === "file" && isFinite(video.duration)) $("tl-d").textContent = video.duration.toFixed(1);
     drawTimeline();
     requestAnimationFrame(frame);

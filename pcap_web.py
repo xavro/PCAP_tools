@@ -607,6 +607,22 @@ def gmti_parity_zip(entry, profile, overrides, name=None, seconds=300.0):
 _TL_CACHE = {}
 
 
+def coverage_bands(times, max_gap, t0=0.0):
+    """Plages [[début, fin] relatifs à t0] de présence d'un flux : instants triés, une coupure dès
+    qu'un trou dépasse max_gap s (réception vidéo 4609 ≈ continue ; dwells radar 4607 par passes)."""
+    out = []; a = b = None
+    for t in times:
+        if a is None:
+            a = b = t
+        elif t - b > max_gap:
+            out.append([round(a - t0, 3), round(b - t0, 3)]); a = b = t
+        else:
+            b = t
+    if a is not None:
+        out.append([round(a - t0, 3), round(b - t0, 3)])
+    return out
+
+
 def timeline_data(path, limit=0, watch=None):
     """Événements datés de toute la capture (temps relatif au 1er paquet) : CoT (un par
     datagramme), dwells GMTI (zone, plots), offsets des flux vidéo. Mis en cache par pcap."""
@@ -664,8 +680,10 @@ def timeline_data(path, limit=0, watch=None):
     streams = scan(path, limit)
     video = [{"dport": st.dport, "dst": st.dst, "t_offset": round((st.t0 or t0 or 0) - (t0 or 0), 3), "duration": round((st.t1 or 0) - (st.t0 or 0), 3)}
              for st in streams.values()]
+    coverage = {"video": {str(st.dport): coverage_bands([p[0] for p in st.pkts], 2.0, t0 or 0) for st in streams.values()},
+                "gmti": coverage_bands([d[0] for d in dwells], 6.0, 0.0)}
     out = {"t0": t0, "duration": round((ts - t0) if t0 is not None else 0.0, 3), "n_packets": n,
-           "cot": cot, "dwells": dwells, "dwell_offset": dwell_offset, "video": video}
+           "cot": cot, "dwells": dwells, "dwell_offset": dwell_offset, "video": video, "coverage": coverage}
     with _ALOCK:
         _TL_CACHE[key] = out
     return out
@@ -1576,6 +1594,7 @@ class FollowEngine:
         self.segments = []; self.cur_seg = None; self.catching_up = True; self.bytes_read = 0
         self.edge_wall = 0.0
         self._seg_base = None; self._single = None; self.seg_first = 1; self.idx_path = None; self._idx_last_a = None; self.indexed = False
+        self.tl_path = None; self._tl_f = None; self._tl_pos = None; self._tl_flush = 0.0; self._tl_loaded = 0; self._id_offset = 0
 
     # -- statut --
     def status(self):
@@ -1583,7 +1602,7 @@ class FollowEngine:
             st = dict(self.state)
         st.update({"follow": True, "duration": self.duration(), "t0": self.t0, "n_packets": self.n_packets,
                    "catching_up": self.catching_up, "segment": self.cur_seg, "segments": list(self.segments),
-                   "bytes_read": self.bytes_read, "indexed": self.indexed, "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
+                   "bytes_read": self.bytes_read, "indexed": self.indexed, "journal": bool(self._tl_f is not None), "journal_loaded": self._tl_loaded, "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
                    "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}})
         return st
 
@@ -1616,6 +1635,7 @@ class FollowEngine:
                 self._seg_base = base; self._single = None
                 self.seg_first = 1 if os.path.isfile("%s_001.pcap" % base) else n     # toute la série, même si l'utilisateur a ouvert _003
                 self.idx_path = base + ".idx"                   # index persistant écrit par stratus2-capture (s'il existe)
+                self.tl_path = base + ".tl.jsonl"               # journal de la ligne de temps décodée (écrit par la console)
             else:
                 self._seg_base = None; self._single = path; self.seg_first = 1; self.idx_path = None
             self.segments = [self.seg_path(self.seg_first)]
@@ -1632,6 +1652,7 @@ class FollowEngine:
         self.stop_event.set()
         with self.lock:
             self.state["running"] = False; self.state["stopped"] = True
+        self._tl_close()
         EVENTS.publish({"type": "log", "msg": "suivi du fichier arrêté (%d paquets, %.1f s)" % (self.n_packets, self.duration())})
         return self.status()
 
@@ -1645,6 +1666,97 @@ class FollowEngine:
         p = self.seg_path(n)
         return bool(p) and os.path.isfile(p)
 
+    # -- journal de la ligne de temps décodée ({mission}.tl.jsonl) --
+    # Une ligne JSON par élément : ["h", {t0}] en-tête · ["c", row] CoT · ["d", row] dwell (avec plots) ·
+    # ["m", {id, air, rot}] nouvelle piste · ["t", id, row] état de piste · ["p", seg, off] point de reprise
+    # (tous les paquets applicatifs ≤ (seg, off) sont journalisés). Au redémarrage, les lignes jusqu'au
+    # dernier "p" sont rechargées telles quelles : plus rien à redécoder, quelle que soit la durée.
+    def _tl_open(self):
+        if not self.tl_path or self._tl_f is not None:
+            return
+        try:
+            new = not os.path.isfile(self.tl_path) or os.path.getsize(self.tl_path) == 0
+            self._tl_f = open(self.tl_path, "a", encoding="utf-8")
+            if new:
+                self._tl_f.write(json.dumps(["h", {"v": 1, "t0": self.t0}]) + "\n")
+        except OSError as e:
+            EVENTS.publish({"type": "log", "msg": "journal de ligne de temps indisponible : %s" % e}); self._tl_f = None; self.tl_path = None
+
+    def _tl_write(self, *item):
+        if self._tl_f is not None:
+            try:
+                self._tl_f.write(json.dumps(list(item), ensure_ascii=False, separators=(",", ":")) + "\n")
+            except (OSError, ValueError):
+                pass
+
+    def _tl_checkpoint(self, seg_no, rec_off, force=False):
+        """Point de reprise après le paquet applicatif (seg_no, rec_off) ; flush toutes les 2 s."""
+        self._tl_pos = (seg_no, rec_off)
+        now = time.time()
+        if self._tl_f is not None and (force or now - self._tl_flush >= 2.0):
+            self._tl_write("p", seg_no, rec_off)
+            try:
+                self._tl_f.flush()
+            except OSError:
+                pass
+            self._tl_flush = now
+
+    def _tl_close(self):
+        if self._tl_f is not None:
+            if self._tl_pos:
+                self._tl_write("p", *self._tl_pos)
+            try:
+                self._tl_f.close()
+            except OSError:
+                pass
+            self._tl_f = None
+
+    def _tl_load(self):
+        """Recharge le journal (lignes jusqu'au dernier point de reprise). Renvoie (seg, off) couvert, ou None."""
+        if not self.tl_path or not os.path.isfile(self.tl_path):
+            return None
+        cot, dwells, tracks, rows, pos, t0 = [], [], {}, [], None, None
+        pend = []                                                  # lignes depuis le dernier "p" (non validées)
+        with open(self.tl_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    it = json.loads(line)
+                except ValueError:
+                    continue
+                k = it[0]
+                if k == "h":
+                    t0 = it[1].get("t0")
+                elif k == "p":
+                    for pk in pend:
+                        if pk[0] == "c":
+                            cot.append(pk[1])
+                        elif pk[0] == "d":
+                            dwells.append(pk[1])
+                        elif pk[0] == "m":
+                            m = pk[1]; tracks.setdefault(m["id"], {"id": m["id"], "air": m.get("air", False), "rot": m.get("rot", False), "hits": m.get("hits", 0), "hist": []})
+                        elif pk[0] == "t":
+                            r = tracks.get(pk[1])
+                            if r is None:
+                                r = tracks[pk[1]] = {"id": pk[1], "air": False, "rot": False, "hits": 0, "hist": []}
+                            r["hist"].append(pk[2]); rows.append((pk[1], pk[2]))
+                    pend = []; pos = (int(it[1]), int(it[2]))
+                else:
+                    pend.append(it)
+        if pos is None or t0 is None:
+            try:
+                os.remove(self.tl_path)                            # journal sans point de reprise : repart de zéro
+            except OSError:
+                pass
+            return None
+        self.t0 = t0; self.cot = cot; self.dwells = dwells; self.tracks = tracks; self.track_rows = rows
+        self._id_offset = max(tracks) if tracks else 0
+        gd = sorted(t0 + d[0] - d[5] / 1000.0 for d in dwells[:200] if d[5] is not None)
+        self.dwell_offset = gd[len(gd) // 2] if gd else None; self.gmti_dt = gd
+        if dwells or cot:
+            self.last_ts = t0 + max((cot[-1][0] if cot else 0), (dwells[-1][0] if dwells else 0))
+        self._tl_loaded = len(cot) + len(dwells) + len(rows)
+        return pos
+
     # -- index persistant (STRIDX01, écrit par stratus2-capture) --
     IDX_REC = struct.Struct("<cdHQQH")
 
@@ -1657,7 +1769,8 @@ class FollowEngine:
                 raise ValueError("format d'index inconnu")
             data = f.read()
         R = self.IDX_REC; n = len(data) // R.size
-        handles = {}; last_v = {}; last_a = None; last_pos = None; n_a = 0
+        handles = {}; last_v = {}; last_a = self._idx_last_a; last_pos = None; n_a = 0
+        skip_a = self._idx_last_a                                  # paquets applicatifs déjà dans le journal
         try:
             for i in range(n):
                 kind, ts, seg, off, val, dport = R.unpack_from(data, i * R.size)
@@ -1670,6 +1783,9 @@ class FollowEngine:
                     st.idx_ts.append(ts); st.idx_seg.append(seg); st.idx_off.append(off); st.idx_cum.append(val)
                     st.last_idx = ts; st.nbytes = val; st.t1 = ts; last_v[dport] = (seg, off)
                 else:
+                    if skip_a is not None and (seg, off) <= skip_a:
+                        last_pos = (seg, off) if last_pos is None or (seg, off) > last_pos else last_pos
+                        continue
                     f = handles.get(seg)
                     if f is None:
                         p = self.seg_path(seg)
@@ -1685,6 +1801,7 @@ class FollowEngine:
                     frame = f.read(incl)
                     if len(frame) < incl:
                         continue
+                    self._idx_last_a = None                    # (le filtre du journal est déjà appliqué ici)
                     self._on_frame(ts_s + ts_us / 1e6, 1, frame, seg, off); n_a += 1
                     last_a = (seg, off)
                 last_pos = (seg, off) if last_pos is None or (seg, off) > last_pos else last_pos
@@ -1704,6 +1821,15 @@ class FollowEngine:
         n = self.seg_first
         tail = None; idle_polls = 0; resume = None
         _t0 = time.perf_counter()
+        try:
+            pos = self._tl_load()
+            if pos:
+                self._idx_last_a = pos
+                print("[follow] journal chargé en %.2fs : %d éléments, reprise applicative après %s" % (time.perf_counter() - _t0, self._tl_loaded, pos), flush=True)
+                EVENTS.publish({"type": "log", "msg": "suivi : ligne de temps rechargée (%d CoT, %d dwells, %d pistes)" % (len(self.cot), len(self.dwells), len(self.tracks))})
+        except Exception as e:
+            EVENTS.publish({"type": "log", "msg": "suivi : journal inutilisable (%s) — redécodage" % e})
+            self.cot = []; self.dwells = []; self.tracks = {}; self.track_rows = []; self._idx_last_a = None; self.t0 = None; self._id_offset = 0
         if self.idx_path and os.path.isfile(self.idx_path):
             try:
                 resume = self._load_index()
@@ -1714,6 +1840,9 @@ class FollowEngine:
                 self.t0 = self.last_ts = None; self.n_packets = 0; resume = None
             if resume:
                 n = resume[0]
+        elif self._idx_last_a and not resume:
+            resume = self._idx_last_a                              # pas d'index : reprise séquentielle après le journal
+            n = resume[0]
         try:
             while not self.stop_event.is_set():
                 if tail is None:
@@ -1764,6 +1893,8 @@ class FollowEngine:
             return
         if self.t0 is None:
             self.t0 = ts
+        if self._tl_f is None and self.tl_path:
+            self._tl_open()
         self.last_ts = ts; self.n_packets += 1
         t_rel = round(ts - self.t0, 3)
         if proto == "UDP":
@@ -1791,13 +1922,15 @@ class FollowEngine:
         if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
             ev = decode_cot(pl)
             if ev:
-                self.cot.append([t_rel, ev["uid"], ev["type"], ev["aff"], ev.get("callsign"), ev["lat"], ev["lon"],
-                                 ev.get("speed"), ev.get("course"), key])
+                row = [t_rel, ev["uid"], ev["type"], ev["aff"], ev.get("callsign"), ev["lat"], ev["lon"], ev.get("speed"), ev.get("course"), key]
+                self.cot.append(row); self._tl_write("c", row)
+            self._tl_checkpoint(seg_no, rec_off)
         elif len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
             g = decode_gmti(pl)
             if g is None:
                 return
             plots, sensor, dw = g
+            n_dw0 = len(self.dwells)
             for d in dw:
                 self.dwells.append([t_rel, sensor, d["center"], d["poly"], d["n"], d.get("t_ms")])
                 if d.get("t_ms") is not None and len(self.gmti_dt) < 200:
@@ -1808,12 +1941,15 @@ class FollowEngine:
                 self.dwells.append([t_rel, sensor, None, None, len(plots), None])
             if plots:
                 self.dwells[-1].append(plots)
+            for row in self.dwells[n_dw0:]:
+                self._tl_write("d", row)
             if self.live is not None and gmti_pcap_to_csv is not None:
                 try:
                     self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
                     self._track_rows(t_rel)
                 except Exception as e:
                     EVENTS.publish({"type": "log", "msg": "suivi : pistage : %s" % e})
+            self._tl_checkpoint(seg_no, rec_off)
 
     def _track_rows(self, t_rel):
         """Historique des pistes (même forme que timeline_tracks) : une ligne par piste vivante et par
@@ -1834,20 +1970,33 @@ class FollowEngine:
                 hit = 1 if (last_t is not None and abs(float(tr.t_last_update) - last_t) < 1e-6) else 0
                 sp = round(float(tr.speed()), 1)
                 hd = round((math.degrees(math.atan2(float(tr.x[2]), float(tr.x[3]))) + 360.0) % 360.0, 1)
-                rec = self.tracks.get(tr.id)
+                tid = tr.id + self._id_offset                     # pistes rechargées du journal : pas de collision d'id
+                rec = self.tracks.get(tid)
                 if rec is None:
-                    rec = self.tracks[tr.id] = {"id": tr.id, "air": bool(tr.is_air), "rot": bool(tr.is_rotator), "hits": 0, "hist": []}
+                    rec = self.tracks[tid] = {"id": tid, "air": bool(tr.is_air), "rot": bool(tr.is_rotator), "hits": 0, "hist": []}
+                    self._tl_write("m", {"id": tid, "air": rec["air"], "rot": rec["rot"]})
                 rec["hits"] = tr.hits; rec["air"] = bool(tr.is_air); rec["rot"] = bool(tr.is_rotator)
                 row = [t_rel, round(la, 6), round(lo, 6), nm, hit, 1 if tr.confirmed_ever else 0, sp, hd]
-                rec["hist"].append(row); self.track_rows.append((tr.id, row))
+                rec["hist"].append(row); self.track_rows.append((tid, row)); self._tl_write("t", tid, row)
 
     # -- vues client --
     def video_info(self):
         return [{"dport": st.dport, "dst": st.dst, "t_offset": round((st.t0 or self.t0 or 0) - (self.t0 or 0), 3),
                  "duration": round((st.t1 or 0) - (st.t0 or 0), 3), "bytes": st.nbytes} for st in self.streams.values()]
 
+    def coverage(self):
+        """Présence des flux depuis l'index : points vidéo (0,5 s → trou si > 2 s), dwells radar (trou > 6 s)."""
+        vid = {}
+        for st in self.streams.values():
+            with st.lock:
+                pts = list(st.idx_ts)
+            if st.t1 is not None and (not pts or st.t1 > pts[-1]):
+                pts.append(st.t1)
+            vid[str(st.dport)] = coverage_bands(pts, 2.0, self.t0 or 0)
+        return {"video": vid, "gmti": coverage_bands([d[0] for d in self.dwells], 6.0, 0.0)}
+
     def timeline(self):
-        return {"t0": self.t0, "duration": self.duration(), "n_packets": self.n_packets, "cot": list(self.cot),
+        return {"t0": self.t0, "duration": self.duration(), "n_packets": self.n_packets, "cot": list(self.cot), "coverage": self.coverage(),
                 "dwells": list(self.dwells), "dwell_offset": self.dwell_offset, "video": self.video_info(),
                 "tracks": [{"id": r["id"], "air": r["air"], "rot": r["rot"], "hits": r["hits"], "hist": list(r["hist"])} for r in self.tracks.values()],
                 "follow": True, "catching_up": self.catching_up, "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
@@ -1859,7 +2008,7 @@ class FollowEngine:
             if tid not in meta:
                 r = self.tracks[tid]; meta[tid] = {"id": tid, "air": r["air"], "rot": r["rot"], "hits": r["hits"]}
         return {"duration": self.duration(), "n_packets": self.n_packets, "cot": self.cot[cot_i:], "dwells": self.dwells[dw_i:],
-                "track_rows": [[tid, row] for tid, row in rows], "track_meta": list(meta.values()), "video": self.video_info(),
+                "track_rows": [[tid, row] for tid, row in rows], "track_meta": list(meta.values()), "video": self.video_info(), "coverage": self.coverage(),
                 "catching_up": self.catching_up, "segment": os.path.basename(self.cur_seg) if self.cur_seg else None,
                 "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
                 "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
