@@ -778,13 +778,15 @@
   }
 
   // ── Lecteur mpegts.js (fichier : /video.ts ; rejeu : ws tap) + KLV synchrone ──
-  function startPlayer(url, live) {
+  function startPlayer(url, live, dvr) {
     stopPlayer();
     if (!mpegts.isSupported()) return status("MSE non supporté par ce navigateur", true);
+    // dvr : ressource relue depuis le disque (fichier suivi) → lazyLoad = mpegts.js suspend le chargement
+    // au-delà de 60 s d'avance et reprend par Range (octets cumulés côté serveur) ; mémoire bornée.
     const player = mpegts.createPlayer({ type: "mpegts", isLive: live, url }, {
-      enableWorker: false, lazyLoad: false, enableStashBuffer: !live, stashInitialSize: 128 * 1024,
+      enableWorker: false, lazyLoad: !!dvr, lazyLoadMaxDuration: 60, lazyLoadRecoverDuration: 20, enableStashBuffer: !live, stashInitialSize: 128 * 1024,
       liveBufferLatencyChasing: live, liveBufferLatencyMaxLatency: 1.5, liveBufferLatencyMinRemain: 0.4,
-      autoCleanupSourceBuffer: live, seekType: "range" });
+      autoCleanupSourceBuffer: live || !!dvr, seekType: "range" });
     player.attachMediaElement(video);
     player.on(mpegts.Events.SYNCHRONOUS_KLV_METADATA_ARRIVED, onKlv);
     player.on(mpegts.Events.ASYNCHRONOUS_KLV_METADATA_ARRIVED, onKlv);
@@ -967,7 +969,7 @@
     if (pb.videoOn && state.cur) {
       // le serveur sert le TS à partir du datagramme daté t (index du tampon) : le lecteur démarre à 0 = t (saut exact)
       pb.vOffset = t;
-      startPlayer(U(`/video.ts?follow=1&dport=${state.cur.dport}&from=${t.toFixed(3)}&_=${Date.now()}`), false); video.playbackRate = speedVal() || 1;
+      startPlayer(U(`/video.ts?follow=1&dport=${state.cur.dport}&from=${t.toFixed(3)}&_=${Date.now()}`), false, true); video.playbackRate = speedVal() || 1;
       $("mode-badge").textContent = "DVR — retour arrière sur le fichier en cours (⟫ Direct pour recoller)"; $("mode-badge").className = "overlay";
     }
     setState("playing", `▶ DVR · t=${t.toFixed(0)} s · ⟫ = direct`);

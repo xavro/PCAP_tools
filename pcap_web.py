@@ -1467,7 +1467,7 @@ class PcapTail:
         self.corrupt = False
 
     def read(self, max_bytes=64 << 20):
-        """Liste de (ts, linktype, data) des trames complètes disponibles (≤ max_bytes lus)."""
+        """Liste de (ts, linktype, data, offset_enregistrement) des trames complètes disponibles (≤ max_bytes lus)."""
         out = []
         if self.corrupt:
             return out
@@ -1481,7 +1481,7 @@ class PcapTail:
                 break
             if n - pos - 16 < incl:
                 break                                          # enregistrement partiel : au tour suivant
-            out.append((ts_s + ts_frac / self.tsdiv, self.linktype, data[pos + 16:pos + 16 + incl]))
+            out.append((ts_s + ts_frac / self.tsdiv, self.linktype, data[pos + 16:pos + 16 + incl], self.offset + pos))
             pos += 16 + incl
         self.offset += pos
         return out
@@ -1511,14 +1511,45 @@ def follow_segments(path):
 
 
 class FollowStream:
-    """Flux TS d'un pcap suivi : tampon extensible (copié par tranches à la lecture, jamais exporté
-    en memoryview) + index (ts, offset, longueur)."""
-    __slots__ = ("dst", "dport", "buf", "pkts", "t0", "t1", "info", "lock")
+    """Flux TS d'un pcap suivi : AUCUNE copie du TS en mémoire (le pcap sur disque est le maître) —
+    seulement des compteurs et un index clairsemé (1 point / 0,5 s de capture) :
+    ts → (segment, offset de l'enregistrement, octets TS cumulés avant lui). Le DVR relit le disque
+    à partir du point d'index ; la RAM reste bornée quelle que soit la durée de la mission."""
+    __slots__ = ("dst", "dport", "t0", "t1", "nbytes", "npkts", "idx_ts", "idx_seg", "idx_off", "idx_cum", "last_idx", "lock")
+    IDX_STEP_S = 0.5
 
     def __init__(self, dst, dport):
+        import array
         self.dst, self.dport = dst, dport
-        self.buf = bytearray(); self.pkts = []; self.t0 = self.t1 = None; self.info = None
+        self.t0 = self.t1 = None; self.nbytes = 0; self.npkts = 0
+        self.idx_ts = array.array("d"); self.idx_seg = array.array("H"); self.idx_off = array.array("Q"); self.idx_cum = array.array("Q")
+        self.last_idx = None
         self.lock = threading.Lock()
+
+    def note(self, ts, seg_no, rec_off, n):
+        with self.lock:
+            if self.last_idx is None or ts - self.last_idx >= self.IDX_STEP_S:
+                self.idx_ts.append(ts); self.idx_seg.append(seg_no); self.idx_off.append(rec_off); self.idx_cum.append(self.nbytes)
+                self.last_idx = ts
+            self.nbytes += n; self.npkts += 1; self.t1 = ts
+
+    def locate_time(self, t_abs):
+        """Point d'index ≤ t_abs : (seg_no, offset, cumul) — ou le début du flux."""
+        import bisect
+        with self.lock:
+            i = bisect.bisect_right(self.idx_ts, t_abs) - 1
+            if i < 0:
+                return (0, 24, 0) if not len(self.idx_seg) else (self.idx_seg[0], self.idx_off[0], 0)
+            return (self.idx_seg[i], self.idx_off[i], self.idx_cum[i])
+
+    def locate_bytes(self, cum):
+        """Point d'index dont le cumul d'octets est ≤ cum : (seg_no, offset, cumul)."""
+        import bisect
+        with self.lock:
+            i = bisect.bisect_right(self.idx_cum, cum) - 1
+            if i < 0:
+                return (0, 24, 0) if not len(self.idx_seg) else (self.idx_seg[0], self.idx_off[0], 0)
+            return (self.idx_seg[i], self.idx_off[i], self.idx_cum[i])
 
 
 class FollowEngine:
@@ -1623,8 +1654,9 @@ class FollowEngine:
                 frames = tail.read()
                 if frames:
                     idle_polls = 0
-                    for ts, lt, data in frames:
-                        self._on_frame(ts, lt, data)
+                    seg_no = self.segments.index(cur)
+                    for ts, lt, data, rec_off in frames:
+                        self._on_frame(ts, lt, data, seg_no, rec_off)
                     self.bytes_read = tail.offset
                     self.edge_wall = time.time()
                     if self.catching_up and tail.offset >= tail.size():
@@ -1646,7 +1678,7 @@ class FollowEngine:
             if tail is not None:
                 tail.close()
 
-    def _on_frame(self, ts, lt, frame):
+    def _on_frame(self, ts, lt, frame, seg_no=0, rec_off=0):
         r = parse(lt, frame)
         if not r:
             return
@@ -1664,8 +1696,7 @@ class FollowEngine:
                 if st is None:
                     st = self.streams[dport] = FollowStream(dst, dport)
                     st.t0 = ts
-                with st.lock:
-                    st.pkts.append((ts, len(st.buf), len(tsdata))); st.buf.extend(tsdata); st.t1 = ts
+                st.note(ts, seg_no, rec_off, len(tsdata))
                 if not self.catching_up and dport in self.taps:
                     video_bus(dport).publish(bytes(tsdata))
                 return
@@ -1728,7 +1759,7 @@ class FollowEngine:
     # -- vues client --
     def video_info(self):
         return [{"dport": st.dport, "dst": st.dst, "t_offset": round((st.t0 or self.t0 or 0) - (self.t0 or 0), 3),
-                 "duration": round((st.t1 or 0) - (st.t0 or 0), 3), "bytes": len(st.buf)} for st in self.streams.values()]
+                 "duration": round((st.t1 or 0) - (st.t0 or 0), 3), "bytes": st.nbytes} for st in self.streams.values()]
 
     def timeline(self):
         return {"t0": self.t0, "duration": self.duration(), "n_packets": self.n_packets, "cot": list(self.cot),
@@ -1756,7 +1787,47 @@ class FollowEngine:
             if st is None:
                 raise ValueError("pas de flux TS sur le port %s" % dport)
             return st
-        return max(self.streams.values(), key=lambda s: len(s.buf))
+        return max(self.streams.values(), key=lambda s: s.nbytes)
+
+    # -- lecture disque (DVR) --
+    def iter_ts(self, st, seg_no, rec_off, skip=0, t_min=None):
+        """TS du flux `st` relu depuis le disque à partir de (segment, offset) : saute `skip` octets
+        (reprise Range) et/ou les datagrammes datés < t_min ; s'arrête au bord (fin des données
+        écrites) ou sur les segments suivants connus."""
+        segs = list(self.segments)
+        i = seg_no
+        while i < len(segs):
+            try:
+                tail = PcapTail(segs[i])
+            except (OSError, ValueError):
+                return
+            if i == seg_no:
+                tail.offset = max(24, rec_off)
+            try:
+                while True:
+                    frames = tail.read(4 << 20)
+                    if not frames:
+                        segs = list(self.segments)                 # un segment suivant est-il apparu ?
+                        if i + 1 < len(segs) and tail.offset >= tail.size():
+                            break
+                        return                                     # bord du direct : fin de la ressource
+                    for ts, lt, data, _off in frames:
+                        r = parse(lt, data)
+                        if not r or r[0] != "UDP" or r[4] != st.dport or not r[5]:
+                            continue
+                        if t_min is not None and ts < t_min:
+                            continue
+                        tsdata = v9._ts_from_udp(r[5])
+                        if not tsdata:
+                            continue
+                        if skip:
+                            if skip >= len(tsdata):
+                                skip -= len(tsdata); continue
+                            tsdata = tsdata[skip:]; skip = 0
+                        yield bytes(tsdata)
+            finally:
+                tail.close()
+            i += 1
 
     def follow(self, taps=None, track=None):
         if taps is not None:
@@ -2127,7 +2198,65 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _video_follow(self, st, q):
+        """DVR sur fichier suivi : ressource = TS du flux à partir de l'instant `from` (temps capture),
+        relu depuis le pcap sur disque ; `Range: bytes=X-` = reprise à X octets de la ressource (index
+        des octets cumulés → point ≤ X, puis saut) — c'est ce que fait mpegts.js en lazyLoad."""
+        t_from = (st.t0 or 0) + float(q.get("from", ["0"])[0] or 0)
+        seg_no, off, cum = st.locate_time(t_from)
+        # cumul exact au 1er datagramme daté >= t_from : on compte depuis le point d'index
+        base = cum
+        for chunk in self.__class__._count_until(self, st, seg_no, off, t_from):
+            base += chunk
+        rng = self.headers.get("Range")
+        x = 0
+        if rng and rng.startswith("bytes="):
+            a = rng[6:].partition("-")[0]
+            x = int(a) if a else 0
+        seg_no, off, cum = st.locate_bytes(base + x)
+        skip = base + x - cum
+        self.send_response(206 if x else 200)
+        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        pending, plen = [], 0
+        try:
+            for b in FOLLOW.iter_ts(st, seg_no, off, skip):
+                pending.append(b); plen += len(b)
+                if plen >= 256 * 1024:
+                    data = b"".join(pending); self.wfile.write(b"%x\r\n" % len(data)); self.wfile.write(data); self.wfile.write(b"\r\n"); self.wfile.flush()
+                    pending, plen = [], 0
+            if pending:
+                data = b"".join(pending); self.wfile.write(b"%x\r\n" % len(data)); self.wfile.write(data); self.wfile.write(b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
+
+    @staticmethod
+    def _count_until(handler, st, seg_no, off, t_abs):
+        """Octets TS entre le point d'index et le 1er datagramme daté >= t_abs (≤ 0,5 s de flux)."""
+        try:
+            tail = PcapTail(FOLLOW.segments[seg_no])
+        except (OSError, ValueError, IndexError):
+            return
+        tail.offset = max(24, off)
+        try:
+            frames = tail.read(8 << 20)
+            for ts, lt, data, _o in frames:
+                if ts >= t_abs:
+                    return
+                r = parse(lt, data)
+                if r and r[0] == "UDP" and r[4] == st.dport and r[5]:
+                    tsd = v9._ts_from_udp(r[5])
+                    if tsd:
+                        yield len(tsd)
+        finally:
+            tail.close()
+
     def _video(self, st, q=None):
+        if isinstance(st, FollowStream):
+            return self._video_follow(st, q or {})
         data = st.buf
         base = 0
         if q and q.get("from", [""])[0]:
