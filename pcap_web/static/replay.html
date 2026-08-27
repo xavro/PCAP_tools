@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>STRATUS - Relecture mission</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link id="favicon" rel="icon" href="static/favicon.ico">
+<link rel="stylesheet" href="static/leaflet.css">
+<link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="static/replay.css">
+</head>
+<body class="operator">
+<!-- Page OPÉRATEUR : carte + vidéo synchronisée + barre de temps. Même moteur que la console (app.js) ;
+     les éléments d'analyse absents de cette page sont remplacés par des éléments détachés (voir $ dans app.js).
+     Lancement par URL : replay?mission=NOM[&live=1]  ·  replay?pcap=/chemin/fichier.pcap[&live=1]  [&profile=maritime] -->
+<div id="op">
+  <header id="op-bar">
+    <img src="static/stratus.png" alt="" class="op-logo">
+    <span class="sb-state stopped" id="sb-state">■ arrêt</span>
+    <b id="op-mission" title="mission">—</b>
+    <span class="spacer"></span>
+    <button id="btn-play" class="accent" title="lire / suivre">▶ Lire</button>
+    <button id="btn-pause" title="pause / reprise (espace)" disabled>⏸</button>
+    <button id="btn-edge" class="accent" hidden title="revenir au direct (L)">⟫ Direct</button>
+    <button id="btn-stop" class="danger" title="arrêter">■</button>
+    <select id="speed" title="vitesse de lecture">
+      <option value="1">×1</option><option value="2">×2</option><option value="4">×4</option><option value="8">×8</option>
+    </select>
+    <label class="chk" title="cadrage automatique de la carte">suivre
+      <select id="follow"><option value="sensor">le capteur</option><option value="center">le centre image</option><option value="both">capteur + empreinte</option><option value="none">rien</option></select>
+    </label>
+    <span class="spacer"></span>
+    <span id="op-clock" class="mono muted" title="heure UTC courante">—</span>
+    <button id="op-swap" title="inverser carte / vidéo">⇆</button>
+    <button id="op-full" title="plein écran (F)">⛶</button>
+  </header>
+
+  <main id="op-main">
+    <div id="map">
+      <div class="map-ctl">
+        <div style="display:flex;gap:4px"><button id="btn-fit" style="padding:2px 8px;flex:1">Ajuster la vue</button></div>
+        <div style="display:flex;gap:4px"><button id="btn-measure" style="padding:2px 8px;flex:1" title="mesurer : cliquer les points, double-clic ou Échap pour terminer">📏 Mesurer</button><button id="btn-measure-clear" style="padding:2px 8px" title="effacer les mesures">✕</button></div>
+      </div>
+      <div class="coords" id="coords" title="position du pointeur — cliquer pour copier le MGRS"><b id="c-mgrs">—</b><span id="c-ll"></span></div>
+      <div class="legend" title="cliquer une entrée pour masquer / afficher la couche">
+        <span data-ly="trace"><i style="background:#00c8ff"></i>plateforme / trace</span>
+        <span data-ly="foot"><i style="background:#ffd54f"></i>empreinte</span>
+        <span data-ly="center"><i style="background:#ff5252"></i>centre image</span>
+        <span data-ly="plots"><i style="background:#7cff6b;border-radius:0"></i>plots GMTI</span>
+        <span data-ly="dwell"><i style="background:transparent;border:1px solid #7cff6b;border-radius:0"></i>dwell</span>
+        <span data-ly="live"><i style="background:#00e5a8;border-radius:50%;width:9px;height:9px"></i>pistes GMTI</span>
+        <span data-ly="contacts"><i style="background:#e58cff;border-radius:0;height:5px;width:12px;opacity:.7"></i>contacts</span>
+        <span data-ly="cot"><i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT</span>
+        <span data-ly="labels"><i style="background:transparent;border:1px solid #8a8f98;border-radius:2px;width:12px;height:8px"></i>étiquettes</span>
+      </div>
+    </div>
+    <div id="op-gutter" title="glisser pour redimensionner"></div>
+    <div id="video-col">
+      <video id="video" controls muted playsinline></video>
+      <div class="overlay" id="mode-badge">—</div>
+      <div class="hud" id="hud"></div>
+    </div>
+  </main>
+
+  <footer id="op-tl">
+    <canvas id="timeline" height="96" title=""></canvas>
+    <div id="tl-info">
+      <span>mission UTC <b id="tl-mutc">—</b></span>
+      <span>t = <b id="tl-t">0.000</b> / <b id="tl-d">—</b> s</span>
+      <span>KLV <b id="tl-utc">—</b></span>
+      <span class="grow" id="tl-mode"></span>
+      <span id="status" class="muted"></span>
+    </div>
+  </footer>
+</div>
+
+<!-- Contrat DOM minimal du moteur (valeurs pilotées par l'URL, jamais affichées) -->
+<div hidden>
+  <input id="pcap" type="text">
+  <select id="mode"><option value="play">play</option><option value="emit">emit</option><option value="follow">follow</option></select>
+  <select id="source"><option value="file">file</option></select>
+  <input id="loop" type="checkbox">
+  <input id="gmti-live" type="checkbox" checked>
+  <select id="gmti-profile"></select>
+</div>
+
+<script src="static/leaflet.js"></script>
+<script src="static/mpegts.js"></script>
+<script src="static/klv0601.js"></script>
+<script src="static/mgrs_lite.js"></script>
+<script src="static/app.js"></script>
+<script src="static/replay.js"></script>
+</body>
+</html>

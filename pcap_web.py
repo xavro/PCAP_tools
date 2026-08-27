@@ -607,6 +607,49 @@ def gmti_parity_zip(entry, profile, overrides, name=None, seconds=300.0):
 _TL_CACHE = {}
 
 
+def _mission_pcaps(d):
+    """Fichiers pcap d'un dossier mission : Capture/{mission}_NNN.pcap (maître v2) sinon *.pcap à la racine."""
+    cap = os.path.join(d, "Capture")
+    out = []
+    for base in (cap, d):
+        if os.path.isdir(base):
+            out = sorted(f for f in os.listdir(base) if f.lower().endswith(".pcap"))
+            if out:
+                return [os.path.join(base, f) for f in out]
+    return []
+
+
+def missions_list():
+    """Missions du dossier des enregistrements (pour la page opérateur / ExB) : nom, 1er pcap, taille, dates, suivi possible."""
+    root = CAPTURES_DIR
+    out = []
+    if not root or not os.path.isdir(root):
+        return out
+    for name in sorted(os.listdir(root)):
+        d = os.path.join(root, name)
+        if not os.path.isdir(d):
+            continue
+        pcaps = _mission_pcaps(d)
+        if not pcaps:
+            continue
+        size = sum(os.path.getsize(p) for p in pcaps)
+        mtime = max(os.path.getmtime(p) for p in pcaps)
+        out.append({"name": name, "pcap": pcaps[0], "segments": len(pcaps), "bytes": size, "mtime": mtime,
+                    "recent": (time.time() - mtime) < 30, "indexed": os.path.isfile(os.path.join(os.path.dirname(pcaps[0]), name + ".idx"))})
+    out.sort(key=lambda m: -m["mtime"])
+    return out
+
+
+def mission_resolve(name):
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise ValueError("nom de mission invalide")
+    d = os.path.join(CAPTURES_DIR or "", name)
+    pcaps = _mission_pcaps(d) if os.path.isdir(d) else []
+    if not pcaps:
+        raise FileNotFoundError("mission introuvable : %s" % name)
+    return {"name": name, "pcap": pcaps[0], "segments": len(pcaps), "recent": (time.time() - max(os.path.getmtime(p) for p in pcaps)) < 30}
+
+
 def coverage_bands(times, max_gap, t0=0.0):
     """Plages [[début, fin] relatifs à t0] de présence d'un flux : instants triés, une coupure dès
     qu'un trou dépasse max_gap s (réception vidéo 4609 ≈ continue ; dwells radar 4607 par passes)."""
@@ -1548,11 +1591,14 @@ class FollowStream:
         self.lock = threading.Lock()
 
     def note(self, ts, seg_no, rec_off, n):
+        """Comptabilise un datagramme TS ; renvoie le cumul d'octets si un point d'index a été ajouté, sinon None."""
         with self.lock:
+            added = None
             if self.last_idx is None or ts - self.last_idx >= self.IDX_STEP_S:
                 self.idx_ts.append(ts); self.idx_seg.append(seg_no); self.idx_off.append(rec_off); self.idx_cum.append(self.nbytes)
-                self.last_idx = ts
+                self.last_idx = ts; added = self.nbytes
             self.nbytes += n; self.npkts += 1; self.t1 = ts
+            return added
 
     def locate_time(self, t_abs):
         """Point d'index ≤ t_abs : (seg_no, offset, cumul) — ou le début du flux."""
@@ -1716,6 +1762,7 @@ class FollowEngine:
         if not self.tl_path or not os.path.isfile(self.tl_path):
             return None
         cot, dwells, tracks, rows, pos, t0 = [], [], {}, [], None, None
+        vstreams = {}                                              # dport -> FollowStream reconstruit (points "v")
         pend = []                                                  # lignes depuis le dernier "p" (non validées)
         with open(self.tl_path, encoding="utf-8") as f:
             for line in f:
@@ -1726,6 +1773,13 @@ class FollowEngine:
                 k = it[0]
                 if k == "h":
                     t0 = it[1].get("t0")
+                elif k == "v":                                     # point d'index vidéo (validé immédiatement : idempotent)
+                    _k, dport, dst, vts, seg, off, cum = it
+                    st = vstreams.get(dport)
+                    if st is None:
+                        st = vstreams[dport] = FollowStream(dst, dport); st.t0 = vts
+                    st.idx_ts.append(vts); st.idx_seg.append(seg); st.idx_off.append(off); st.idx_cum.append(cum)
+                    st.last_idx = vts; st.nbytes = cum; st.t1 = vts; st.resume_pos = (seg, off)
                 elif k == "p":
                     for pk in pend:
                         if pk[0] == "c":
@@ -1748,6 +1802,11 @@ class FollowEngine:
             except OSError:
                 pass
             return None
+        self.streams.update(vstreams)
+        resume = pos
+        for st in vstreams.values():                               # reprise séquentielle au plus ancien des points
+            if st.resume_pos and st.resume_pos < resume:
+                resume = st.resume_pos
         self.t0 = t0; self.cot = cot; self.dwells = dwells; self.tracks = tracks; self.track_rows = rows
         self._id_offset = max(tracks) if tracks else 0
         gd = sorted(t0 + d[0] - d[5] / 1000.0 for d in dwells[:200] if d[5] is not None)
@@ -1755,7 +1814,7 @@ class FollowEngine:
         if dwells or cot:
             self.last_ts = t0 + max((cot[-1][0] if cot else 0), (dwells[-1][0] if dwells else 0))
         self._tl_loaded = len(cot) + len(dwells) + len(rows)
-        return pos
+        return resume, pos                                         # (reprise séquentielle, dernier paquet applicatif journalisé)
 
     # -- index persistant (STRIDX01, écrit par stratus2-capture) --
     IDX_REC = struct.Struct("<cdHQQH")
@@ -1820,12 +1879,12 @@ class FollowEngine:
     def _run(self):
         n = self.seg_first
         tail = None; idle_polls = 0; resume = None
-        _t0 = time.perf_counter()
+        _t0 = time.perf_counter(); tl_resume = None
         try:
-            pos = self._tl_load()
-            if pos:
-                self._idx_last_a = pos
-                print("[follow] journal chargé en %.2fs : %d éléments, reprise applicative après %s" % (time.perf_counter() - _t0, self._tl_loaded, pos), flush=True)
+            tlr = self._tl_load()
+            if tlr:
+                tl_resume, self._idx_last_a = tlr
+                print("[follow] journal chargé en %.2fs : %d éléments, reprise %s, applicatif après %s" % (time.perf_counter() - _t0, self._tl_loaded, tl_resume, self._idx_last_a), flush=True)
                 EVENTS.publish({"type": "log", "msg": "suivi : ligne de temps rechargée (%d CoT, %d dwells, %d pistes)" % (len(self.cot), len(self.dwells), len(self.tracks))})
         except Exception as e:
             EVENTS.publish({"type": "log", "msg": "suivi : journal inutilisable (%s) — redécodage" % e})
@@ -1841,7 +1900,7 @@ class FollowEngine:
             if resume:
                 n = resume[0]
         elif self._idx_last_a and not resume:
-            resume = self._idx_last_a                              # pas d'index : reprise séquentielle après le journal
+            resume = tl_resume                                     # pas d'index : reprise séquentielle après le journal
             n = resume[0]
         try:
             while not self.stop_event.is_set():
@@ -1910,7 +1969,9 @@ class FollowEngine:
                     if (seg_no, rec_off) < st.resume_pos:
                         return                                     # déjà compté par l'index
                     st.resume_pos = None
-                st.note(ts, seg_no, rec_off, len(tsdata))
+                cum = st.note(ts, seg_no, rec_off, len(tsdata))
+                if cum is not None:
+                    self._tl_write("v", dport, dst, round(ts, 6), seg_no, rec_off, cum)
                 if not self.catching_up and dport in self.taps:
                     video_bus(dport).publish(bytes(tsdata))
                 return
@@ -2185,6 +2246,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path in ("/", "/index.html"):
                 return self._static("index.html")
+            if u.path in ("/replay", "/replay.html"):             # page opérateur (carte + vidéo + barre de temps)
+                return self._static("replay.html")
+            if u.path == "/api/missions":
+                return self._json({"missions": missions_list()})
+            if u.path == "/api/mission/resolve":
+                return self._json(mission_resolve(q.get("name", [""])[0]))
             if u.path.startswith("/static/"):
                 return self._static(u.path[len("/static/"):])
             if u.path == "/api/config":
