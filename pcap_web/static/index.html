@@ -29,6 +29,7 @@
     <select id="mode" title="Lecture — IHM seule : toute la ligne de temps est préchargée (vidéo extraite, CoT, dwells/plots GMTI, pistes du tracker) et jouée dans le navigateur — seek instantané, pause, vitesse ; rien n'est émis. Rejeu + émission : le moteur rejoue à la cadence du pcap et envoie les flux cochés en UDP/TCP vers leurs cibles (l'IHM suit en direct).">
       <option value="play">Lecture IHM seule (préchargé)</option>
       <option value="emit">Rejeu + émission UDP/TCP</option>
+      <option value="follow">Suivre le fichier (DVR live)</option>
     </select>
     <select id="speed" title="vitesse (mode rejeu)">
       <option value="1">×1</option><option value="2">×2</option><option value="5">×5</option><option value="10">×10</option><option value="0">max</option>
@@ -37,6 +38,7 @@
     <button id="btn-play" class="accent">▶ Lire</button>
     <button id="btn-pause" title="pause / reprise du rejeu (la vidéo fichier a ses propres commandes)" disabled>⏸</button>
     <button id="btn-stop" class="danger">■ Stop</button>
+    <button id="btn-edge" hidden class="accent" title="Suivi du fichier : revenir au bord du direct (flux poussé au fil de l'écriture)">⟫ Direct</button>
     <button id="btn-settings" class="icon" title="Paramètres de l'application" aria-label="Paramètres">⚙</button>
     <div id="busybar" class="busybar" hidden></div>
   </header>

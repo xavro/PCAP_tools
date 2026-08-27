@@ -790,8 +790,8 @@
     player.on(mpegts.Events.ASYNCHRONOUS_KLV_METADATA_ARRIVED, onKlv);
     player.on(mpegts.Events.ERROR, (t, d, i) => {
       status(`erreur lecteur : ${t} / ${d} ${i && i.msg || ""}`, true);
-      if (live && state.replay && state.replay.running && state.retries < 5) {      // tap live : on se raccroche
-        state.retries++; setTimeout(() => { if (state.replay && state.replay.running) startPlayer(url, true); }, 600);
+      if (live && ((state.replay && state.replay.running) || (pb.follow && pb.edge)) && state.retries < 5) {      // tap live : on se raccroche
+        state.retries++; setTimeout(() => { if ((state.replay && state.replay.running) || (pb.follow && pb.edge)) startPlayer(url, true); }, 600);
       } else if (!live && pb.on && state.retries < 5) {                               // lecture fichier : relance au même instant
         state.retries++; const at = Math.max(0, pb.t - pb.vOffset);
         setTimeout(() => { if (pb.on) { startPlayer(url, false); video.playbackRate = speedVal() || 1; const go = () => { video.currentTime = at; video.removeEventListener("loadedmetadata", go); }; video.addEventListener("loadedmetadata", go); if (pb.paused) video.pause(); } }, 500);
@@ -808,13 +808,14 @@
     if (state.player) { try { state.player.pause(); state.player.unload(); state.player.detachMediaElement(); state.player.destroy(); } catch (e) {} }
     state.player = null;
   }
-  video.addEventListener("ended", () => { if (pb.on && $("loop").checked) playbackSeek(0); });
+  video.addEventListener("ended", () => { if (pb.on && pb.follow && !pb.edge) return goEdge(); if (pb.on && !pb.follow && $("loop").checked) playbackSeek(0); });
 
   async function play() {
     if (isLive()) return liveStart();
     if (!state.pcap) return status("analyser un pcap d'abord", true);
     const sel = $("mode").value; const emitting = sel === "emit";
     if (sel === "play") return playbackStart();
+    if (sel === "follow") return followStart();
     state.mode = "replay";
     const q = `pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur ? state.cur.dport : 0}`;
     // Rejeu : seuls les flux COCHÉS sont rejoués (émis si cible, sinon vus dans l'IHM).
@@ -866,7 +867,8 @@
   }
 
   // ── Lecture — IHM seule : ligne de temps préchargée, horloge côté navigateur ───
-  const pb = { on: false, tl: null, tracks: [], t: 0, paused: false, wall: 0, cotIdx: 0, dwIdx: 0, videoOn: false, vOffset: 0, lastT: -1, tentShown: false };
+  const pb = { on: false, tl: null, tracks: [], t: 0, paused: false, wall: 0, cotIdx: 0, dwIdx: 0, videoOn: false, vOffset: 0, lastT: -1, tentShown: false,
+    follow: false, edge: false, timer: null, seq: null, edgeAge: null };
   async function playbackStart() {
     const checked = checkedFlows();
     if (!checked.length) return status("cocher au moins un flux à lire", true);
@@ -900,9 +902,90 @@
     (pb.tl.dwells || []).slice(0, 500).forEach(d => { if (d[2]) pts.push(d[2]); if (d[1] && d[1][0] != null) pts.push(d[1]); });
     if (!state.cur && pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15));
   }
-  function playbackStop() { if (pb.on) setState("stopped", "■ arrêt"); pb.on = false; $("btn-pause").disabled = true; }
+  function playbackStop() { if (pb.follow) followStop(); if (pb.on) setState("stopped", "■ arrêt"); pb.on = false; $("btn-pause").disabled = true; }
+
+  // ── Suivi d'un fichier EN COURS D'ÉCRITURE (capture maître StratusServer v2) : DVR pendant le live ──
+  // Le serveur rattrape le fichier puis suit sa croissance (et le segment suivant) ; l'IHM précharge la
+  // ligne de temps comme en lecture, reçoit les ajouts chaque seconde (delta) et joue la vidéo soit au
+  // bord (flux poussé sur /ws/video, comme le live), soit en retour arrière (HTTP Range sur le tampon).
+  async function followStart() {
+    const checked = checkedFlows();
+    if (!checked.length) return status("cocher au moins un flux à suivre", true);
+    stopPlayer(); if (state.replay && state.replay.running) { try { await api("/api/replay/stop", {}); } catch (e) {} }
+    const watch = checked.map(f => f.key);
+    const gmtiChecked = checked.some(f => /GMTI|4607/i.test(f.dominant));
+    const track = (gmtiChecked && $("gmti-live").checked) ? { profile: $("gmti-profile").value || "defaut", overrides: gs.ov } : null;
+    pb.videoOn = !!(state.cur && checked.some(f => f.proto === "UDP" && f.dport === state.cur.dport));
+    const taps = pb.videoOn ? [state.cur.dport] : [];
+    let tl;
+    try {
+      await withBusy("démarrage du suivi du fichier…", () => api("/api/follow/start", { pcap: state.pcap, watch, track, taps }), ["btn-play"]);
+      tl = await withBusy("rattrapage du fichier (CoT, GMTI, pistes, vidéo)…", followWaitCatchup, ["btn-play"]);
+    } catch (e) { return status("suivi : " + e.message, true); }
+    pb.tl = tl; pb.tracks = tl.tracks || []; pb.seq = tl.seq; pb.on = true; pb.follow = true; pb.paused = false; pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; state.retries = 0;
+    state.mode = "play"; resetCot(); resetGmti(); resetLive(); fitOnce = false;
+    $("btn-edge").hidden = false; $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";
+    if (gmtiChecked && track) { showTab("gmti"); $("gmti-live-body").textContent = `suivi : pistes du tracker temps réel (profil ${track.profile}) datées sur la capture`; }
+    goEdge();
+    if (pb.timer) clearInterval(pb.timer); pb.timer = setInterval(followPoll, 1000); followPoll();
+    status(`suivi du fichier démarré : ${checked.map(f => f.key).join(", ")} — ${tl.duration.toFixed(0)} s déjà capturées`);
+    fitTimeline();
+  }
+  async function followWaitCatchup() {                  // attend la fin du rattrapage côté serveur, puis charge la ligne de temps
+    for (let i = 0; i < 7200; i++) {
+      const st = await api("/api/follow/status"); if (!st.running) throw new Error("suivi arrêté");
+      if (!st.catching_up) break;
+      status(`rattrapage… ${st.n_packets} paquets · ${(st.duration || 0).toFixed(0)} s · ${((st.bytes_read || 0) / 1e6).toFixed(0)} Mo`);
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return api("/api/follow/timeline");
+  }
+  async function followPoll() {
+    if (!pb.on || !pb.follow || !pb.seq) return;
+    let d; try { d = await api(`/api/follow/delta?cot=${pb.seq.cot}&dw=${pb.seq.dw}&tr=${pb.seq.tr}`); } catch (e) { return; }
+    if (!pb.on || !pb.follow) return;
+    if (d.cot.length) pb.tl.cot.push(...d.cot);
+    if (d.dwells.length) pb.tl.dwells.push(...d.dwells);
+    (d.track_meta || []).forEach(m => { let tr = pb.tracks.find(t => t.id === m.id); if (!tr) pb.tracks.push({ id: m.id, air: m.air, rot: m.rot, hits: m.hits, hist: [] }); else { tr.hits = m.hits; tr.air = m.air; tr.rot = m.rot; } });
+    (d.track_rows || []).forEach(([id, row]) => { const tr = pb.tracks.find(t => t.id === id); if (tr) tr.hist.push(row); });
+    pb.seq = d.seq; pb.tl.duration = d.duration; pb.tl.video = d.video; pb.edgeAge = d.edge_age_s;
+    $("tl-mode").textContent = `suivi du fichier${d.segment ? " · " + d.segment : ""} — ${pb.tl.cot.length} events CoT, ${pb.tl.dwells.length} dwells, ${pb.tracks.length} pistes · `
+      + (pb.edge ? "● DIRECT" : `DVR t=${pb.t.toFixed(0)} s`) + ` · bord ${d.duration.toFixed(0)} s`
+      + (d.edge_age_s != null && d.edge_age_s > 5 ? ` (fichier figé depuis ${d.edge_age_s.toFixed(0)} s)` : "") + " · clic timeline = retour arrière, ⟫ = direct";
+  }
+  function goEdge() {                                      // recolle au bord : lecteur ws (flux poussé au fil de l'écriture), état reconstitué à t = bord
+    if (!pb.follow) return;
+    pb.edge = true; const D = pb.tl.duration;
+    if (pb.videoOn && state.cur) { pb.vOffset = D; startPlayer(`${WS}/ws/video?dport=${state.cur.dport}`, true); $("mode-badge").textContent = "● DIRECT — suivi du fichier (flux poussé au fil de l'écriture)"; $("mode-badge").className = "overlay live"; }
+    else { stopPlayer(); $("mode-badge").textContent = "● DIRECT — suivi du fichier (sans vidéo)"; $("mode-badge").className = "overlay live"; }
+    pb.t = D; pb.wall = performance.now(); pb.paused = false; $("btn-pause").textContent = "⏸";
+    resetCot(); resetGmti(); resetLive(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; playbackRender(D, true);
+    setState("playing", "● direct · suivi du fichier");
+  }
+  function goDvr(t) {                                      // retour arrière : lecteur fichier (HTTP Range) sur le tampon actuel (instantané)
+    pb.edge = false;
+    if (pb.videoOn && state.cur) {
+      // le serveur sert le TS à partir du datagramme daté t (index du tampon) : le lecteur démarre à 0 = t (saut exact)
+      pb.vOffset = t;
+      startPlayer(U(`/video.ts?follow=1&dport=${state.cur.dport}&from=${t.toFixed(3)}&_=${Date.now()}`), false); video.playbackRate = speedVal() || 1;
+      $("mode-badge").textContent = "DVR — retour arrière sur le fichier en cours (⟫ Direct pour recoller)"; $("mode-badge").className = "overlay";
+    }
+    setState("playing", `▶ DVR · t=${t.toFixed(0)} s · ⟫ = direct`);
+  }
+  async function followStop() {
+    if (pb.timer) { clearInterval(pb.timer); pb.timer = null; }
+    pb.follow = false; pb.edge = false; $("btn-edge").hidden = true;
+    try { await api("/api/follow/stop", {}); } catch (e) {}
+  }
+  $("btn-edge").addEventListener("click", () => { if (pb.follow) { goEdge(); status("retour au direct"); } });
   function playbackSeek(t) {
     if (!pb.on) return; t = Math.max(0, Math.min(t, pb.tl.duration));
+    if (pb.follow) {
+      if (t >= pb.tl.duration - 3) { goEdge(); return status("retour au direct"); }
+      pb.t = t; pb.wall = performance.now(); goDvr(t);
+      resetCot(); resetGmti(); resetLive(); pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; playbackRender(t, true);
+      return status(`DVR : saut à t=${t.toFixed(1)} s`);
+    }
     pb.t = t; pb.wall = performance.now();
     if (pb.videoOn && state.player) { video.currentTime = Math.max(0, t - pb.vOffset); }
     // état reconstitué depuis le début (rapide : listes en mémoire)
@@ -922,7 +1005,8 @@
     let t;
     if (pb.videoOn && state.player && !video.paused && !video.ended) t = pb.vOffset + video.currentTime;
     else if (pb.paused) t = pb.t;
-    else { const now = performance.now(); const sp = speedVal() || 16; t = pb.t + (now - pb.wall) / 1000 * sp; pb.wall = now; if (t >= pb.tl.duration) { t = pb.tl.duration; if ($("loop").checked) { playbackSeek(0); return; } } }
+    else { const now = performance.now(); const sp = pb.follow ? 1 : (speedVal() || 16); t = pb.t + (now - pb.wall) / 1000 * sp; pb.wall = now; if (t >= pb.tl.duration) { t = pb.tl.duration; if (!pb.follow && $("loop").checked) { playbackSeek(0); return; } } }
+    if (pb.follow && t > pb.tl.duration) t = pb.tl.duration;
     pb.t = t; playbackRender(t, false);
   }
   const ST_NAME = { T: "TENTATIVE", C: "CONFIRMED", S: "SOLID", K: "COASTING", D: "DEAD" };
@@ -1205,7 +1289,7 @@
   $("stream").addEventListener("change", e => selectStream(e.target.value));
   $("btn-play").addEventListener("click", play);
   $("btn-stop").addEventListener("click", stopAll);
-  $("mode").addEventListener("change", () => { state.mode = $("mode").value === "play" ? "play" : "replay"; drawTimeline(); document.body.classList.toggle("emit-mode", $("mode").value === "emit"); });
+  $("mode").addEventListener("change", () => { state.mode = $("mode").value === "emit" ? "replay" : "play"; drawTimeline(); document.body.classList.toggle("emit-mode", $("mode").value === "emit"); });
   const qs0 = new URLSearchParams(location.search);
   api("/api/config").then(c => {
     state.cfg = c; state.bmCfg = c.basemap; state.replay = c.replay; applyBasemap(); renderReplay();

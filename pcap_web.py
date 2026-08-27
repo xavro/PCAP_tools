@@ -61,6 +61,7 @@ import json
 import math
 import os
 import queue
+import re
 import socket
 import struct
 import sys
@@ -1440,6 +1441,334 @@ ENGINE = ReplayEngine()
 LIVE = LiveEngine()
 
 
+# ── Suivi d'un pcap EN COURS D'ÉCRITURE (DVR pendant le live) ───────────────
+class PcapTail:
+    """Lecteur incrémental d'un pcap classique (pas pcapng) : `read()` rend les trames complètes
+    ajoutées depuis le dernier appel et mémorise l'offset ; un enregistrement partiel (écriture en
+    cours) est relu au tour suivant. `incl` aberrant (en-tête déchiré) → arrêt propre."""
+    MAX_INCL = 1 << 20
+
+    def __init__(self, path):
+        self.path = path
+        self.f = open(path, "rb")
+        hdr = self.f.read(24)
+        if len(hdr) < 24:
+            self.f.close(); raise ValueError("en-tête pcap incomplet")
+        magic = hdr[:4]
+        if magic not in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"):
+            self.f.close(); raise ValueError("format non suivi (pcap classique attendu, magic %s)" % magic.hex())
+        le = magic in (b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1")
+        self.nano = magic in (b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d")
+        end = "<" if le else ">"
+        self.linktype = struct.unpack(end + "I", hdr[20:24])[0]
+        self.hdr = struct.Struct(end + "IIII")
+        self.tsdiv = 1e9 if self.nano else 1e6
+        self.offset = 24
+        self.corrupt = False
+
+    def read(self, max_bytes=64 << 20):
+        """Liste de (ts, linktype, data) des trames complètes disponibles (≤ max_bytes lus)."""
+        out = []
+        if self.corrupt:
+            return out
+        self.f.seek(self.offset)
+        data = self.f.read(max_bytes)
+        pos, n = 0, len(data)
+        while n - pos >= 16:
+            ts_s, ts_frac, incl, _orig = self.hdr.unpack_from(data, pos)
+            if incl > self.MAX_INCL:
+                self.corrupt = True
+                break
+            if n - pos - 16 < incl:
+                break                                          # enregistrement partiel : au tour suivant
+            out.append((ts_s + ts_frac / self.tsdiv, self.linktype, data[pos + 16:pos + 16 + incl]))
+            pos += 16 + incl
+        self.offset += pos
+        return out
+
+    def size(self):
+        try:
+            return os.path.getsize(self.path)
+        except OSError:
+            return 0
+
+    def close(self):
+        try:
+            self.f.close()
+        except OSError:
+            pass
+
+
+_SEG_RE = re.compile(r"^(.*)_(\d{3})\.pcap$", re.I)
+
+
+def follow_segments(path):
+    """Série de segments {base}_NNN.pcap (capture maître StratusServer v2) : (base, n) ou None."""
+    m = _SEG_RE.match(os.path.basename(path))
+    if not m:
+        return None
+    return os.path.join(os.path.dirname(path), m.group(1)), int(m.group(2))
+
+
+class FollowStream:
+    """Flux TS d'un pcap suivi : tampon extensible (copié par tranches à la lecture, jamais exporté
+    en memoryview) + index (ts, offset, longueur)."""
+    __slots__ = ("dst", "dport", "buf", "pkts", "t0", "t1", "info", "lock")
+
+    def __init__(self, dst, dport):
+        self.dst, self.dport = dst, dport
+        self.buf = bytearray(); self.pkts = []; self.t0 = self.t1 = None; self.info = None
+        self.lock = threading.Lock()
+
+
+class FollowEngine:
+    """Lecture d'un pcap en cours d'écriture : rattrapage (tout ce qui existe déjà), puis suivi de la
+    croissance du fichier et passage au segment suivant. Construit en continu la même ligne de temps
+    que timeline_data (CoT, dwells GMTI, offsets vidéo) + l'historique des pistes du LiveTracker daté
+    en temps de capture ; le client la précharge puis reçoit les ajouts (delta). Le TS vidéo est servi
+    en HTTP Range (DVR : retour arrière) et poussé sur /ws/video au bord (direct)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.state = {"running": False}
+        self.stop_event = threading.Event(); self.thread = None
+        self._clear()
+
+    def _clear(self):
+        self.t0 = None; self.last_ts = None; self.n_packets = 0
+        self.cot = []; self.dwells = []; self.gmti_dt = []; self.dwell_offset = None
+        self.tracks = {}; self.track_rows = []          # rows : (id, row) dans l'ordre d'ajout (delta)
+        self.streams = {}; self.watch = None; self.taps = set(); self.live = None
+        self.segments = []; self.cur_seg = None; self.catching_up = True; self.bytes_read = 0
+        self.edge_wall = 0.0
+
+    # -- statut --
+    def status(self):
+        with self.lock:
+            st = dict(self.state)
+        st.update({"follow": True, "duration": self.duration(), "t0": self.t0, "n_packets": self.n_packets,
+                   "catching_up": self.catching_up, "segment": self.cur_seg, "segments": list(self.segments),
+                   "bytes_read": self.bytes_read, "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
+                   "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}})
+        return st
+
+    def duration(self):
+        return round((self.last_ts - self.t0), 3) if (self.t0 is not None and self.last_ts is not None) else 0.0
+
+    # -- démarrage / arrêt --
+    def start(self, path, watch=None, track=None, taps=()):
+        with self.lock:
+            if self.state.get("running"):
+                raise ValueError("un suivi de fichier est déjà en cours")
+            if ENGINE.status().get("running"):
+                raise ValueError("un rejeu est en cours : l'arrêter d'abord")
+            if LIVE.status().get("running"):
+                raise ValueError("une écoute réseau est en cours : l'arrêter d'abord")
+            self._clear()
+            self.watch = None if watch is None else set(str(w).lower() for w in watch)
+            self.taps = set(int(t) for t in (taps or []))
+            warn = None
+            if track:
+                try:
+                    self.live = LiveTracker(track.get("profile") or "defaut", track.get("overrides") or {})
+                except Exception as e:
+                    warn = "pistage indisponible : %s" % e; track = None
+            seg = follow_segments(path)
+            if seg:
+                base, n = seg
+                self.segments = [os.path.join(os.path.dirname(path), "%s_%03d.pcap" % (os.path.basename(base), n))]
+            else:
+                self.segments = [path]
+            self._seg_base = seg
+            self.stop_event.clear()
+            self.state = {"running": True, "pcap": path, "watch": watch, "track": track, "taps": list(self.taps),
+                          "started": time.time(), "speed": 1, "paused": False, "loop": False, "t": 0.0}
+        EVENTS.publish({"type": "log", "msg": "suivi du fichier : %s%s" % (path, " (série de segments)" if seg else "")})
+        if warn:
+            EVENTS.publish({"type": "log", "msg": warn})
+        self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        with self.lock:
+            self.state["running"] = False; self.state["stopped"] = True
+        EVENTS.publish({"type": "log", "msg": "suivi du fichier arrêté (%d paquets, %.1f s)" % (self.n_packets, self.duration())})
+        return self.status()
+
+    # -- boucle de suivi --
+    def _next_segment(self, cur):
+        seg = self._seg_base
+        if not seg:
+            return None
+        m = _SEG_RE.match(os.path.basename(cur))
+        n = int(m.group(2)) + 1
+        nxt = os.path.join(os.path.dirname(cur), "%s_%03d.pcap" % (m.group(1), n))
+        return nxt if os.path.isfile(nxt) else None
+
+    def _run(self):
+        cur = self.segments[0]
+        tail = None
+        idle_polls = 0
+        try:
+            while not self.stop_event.is_set():
+                if tail is None:
+                    try:
+                        tail = PcapTail(cur)
+                    except (OSError, ValueError) as e:
+                        EVENTS.publish({"type": "log", "msg": "suivi : %s" % e}); time.sleep(1.0); continue
+                    self.cur_seg = cur
+                    if cur not in self.segments:
+                        self.segments.append(cur)
+                    EVENTS.publish({"type": "log", "msg": "suivi : segment %s" % os.path.basename(cur)})
+                frames = tail.read()
+                if frames:
+                    idle_polls = 0
+                    for ts, lt, data in frames:
+                        self._on_frame(ts, lt, data)
+                    self.bytes_read = tail.offset
+                    self.edge_wall = time.time()
+                    if self.catching_up and tail.offset >= tail.size():
+                        self.catching_up = False
+                        EVENTS.publish({"type": "log", "msg": "suivi : rattrapage terminé (%d paquets, %.1f s) — au bord du direct" % (self.n_packets, self.duration())})
+                    continue
+                # pas de nouvelle trame : segment suivant disponible ?
+                nxt = self._next_segment(cur)
+                if nxt is not None and tail.offset >= tail.size():
+                    idle_polls += 1
+                    if idle_polls >= 3:                            # 3 tours sans croissance → l'écrivain est passé au suivant
+                        tail.close(); tail = None; cur = nxt; idle_polls = 0
+                        continue
+                if self.catching_up and tail.offset >= tail.size():
+                    self.catching_up = False
+                    EVENTS.publish({"type": "log", "msg": "suivi : rattrapage terminé (%d paquets, %.1f s) — au bord du direct" % (self.n_packets, self.duration())})
+                time.sleep(0.3)
+        finally:
+            if tail is not None:
+                tail.close()
+
+    def _on_frame(self, ts, lt, frame):
+        r = parse(lt, frame)
+        if not r:
+            return
+        proto, src, sport, dst, dport, pl = r
+        if not pl:
+            return
+        if self.t0 is None:
+            self.t0 = ts
+        self.last_ts = ts; self.n_packets += 1
+        t_rel = round(ts - self.t0, 3)
+        if proto == "UDP":
+            st = self.streams.get(dport)
+            tsdata = v9._ts_from_udp(pl) if (st is not None or len(pl) >= TS_PKT) else None
+            if tsdata:
+                if st is None:
+                    st = self.streams[dport] = FollowStream(dst, dport)
+                    st.t0 = ts
+                with st.lock:
+                    st.pkts.append((ts, len(st.buf), len(tsdata))); st.buf.extend(tsdata); st.t1 = ts
+                if not self.catching_up and dport in self.taps:
+                    video_bus(dport).publish(bytes(tsdata))
+                return
+        key = "%s/%s" % (proto.lower(), dport)
+        if self.watch is not None and key not in self.watch:
+            return
+        if pl[:1] == b"<" or pl[:6].lstrip()[:1] == b"<":
+            ev = decode_cot(pl)
+            if ev:
+                self.cot.append([t_rel, ev["uid"], ev["type"], ev["aff"], ev.get("callsign"), ev["lat"], ev["lon"],
+                                 ev.get("speed"), ev.get("course"), key])
+        elif len(pl) > 37 and 32 <= pl[0] < 127 and 32 <= pl[1] < 127:
+            g = decode_gmti(pl)
+            if g is None:
+                return
+            plots, sensor, dw = g
+            for d in dw:
+                self.dwells.append([t_rel, sensor, d["center"], d["poly"], d["n"], d.get("t_ms")])
+                if d.get("t_ms") is not None and len(self.gmti_dt) < 200:
+                    self.gmti_dt.append(ts - d["t_ms"] / 1000.0)
+                    if len(self.gmti_dt) >= 20 or self.dwell_offset is None:
+                        s_ = sorted(self.gmti_dt); self.dwell_offset = s_[len(s_) // 2]     # figé après 200 dwells
+            if plots and not dw:
+                self.dwells.append([t_rel, sensor, None, None, len(plots), None])
+            if plots:
+                self.dwells[-1].append(plots)
+            if self.live is not None and gmti_pcap_to_csv is not None:
+                try:
+                    self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                    self._track_rows(t_rel)
+                except Exception as e:
+                    EVENTS.publish({"type": "log", "msg": "suivi : pistage : %s" % e})
+
+    def _track_rows(self, t_rel):
+        """Historique des pistes (même forme que timeline_tracks) : une ligne par piste vivante et par
+        dwell traité, datée en temps de capture (pas de dwell_offset : le paquet fait foi)."""
+        lv = self.live
+        T = lv.T
+        if lv.tk is None or lv.frame is None:
+            return
+        names = {T.TENTATIVE: "T", T.CONFIRMED: "C", T.SOLID: "S", T.COASTING: "K", T.DEAD: "D"}
+        with TRACK_LOCK:
+            last_t = lv.last_t
+            for tr in lv.tk.tracks:
+                st = tr.state
+                if st == T.DEAD:
+                    continue
+                la, lo = lv.frame.to_ll(float(tr.x[0]), float(tr.x[1]))
+                nm = names.get(st, "T")
+                hit = 1 if (last_t is not None and abs(float(tr.t_last_update) - last_t) < 1e-6) else 0
+                sp = round(float(tr.speed()), 1)
+                hd = round((math.degrees(math.atan2(float(tr.x[2]), float(tr.x[3]))) + 360.0) % 360.0, 1)
+                rec = self.tracks.get(tr.id)
+                if rec is None:
+                    rec = self.tracks[tr.id] = {"id": tr.id, "air": bool(tr.is_air), "rot": bool(tr.is_rotator), "hits": 0, "hist": []}
+                rec["hits"] = tr.hits; rec["air"] = bool(tr.is_air); rec["rot"] = bool(tr.is_rotator)
+                row = [t_rel, round(la, 6), round(lo, 6), nm, hit, 1 if tr.confirmed_ever else 0, sp, hd]
+                rec["hist"].append(row); self.track_rows.append((tr.id, row))
+
+    # -- vues client --
+    def video_info(self):
+        return [{"dport": st.dport, "dst": st.dst, "t_offset": round((st.t0 or self.t0 or 0) - (self.t0 or 0), 3),
+                 "duration": round((st.t1 or 0) - (st.t0 or 0), 3), "bytes": len(st.buf)} for st in self.streams.values()]
+
+    def timeline(self):
+        return {"t0": self.t0, "duration": self.duration(), "n_packets": self.n_packets, "cot": list(self.cot),
+                "dwells": list(self.dwells), "dwell_offset": self.dwell_offset, "video": self.video_info(),
+                "tracks": [{"id": r["id"], "air": r["air"], "rot": r["rot"], "hits": r["hits"], "hist": list(r["hist"])} for r in self.tracks.values()],
+                "follow": True, "catching_up": self.catching_up, "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
+
+    def delta(self, cot_i, dw_i, tr_i):
+        rows = self.track_rows[tr_i:]
+        meta = {}
+        for tid, _r in rows:
+            if tid not in meta:
+                r = self.tracks[tid]; meta[tid] = {"id": tid, "air": r["air"], "rot": r["rot"], "hits": r["hits"]}
+        return {"duration": self.duration(), "n_packets": self.n_packets, "cot": self.cot[cot_i:], "dwells": self.dwells[dw_i:],
+                "track_rows": [[tid, row] for tid, row in rows], "track_meta": list(meta.values()), "video": self.video_info(),
+                "catching_up": self.catching_up, "segment": os.path.basename(self.cur_seg) if self.cur_seg else None,
+                "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
+                "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
+
+    def stream(self, dport=None):
+        if not self.streams:
+            raise ValueError("aucun flux TS dans le fichier suivi (pour l'instant)")
+        if dport:
+            st = self.streams.get(int(dport))
+            if st is None:
+                raise ValueError("pas de flux TS sur le port %s" % dport)
+            return st
+        return max(self.streams.values(), key=lambda s: len(s.buf))
+
+    def follow(self, taps=None, track=None):
+        if taps is not None:
+            self.taps = set(int(t) for t in taps)
+            with self.lock:
+                self.state["taps"] = list(self.taps)
+        return self.status()
+
+
+FOLLOW = FollowEngine()
+
+
 def flows_summary(path, limit=0):
     """Flux applicatifs (pcap_analyze.scan) → lignes pour le routage."""
     if is_csv_source(path):
@@ -1517,6 +1846,8 @@ class Handler(BaseHTTPRequestHandler):
         return p
 
     def _stream(self, q):
+        if q.get("follow", ["0"])[0] in ("1", "true"):
+            return FOLLOW.stream(q.get("dport", [None])[0])
         path = self._pcap(q)
         limit = int(q.get("limit", ["0"])[0] or 0)
         streams = scan(path, limit)
@@ -1529,6 +1860,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("pas de flux TS sur le port %s" % dport)
             return st
         return max(streams.values(), key=lambda s: len(s.buf))
+
+    def handle(self):
+        """Le navigateur coupe les requêtes Range vidéo à chaque seek : pas de trace pour ces resets."""
+        try:
+            super().handle()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
 
     def _strip_base(self):
         """--base-path : accepte les URL préfixées (/console/api/…) en plus des URL nues."""
@@ -1550,7 +1888,7 @@ class Handler(BaseHTTPRequestHandler):
                 st = settings_load()
                 default = self.default_pcap or (st.get("last_pcap") if st.get("last_pcap") and os.path.isfile(st["last_pcap"]) else None)
                 return self._json({"default_pcap": default, "default_limit": self.default_limit,
-                                   "basemap": basemap_load(), "replay": ENGINE.status(), "live": LIVE.status(), "settings": st})
+                                   "basemap": basemap_load(), "replay": ENGINE.status(), "live": LIVE.status(), "follow": FOLLOW.status(), "settings": st})
             if u.path == "/api/settings":
                 return self._json(settings_load())
             if u.path == "/api/browse":
@@ -1616,6 +1954,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/replay/status":
                 return self._json(ENGINE.status())
+            if u.path == "/api/follow/status":
+                return self._json(FOLLOW.status())
+            if u.path == "/api/follow/timeline":
+                return self._json(FOLLOW.timeline())
+            if u.path == "/api/follow/delta":
+                return self._json(FOLLOW.delta(int(q.get("cot", ["0"])[0] or 0), int(q.get("dw", ["0"])[0] or 0), int(q.get("tr", ["0"])[0] or 0)))
             if u.path == "/api/live/status":
                 st = LIVE.status(); st["flows_live"] = LIVE.flows_summary(); return self._json(st)
             if u.path == "/api/live/ifaces":
@@ -1637,7 +1981,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/klv":
                 return self._json(klv_track(self._stream(q)))
             if u.path == "/video.ts":
-                return self._video(self._stream(q))
+                return self._video(self._stream(q), q)
             if u.path == "/live.ts":
                 return self._live(self._stream(q), q)
             if u.path == "/basemap":
@@ -1676,6 +2020,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(LIVE.status())
             if u.path == "/api/live/stop":
                 return self._json(LIVE.stop())
+            if u.path == "/api/follow/start":
+                pcap = body.get("pcap") or self.default_pcap
+                if not pcap or not os.path.isfile(pcap):
+                    raise FileNotFoundError("pcap introuvable : %r" % pcap)
+                if is_csv_source(pcap):
+                    raise ValueError("un CSV ne se suit pas : ouvrir le pcap de la capture")
+                FOLLOW.start(pcap, body.get("watch"), body.get("track"), body.get("taps") or [])
+                return self._json(FOLLOW.status())
+            if u.path == "/api/follow/stop":
+                return self._json(FOLLOW.stop())
+            if u.path == "/api/follow/follow":
+                return self._json(FOLLOW.follow(body.get("taps"), body.get("track")))
             if u.path == "/api/live/follow":
                 return self._json(LIVE.follow(body.get("taps"), body.get("watch"), body.get("track")))
             if u.path == "/api/replay/pause":
@@ -1771,9 +2127,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _video(self, st):
+    def _video(self, st, q=None):
         data = st.buf
-        total = len(data)
+        base = 0
+        if q and q.get("from", [""])[0]:
+            # Suivi (DVR) : ressource servie À PARTIR du 1er datagramme daté >= t0 + from (index (ts, offset)
+            # du tampon) — saut exact au paquet, au lieu de l'estimation par débit du lecteur (Range).
+            t_from = (st.t0 or 0) + float(q["from"][0])
+            lock = getattr(st, "lock", None)
+            with (lock if lock is not None else threading.Lock()):
+                tss = [p[0] for p in st.pkts]
+                import bisect
+                i = bisect.bisect_left(tss, t_from)
+                base = st.pkts[i][1] if i < len(st.pkts) else len(data)
+        total = len(data) - base
         rng = self.headers.get("Range")
         start, end = 0, total - 1
         code = 200
@@ -1792,9 +2159,15 @@ class Handler(BaseHTTPRequestHandler):
         if code == 206:
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, total))
         self.end_headers()
-        mv = memoryview(data)[start:end + 1]
-        for i in range(0, len(mv), 1 << 20):
-            self.wfile.write(mv[i:i + (1 << 20)])
+        lock = getattr(st, "lock", None)
+        for i in range(start, end + 1, 1 << 20):            # tranches copiées : le tampon peut grossir (suivi)
+            j = min(i + (1 << 20), end + 1)
+            if lock is not None:
+                with lock:
+                    chunk = bytes(data[base + i:base + j])
+            else:
+                chunk = bytes(data[base + i:base + j])
+            self.wfile.write(chunk)
 
     def _live(self, st, q):
         """Pousse le TS cadencé aux horodatages pcap (× speed). speed=0 → max."""
