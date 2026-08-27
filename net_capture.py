@@ -246,9 +246,10 @@ class Capture:
         t = threading.Thread(target=fn, args=a, daemon=True); t.start(); self.threads.append(t)
 
     def _loop_frames(self, s, ip_only):
+        PACKET_OUTGOING = 4                                   # sll_pkttype : trame ÉMISE par cette machine
         while not self.stop_event.is_set():
             try:
-                data = s.recv(262144)
+                data, addr = s.recvfrom(262144)
             except socket.timeout:
                 continue
             except OSError as e:
@@ -256,6 +257,11 @@ class Capture:
                     self.err = str(e); self.log("capture : %s" % e)
                 break
             if not data:
+                continue
+            # AF_PACKET voit chaque paquet local DEUX fois (sortie puis entrée sur lo, ou émetteur sur
+            # le même hôte) : on ignore les trames sortantes, sinon chaque datagramme est dupliqué
+            # (erreurs de continuité TS, vidéo en macroblocs à la relecture).
+            if not ip_only and len(addr) >= 3 and addr[2] == PACKET_OUTGOING:
                 continue
             if ip_only:
                 if data[0] >> 4 != 4 or len(data) < 28 or data[9] != 17:      # IPv4 + UDP seulement
