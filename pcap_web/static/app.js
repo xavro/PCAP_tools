@@ -18,7 +18,7 @@
     const fav = $("favicon"); if (fav) fav.href = BASE + "../static/images/favicon.ico";   // favicon StratusServer
     const logo = document.querySelector(".stx-drawer-head img"); if (logo) { logo.onerror = () => { logo.onerror = null; logo.src = U("static/stratus.png"); }; logo.src = BASE + "../static/images/Stratus%20Server.png"; }
   }
-  {                                                   // tiroir toujours disponible : pages v2 (racine) ou pages du serveur parent (/console/)
+  if (!document.body.classList.contains("operator")) {   // tiroir de la console (la page opérateur utilise celui de pages.js) : pages v2 (racine) ou pages du serveur parent (/console/)
     const burger = $("stx-burger"), drawer = $("stx-drawer"), backdrop = $("stx-backdrop");
     burger.hidden = false;
     const root = BASE === "/" ? "" : "../";

@@ -2,7 +2,7 @@
 (() => {
   "use strict";
   const BASE = location.pathname.replace(/[^/]*$/, "");          // "/" ou "/console/"
-  const ROOT = BASE.replace(/console\/$/, "");                     // racine des pages v2
+  const ROOT = BASE.replace(/api\/$/, "").replace(/console\/$/, "");   // racine des pages v2 (/api/docs, /console/… → /)
   const U = p => ROOT + String(p).replace(/^\//, "");
   const $ = id => document.getElementById(id);
   const api = async (p, opt) => { const r = await fetch(U(p), opt); const j = await r.json().catch(() => ({})); if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status)); return j; };
@@ -16,10 +16,11 @@
   const NAV = [
     ["missions", "Missions", "captures, relecture, GPX", "M3 4h18v4H3zM4 9h16v11H4zM9 12h6"],
     ["console", "Console pcap", "analyse, rejeu, écoute, banc GMTI", "M4 6l6 6-6 6M12 18h8"],
+    ["replay", "Relecture", "page opérateur : carte, vidéo, barre de temps", "M5 4l14 8-14 8z"],
     ["docs", "Documentation API", "endpoints v2 : capture, suivi, live, GMTI", "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 0-3 3zM5 4v16M8 9h8M8 13h8"],
     ["health", "Health Check", "état des services", "M12 21s-7-4.5-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.5-9 9-9 9z"]
   ];
-  const HREF = { missions: "missions", console: "console/", docs: "api/docs", health: "health" };
+  const HREF = { missions: "missions", console: "", replay: "replay", docs: "api/docs", health: "health" };   // console pcap = racine du serveur de relecture
   const nav = document.createElement("div");
   nav.innerHTML = `<div class="stx-drawer-backdrop" id="stx-backdrop" hidden></div>
   <aside class="stx-drawer" id="stx-drawer" aria-hidden="true">

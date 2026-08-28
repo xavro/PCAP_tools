@@ -7,14 +7,16 @@
 <link id="favicon" rel="icon" href="static/favicon.ico">
 <link rel="stylesheet" href="static/leaflet.css">
 <link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="static/pages.css">
 <link rel="stylesheet" href="static/replay.css">
 </head>
-<body class="operator">
+<body class="operator" data-page="replay">
 <!-- Page OPÉRATEUR : carte + vidéo synchronisée + barre de temps. Même moteur que la console (app.js) ;
      les éléments d'analyse absents de cette page sont remplacés par des éléments détachés (voir $ dans app.js).
      Lancement par URL : replay?mission=NOM[&live=1]  ·  replay?pcap=/chemin/fichier.pcap[&live=1]  [&profile=maritime] -->
 <div id="op">
   <header id="op-bar">
+    <button id="stx-burger" class="stx-burger" aria-label="Menu" aria-expanded="false" title="menu StratusServer"><span></span><span></span><span></span></button>
     <img src="static/stratus.png" alt="" class="op-logo">
     <span class="sb-state stopped" id="sb-state">■ arrêt</span>
     <b id="op-mission" title="mission">—</b>
@@ -84,6 +86,7 @@
   <select id="gmti-profile"></select>
 </div>
 
+<script src="static/pages.js"></script>
 <script src="static/leaflet.js"></script>
 <script src="static/mpegts.js"></script>
 <script src="static/klv0601.js"></script>

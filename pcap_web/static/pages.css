@@ -38,3 +38,42 @@ pre.pg { background: #0b0f13; border: 1px solid var(--border); border-radius: 6p
 .doc table.pg td:first-child { font-family: var(--mono); font-size: 12px; white-space: nowrap; color: var(--warn); }
 .doc code { font-family: var(--mono); background: var(--panel2); color: var(--warn); padding: 0 4px; border-radius: 4px; }
 .pg-foot { color: var(--muted); font-size: 11px; padding: 10px 20px; border-top: 1px solid var(--border); font-family: var(--mono); }
+
+/* ── Documentation API (mise en page héritée de la v1) ── */
+.doc-header { background: linear-gradient(135deg, var(--panel) 0%, var(--panel2) 100%); border: 1px solid var(--border); border-radius: 12px; padding: 28px 24px 20px; text-align: center; margin-bottom: 20px; }
+.doc-header h1 { margin: 0 0 4px; font-size: 2.1rem; font-weight: 700; }
+.doc-header h2 { margin: 0; font-size: 1rem; color: var(--muted); font-weight: 400; border: 0; padding: 0; }
+.doc-header p { color: var(--muted); margin: 8px 0 0; }
+.doc-features { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.doc-features span { display: inline-flex; align-items: center; gap: 6px; background: var(--panel2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; font-size: .85rem; transition: border-color .2s, transform .2s; }
+.doc-features span:hover { border-color: var(--accent); transform: translateY(-1px); }
+.doc-features span.off { opacity: .45; text-decoration: line-through; }
+.doc-features i { color: var(--accent); font-style: normal; }
+.doc-toc { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; }
+.doc-toc h2 { margin: 0 0 8px; font-size: 1.1rem; color: var(--accent); border: 0; padding: 0; }
+.doc-toc ul { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 32px; }
+.doc-toc li { padding: 5px 0; border-bottom: 1px solid var(--border); break-inside: avoid; }
+.doc-toc a { color: var(--fg); text-decoration: none; transition: padding-left .2s, color .2s; } .doc-toc a:hover { color: var(--accent); padding-left: 6px; }
+.doc-toc small { color: var(--muted); }
+.doc-section { margin-top: 28px; }
+.doc-section > h2 { font-size: 1.35rem; color: var(--accent); border-left: 0; padding: 0 0 6px; border-bottom: 2px solid var(--accent); margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+.doc-section > h2 small { color: var(--muted); font-size: .8rem; font-weight: 400; margin-left: auto; font-family: var(--mono); }
+.doc-section > p { color: var(--muted); margin: 0 0 12px; }
+.ep { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; transition: border-color .2s, box-shadow .2s; }
+.ep:hover { border-color: var(--accent); box-shadow: 0 6px 16px rgba(0,0,0,.35); }
+.ep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; background: var(--panel2); border-bottom: 1px solid var(--border); border-radius: 10px 10px 0 0; }
+.ep-body { padding: 12px 14px; }
+.ep-body p { margin: 0 0 8px; color: var(--fg); line-height: 1.55; }
+.ep-body p:last-child { margin-bottom: 0; }
+.m { font-family: var(--mono); font-weight: 700; font-size: .78rem; padding: 2px 9px; border-radius: 6px; color: #001018; min-width: 52px; text-align: center; }
+.m.get { background: var(--ok); } .m.post { background: var(--accent); } .m.put { background: var(--warn); } .m.ws { background: #a371f7; color: #fff; } .m.sse { background: #ff9f43; }
+.ep-path { font-family: var(--mono); font-size: .9rem; color: var(--accent); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; flex: 1; min-width: 240px; }
+.ep-who { font-size: .72rem; color: var(--muted); font-family: var(--mono); }
+.ep h4 { margin: 10px 0 4px; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.ep table.pg { font-size: 12px; margin: 4px 0 6px; } .ep table.pg td:first-child { color: var(--warn); white-space: nowrap; }
+.ep pre.pg { margin: 4px 0 0; max-height: 260px; }
+.doc-arch { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; }
+.doc-arch h2 { margin: 0 0 8px; font-size: 1.1rem; color: var(--fg); border: 0; padding: 0; }
+.doc-arch pre { margin: 0; }
+.doc-top { position: fixed; right: 18px; bottom: 18px; background: var(--panel2); border: 1px solid var(--border); color: var(--fg); border-radius: 50%; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; text-decoration: none; z-index: 40; }
+@media (max-width: 800px) { .doc-toc ul { columns: 1; } }
