@@ -2167,6 +2167,23 @@ class FollowEngine:
                 "tracks": [{"id": r["id"], "air": r["air"], "rot": r["rot"], "hits": r["hits"], "hist": list(r["hist"])} for r in self.tracks.values()],
                 "follow": True, "catching_up": self.catching_up, "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
 
+    def mission_closed(self):
+        """mission.json (stratus2-capture) : closed = la capture est terminée (silence > SILENCE_S)."""
+        if not self._seg_base:
+            return False
+        p = os.path.join(os.path.dirname(self._seg_base), "mission.json")
+        try:
+            mt = os.path.getmtime(p)
+            c = getattr(self, "_closed_cache", None)
+            if c and c[0] == mt:
+                return c[1]
+            with open(p, encoding="utf-8") as f:
+                v = bool(json.load(f).get("closed"))
+            self._closed_cache = (mt, v)
+            return v
+        except (OSError, ValueError):
+            return False
+
     def delta(self, cot_i, dw_i, tr_i):
         rows = self.track_rows[tr_i:]
         meta = {}
@@ -2176,7 +2193,7 @@ class FollowEngine:
         return {"duration": self.duration(), "n_packets": self.n_packets, "cot": self.cot[cot_i:], "dwells": self.dwells[dw_i:],
                 "track_rows": [[tid, row] for tid, row in rows], "track_meta": list(meta.values()), "video": self.video_info(), "coverage": self.coverage(),
                 "catching_up": self.catching_up, "segment": os.path.basename(self.cur_seg) if self.cur_seg else None,
-                "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None,
+                "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None, "closed": self.mission_closed(),
                 "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
 
     def stream(self, dport=None):
