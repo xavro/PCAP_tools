@@ -962,6 +962,11 @@
     (d.track_meta || []).forEach(m => { let tr = pb.tracks.find(t => t.id === m.id); if (!tr) pb.tracks.push({ id: m.id, air: m.air, rot: m.rot, hits: m.hits, hist: [] }); else { tr.hits = m.hits; tr.air = m.air; tr.rot = m.rot; } });
     (d.track_rows || []).forEach(([id, row]) => { const tr = pb.tracks.find(t => t.id === id); if (tr) tr.hist.push(row); });
     pb.seq = d.seq; pb.tl.duration = d.duration; pb.tl.video = d.video; pb.edgeAge = d.edge_age_s; if (d.coverage) pb.tl.coverage = d.coverage;
+    if (d.closed && pb.liveMission) {                                            // capture close (silence) : plus de direct
+      pb.liveMission = false; $("btn-edge").hidden = true;
+      if (pb.edge) { pb.edge = false; stopPlayer(); playbackPause(true); $("mode-badge").textContent = "FIN DE MISSION — lecture depuis le début possible"; $("mode-badge").className = "overlay"; }
+      status("mission terminée");
+    }
     $("tl-mode").textContent = `suivi du fichier${d.segment ? " · " + d.segment : ""} — ${pb.tl.cot.length} events CoT, ${pb.tl.dwells.length} dwells, ${pb.tracks.length} pistes · `
       + (pb.edge ? "● DIRECT" : (pb.liveMission ? `DVR t=${pb.t.toFixed(0)} s` : `lecture t=${pb.t.toFixed(0)} s`)) + (pb.liveMission ? ` · bord ${d.duration.toFixed(0)} s` : ` · ${d.duration.toFixed(0)} s`)
       + (d.edge_age_s != null && d.edge_age_s > 5 ? ` (fichier figé depuis ${d.edge_age_s.toFixed(0)} s)` : "") + " · clic timeline = retour arrière, ⟫ = direct";
