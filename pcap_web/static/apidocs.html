@@ -33,6 +33,7 @@
       <span><i>⇄</i> Tracker MTI (profils à chaud)</span>
       <span><i>↝</i> GPX / trace GeoJSON</span>
       <span><i>✂</i> Clips .ts (avec / sans KLV)</span>
+      <span><i>▣</i> Vignettes (survol de la barre)</span>
       <span><i>▦</i> Import snaps</span>
       <span class="off">HLS / VOD</span>
       <span class="off">SQLite / ZIP / Shapefile</span>
@@ -49,6 +50,7 @@
       <li><a href="#follow">▶ Suivi : relecture, DVR, direct <small>(6 endpoints + WS)</small></a></li>
       <li><a href="#video">▦ Vidéo MPEG-TS <small>(2 endpoints)</small></a></li>
       <li><a href="#clips">✂ Clips <small>(4 endpoints)</small></a></li>
+      <li><a href="#thumbnails">▣ Vignettes <small>(2 endpoints)</small></a></li>
       <li><a href="#gmti">◎ GMTI STANAG 4607 <small>(7 endpoints + WS)</small></a></li>
       <li><a href="#snaps">▦ Import snaps <small>(3 endpoints)</small></a></li>
       <li><a href="#console">▣ Console pcap (analyste)</a></li>
@@ -74,7 +76,7 @@
                            ├──▶ /ws/gmti/{CR} (tracker de référence, plots / dwells / pistes)
                            └──▶ GPX, détails, track.geojson, snaps, ligne de temps décodée (.tl.jsonl)
 
-Pas de FFmpeg, pas de HLS, pas de base SQL : tout est rejoué depuis le pcap. Réseau fermé : CORS ouvert, pas d'authentification.</pre>
+Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniquement aux vignettes). Réseau fermé : CORS ouvert, pas d'authentification.</pre>
   </div>
 
   <!-- ───────────── CAPTURE ───────────── -->
@@ -215,6 +217,16 @@ Pas de FFmpeg, pas de HLS, pas de base SQL : tout est rejoué depuis le pcap. R�
       <div class="ep-body"><p>Supprime le clip et ses sidecars.</p></div></div>
   </section>
 
+  <!-- ───────────── THUMBNAILS ───────────── -->
+  <section class="doc-section" id="thumbnails">
+    <h2>▣ Vignettes <small>stratus2-replay · ffmpeg · {mission}/thumbnails/</small></h2>
+    <p>Prévisualisation au survol de la barre de temps (page opérateur, widget stratus-replay) : sprites JPEG de 10×10 vignettes 160×90, une toutes les <code>THUMB_INTERVAL_S</code> (10 s) — une fenêtre de 1000 s par sprite, décodées depuis le pcap (images clés) en tâche de fond de chaque suivi ; la fenêtre courante est régénérée pendant le direct. <code>THUMBS=0</code> pour désactiver.</p>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/thumbnails/{m}/index</span><span class="ep-who">page opérateur, widget</span></div>
+      <div class="ep-body"><p><code>{available, enabled, interval, w, h, cols, rows, window_s, t0, generating, sprites:{k:{file, n, partial, t_start, ver}}}</code> — vignette de l'instant relatif <code>t</code> : sprite <code>k = ⌊t / window_s⌋</code>, case <code>i = ⌊(t − k·window_s) / interval⌋</code>.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/thumbnails/{m}/sprite_{kkk}.jpg?v=</span><span class="ep-who">image</span></div>
+      <div class="ep-body"><p>Sprite JPEG (cache long avec <code>v=ver</code>).</p></div></div>
+  </section>
+
   <!-- ───────────── GMTI ───────────── -->
   <section class="doc-section" id="gmti">
     <h2>◎ GMTI STANAG 4607 temps réel <small>stratus2-replay · tracker de référence PCAP_tools</small></h2>
@@ -268,7 +280,9 @@ Pas de FFmpeg, pas de HLS, pas de base SQL : tout est rejoué depuis le pcap. R�
   {mission}.tl.jsonl     journal de la ligne de temps décodée (h/c/d/m/t/p/v/k/f : dwells, pistes, positions KLV, flux)
   mission.json           CR, ports, début / fin UTC, flux, indicatif / tail / Mission ID / plateforme / capteur (KLV), closed
 {recordings}/{mission}/clips/
-  {name}.ts · {name}.json · {name}_klv.csv   clips extraits (créneau UTC, avec / sans KLV)</pre>
+  {name}.ts · {name}.json · {name}_klv.csv   clips extraits (créneau UTC, avec / sans KLV)
+{recordings}/{mission}/thumbnails/
+  sprite_NNN.jpg · index.json                 vignettes (10×10 par 1000 s) pour la prévisualisation</pre>
   </section>
 
 </main>

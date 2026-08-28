@@ -39,6 +39,42 @@
   document.addEventListener("mouseup", () => { dragging = false; });
   tl.addEventListener("mousemove", ev => { if (dragging && window.__op) window.__op.seekFrac(ev.offsetX / tl.clientWidth); });
 
+  // ══ Vignettes : survol de la barre de temps → image du flux à cet instant (sprites 10×10 du serveur, 1 / 10 s) ══
+  const prev = $("tl-preview"), prevC = prev.querySelector("canvas"), prevT = $("tl-preview-t"), pctx = prevC.getContext("2d");
+  const thumbs = { mission: null, idx: null, imgs: new Map(), lastFetch: -1e9 };
+  async function loadThumbIndex(force) {
+    const pb = window.__op && window.__op.pb; const m = pb && pb.on && pb.tl && pb.tl.mission; if (!m) { thumbs.idx = null; return; }
+    if (thumbs.mission !== m) { thumbs.mission = m; thumbs.idx = null; thumbs.imgs.clear(); thumbs.lastFetch = -1e9; }
+    if (!force && performance.now() - thumbs.lastFetch < 60000) return;
+    thumbs.lastFetch = performance.now();
+    try { const r = await fetch(`api/thumbnails/${encodeURIComponent(m)}/index`); const j = await r.json(); if (r.ok) thumbs.idx = j; } catch (e) { /* silencieux */ }
+  }
+  setInterval(() => { loadThumbIndex(false); }, 5000);
+  const spriteImg = sp => {                                  // cache d'images par (fichier, version)
+    const key = `${sp.file}?v=${sp.ver}`; let img = thumbs.imgs.get(key);
+    if (!img) { img = new Image(); img.src = `api/thumbnails/${encodeURIComponent(thumbs.mission)}/${key}`; thumbs.imgs.set(key, img); if (thumbs.imgs.size > 40) thumbs.imgs.delete(thumbs.imgs.keys().next().value); }
+    return img;
+  };
+  function drawThumb(tRel) {
+    const idx = thumbs.idx; pctx.fillStyle = "#000"; pctx.fillRect(0, 0, 160, 90);
+    if (!idx || !idx.available) { pctx.fillStyle = "#8a9098"; pctx.font = "11px Consolas"; pctx.fillText(idx && idx.enabled ? "vignettes en préparation…" : "vignettes indisponibles", 8, 50); return; }
+    const k = Math.floor(tRel / idx.window_s), sp = idx.sprites[String(k)];
+    if (!sp) { pctx.fillStyle = "#8a9098"; pctx.font = "11px Consolas"; pctx.fillText("pas encore générée", 24, 50); return; }
+    const i = Math.min(sp.n - 1, Math.floor((tRel - k * idx.window_s) / idx.interval)); const cx = i % idx.cols, cy = Math.floor(i / idx.cols);
+    const img = spriteImg(sp);
+    const draw = () => { pctx.drawImage(img, cx * idx.w, cy * idx.h, idx.w, idx.h, 0, 0, 160, 90); };
+    if (img.complete && img.naturalWidth) draw(); else { pctx.fillStyle = "#8a9098"; pctx.font = "11px Consolas"; pctx.fillText("chargement…", 40, 50); img.addEventListener("load", draw, { once: true }); }
+  }
+  tl.addEventListener("mousemove", ev => {
+    const pb = window.__op && window.__op.pb; const D = pb && pb.on && pb.tl ? pb.tl.duration : 0;
+    if (!D || !pb.tl.mission) { prev.hidden = true; return; }
+    const tRel = Math.max(0, Math.min(1, ev.offsetX / tl.clientWidth)) * D; const r = tl.getBoundingClientRect();
+    prev.hidden = false; prev.style.left = Math.max(88, Math.min(window.innerWidth - 88, ev.clientX)) + "px"; prev.style.top = (r.top - 90 - 34) + "px";
+    prevT.textContent = (pb.tl.t0 ? hms(pb.tl.t0 + tRel) + "Z" : `t=${tRel.toFixed(0)} s`);
+    loadThumbIndex(false); drawThumb(tRel);
+  });
+  tl.addEventListener("mouseleave", () => { prev.hidden = true; });
+
   // ══ Clips : extraction d'un créneau UTC (GDH) en .ts, liste sur la barre de temps, menu contextuel ══
   const CLIP_MAX_S = 3600;
   const panel = $("clip-panel"), menu = $("clip-menu"), msg = $("clip-msg");

@@ -64,7 +64,9 @@ import collections
 import queue
 import re
 import socket
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1926,6 +1928,7 @@ class FollowEngine:
         self._seg_base = None; self._single = None; self.seg_first = 1; self.idx_path = None; self._idx_last_a = None; self.indexed = False
         self.tl_path = None; self._tl_f = None; self._tl_pos = None; self._tl_flush = 0.0; self._tl_loaded = 0; self._id_offset = 0
         self.flows = {}                                 # (proto, dport) → inventaire (classe dominante, compteurs) — journalisé ("f")
+        self.thumbs = None                              # générateur de vignettes (ThumbWorker) du suivi
 
     # -- statut --
     def status(self):
@@ -1979,6 +1982,9 @@ class FollowEngine:
         if warn:
             EVENTS.publish({"type": "log", "msg": warn})
         self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
+        self.thumbs = ThumbWorker(self) if THUMBS_ON and self.mission_name() else None
+        if self.thumbs:
+            self.thumbs.start()
 
     def stop(self):
         self.stop_event.set()
@@ -2700,6 +2706,153 @@ def clip_delete(mission, name):
     return {"ok": True, "deleted": name}
 
 
+# ── Vignettes : sprites JPEG générés depuis le pcap maître par ffmpeg (prévisualisation au survol de la barre) ──
+def _find_ffmpeg():
+    p = os.getenv("FFMPEG") or shutil.which("ffmpeg")
+    if not p:
+        try:
+            import imageio_ffmpeg                        # poste Windows (banc) : binaire embarqué
+            p = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            p = None
+    return p
+
+
+FFMPEG = _find_ffmpeg()
+THUMBS_ON = os.getenv("THUMBS", "1") not in ("0", "false", "no") and bool(FFMPEG)
+THUMB_INTERVAL_S = float(os.getenv("THUMB_INTERVAL_S", "10"))
+THUMB_W, THUMB_H = int(os.getenv("THUMB_W", "160")), int(os.getenv("THUMB_H", "90"))
+THUMB_COLS, THUMB_ROWS = 10, 10
+THUMB_WINDOW_S = THUMB_INTERVAL_S * THUMB_COLS * THUMB_ROWS        # 1000 s par sprite
+
+
+def thumbs_dir(mission):
+    if not mission or "/" in mission or "\\" in mission or ".." in mission:
+        raise ValueError("nom de mission invalide")
+    if not CAPTURES_DIR or not os.path.isdir(os.path.join(CAPTURES_DIR, mission)):
+        raise FileNotFoundError("mission introuvable : %s" % mission)
+    return os.path.join(CAPTURES_DIR, mission, "thumbnails")
+
+
+def thumbs_index(mission):
+    """Index des sprites d'une mission : {available, interval, w, h, cols, rows, window_s, t0, sprites:{k:{file, n, partial, ver}}}."""
+    base = {"available": False, "enabled": THUMBS_ON, "interval": THUMB_INTERVAL_S, "w": THUMB_W, "h": THUMB_H, "cols": THUMB_COLS, "rows": THUMB_ROWS,
+            "window_s": THUMB_WINDOW_S, "t0": None, "sprites": {}}
+    try:
+        p = os.path.join(thumbs_dir(mission), "index.json")
+    except (ValueError, FileNotFoundError):
+        return base
+    if os.path.isfile(p):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                idx = json.load(fh)
+            base.update(idx); base["available"] = bool(idx.get("sprites"))
+        except Exception:
+            pass
+    return base
+
+
+class ThumbWorker:
+    """Sprites d'un suivi : fenêtre k = [k·1000 s, (k+1)·1000 s[ du flux vidéo principal → sprite_{k:03d}.jpg (10×10 vignettes
+    de 160×90, une toutes les 10 s, images clés seulement). Fenêtres révolues générées une fois ; fenêtre courante (direct)
+    régénérée toutes les 60 s de données nouvelles. Décodage H.264 par ffmpeg (TS relu depuis le pcap, aucune écriture
+    intermédiaire) ; index.json réécrit après chaque sprite."""
+    def __init__(self, eng):
+        self.eng = eng; self.mission = eng.mission_name(); self.dir = os.path.join(CAPTURES_DIR, self.mission, "thumbnails")
+        self.index = {"interval": THUMB_INTERVAL_S, "w": THUMB_W, "h": THUMB_H, "cols": THUMB_COLS, "rows": THUMB_ROWS, "window_s": THUMB_WINDOW_S, "t0": None, "sprites": {}}
+        self.partial_edge = -1e9; self.partial_k = None; self.thread = None; self.busy = False
+
+    def start(self):
+        p = os.path.join(self.dir, "index.json")
+        if os.path.isfile(p):
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    self.index = json.load(fh)
+            except Exception:
+                pass
+        self.thread = threading.Thread(target=self._run, daemon=True, name="thumbs-" + self.mission); self.thread.start()
+
+    def _save(self):
+        os.makedirs(self.dir, exist_ok=True)
+        tmp = os.path.join(self.dir, "index.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(self.index, fh)
+        os.replace(tmp, os.path.join(self.dir, "index.json"))
+
+    def _run(self):
+        eng = self.eng
+        while not eng.stop_event.is_set():
+            try:
+                if not eng.catching_up and eng.streams:
+                    self._step()
+            except Exception as e:
+                print("[thumbs] %s : %s" % (self.mission, e))
+            eng.stop_event.wait(5.0)
+
+    def _step(self):
+        eng = self.eng
+        st = max(eng.streams.values(), key=lambda s: s.nbytes)
+        if st.t0 is None or st.t1 is None or eng.t0 is None:
+            return
+        t0 = eng.t0; edge = st.t1 - t0
+        if self.index.get("t0") is None:
+            self.index["t0"] = t0
+        sprites = self.index["sprites"]
+        n_full = int(edge // THUMB_WINDOW_S)
+        for k in range(n_full):                                           # fenêtres révolues manquantes
+            if str(k) not in sprites or sprites[str(k)].get("partial"):
+                self._gen(st, k, t0, (k + 1) * THUMB_WINDOW_S)
+                if eng.stop_event.is_set():
+                    return
+        k = n_full                                                        # fenêtre courante (partielle)
+        if edge - k * THUMB_WINDOW_S >= THUMB_INTERVAL_S:
+            fresh = edge - self.partial_edge
+            if self.partial_k != k or fresh >= 60 or (fresh >= THUMB_INTERVAL_S and eng.edge_wall and time.time() - eng.edge_wall > 20):
+                self._gen(st, k, t0, edge); self.partial_edge = edge; self.partial_k = k
+
+    def _gen(self, st, k, t0, t_end_rel):
+        eng = self.eng
+        t_a = t0 + k * THUMB_WINDOW_S; t_b = min(t0 + t_end_rel, t_a + THUMB_WINDOW_S)
+        n = max(1, int(math.ceil((t_b - t_a) / THUMB_INTERVAL_S)))
+        partial = (t_b - t_a) < THUMB_WINDOW_S - 1e-6
+        os.makedirs(self.dir, exist_ok=True)
+        fname = "sprite_%03d.jpg" % k; out = os.path.join(self.dir, fname); tmp = out + ".part.jpg"
+        vf = "fps=1/%g,scale=%d:%d,tile=%dx%d" % (THUMB_INTERVAL_S, THUMB_W, THUMB_H, THUMB_COLS, THUMB_ROWS)
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-skip_frame", "nokey", "-fflags", "+genpts+discardcorrupt",
+               "-f", "mpegts", "-i", "pipe:0", "-an", "-sn", "-dn", "-map", "0:v:0", "-vf", vf, "-frames:v", "1", "-q:v", "4", "-y", tmp]
+        t_start = time.time()
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self.busy = True
+        try:
+            seg_no, off, _cum = st.locate_time(t_a)
+            try:
+                for chunk in eng.iter_ts(st, seg_no, off, 0, t_min=t_a, t_max=t_b):
+                    proc.stdin.write(chunk)
+                    if eng.stop_event.is_set():
+                        break
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                _o, err = proc.communicate(timeout=300)
+            except subprocess.TimeoutExpired:
+                proc.kill(); err = b"timeout"
+            if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1000:
+                print("[thumbs] %s sprite %d : ffmpeg %s : %s" % (self.mission, k, proc.returncode, (err or b"").decode("utf-8", "replace").strip()[-300:]))
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+                return
+            os.replace(tmp, out)
+            self.index["sprites"][str(k)] = {"file": fname, "n": n, "partial": partial, "t_start": k * THUMB_WINDOW_S, "ver": int(time.time())}
+            self._save()
+            print("[thumbs] %s : %s (%d vignettes%s) en %.1fs" % (self.mission, fname, n, ", partiel" if partial else "", time.time() - t_start))
+        finally:
+            self.busy = False
+
+
 def follow_get(fid):
     with FOLLOWS_LOCK:
         eng = FOLLOWS.get(fid or "")
@@ -2770,9 +2923,9 @@ def health_status():
         out["mediamtx"] = {"ok": True, "paths": len(items), "ready": sum(1 for p in items if p.get("ready")), "items": [{"name": p.get("name"), "ready": p.get("ready"), "readers": len(p.get("readers") or [])} for p in items]}
     except Exception as e:
         out["mediamtx"] = {"ok": False, "error": str(e)}
+    out["thumbnails"] = {"enabled": THUMBS_ON, "ffmpeg": FFMPEG}
     try:
         if CAPTURES_DIR:
-            import shutil
             du = shutil.disk_usage(CAPTURES_DIR); out["disk"] = {"path": CAPTURES_DIR, "total": du.total, "used": du.used, "free": du.free}
     except Exception:
         pass
@@ -3105,6 +3258,23 @@ class Handler(BaseHTTPRequestHandler):
                 if eng is None:
                     return self._err(404, "pas de mission en cours sur %s" % m_.group(1))
                 return self._json(eng.track_geojson())
+            m_ = re.match(r"^/api/thumbnails/([^/]+)/(index|sprite_\d{3}\.jpg)$", u.path)
+            if m_:
+                mission = urllib.parse.unquote(m_.group(1)); what = m_.group(2)
+                if what == "index":
+                    idx = thumbs_index(mission)
+                    eng = FOLLOWS.get(follow_id(mission_resolve(mission)["pcap"])) if os.path.isdir(os.path.join(CAPTURES_DIR or "", mission)) else None
+                    idx["generating"] = bool(eng and eng.thumbs and eng.thumbs.busy)
+                    return self._json(idx)
+                path = os.path.join(thumbs_dir(mission), what)
+                if not os.path.isfile(path):
+                    return self._err(404, "sprite introuvable : %s" % what)
+                data = open(path, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=%d" % (86400 if not q.get("v") else 31536000))
+                self.end_headers(); self.wfile.write(data)
+                return
             m_ = re.match(r"^/api/clips/([^/]+)/(list|[^/]+)$", u.path)
             if m_:
                 mission = urllib.parse.unquote(m_.group(1)); what = urllib.parse.unquote(m_.group(2))

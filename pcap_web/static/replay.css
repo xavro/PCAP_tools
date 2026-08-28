@@ -26,6 +26,10 @@ body.operator { background: var(--bg); }
 
 #op-tl { border-top: 1px solid var(--border); background: var(--panel); padding: 6px 12px 4px; }
 #op-tl #timeline { width: 100%; height: 110px; display: block; cursor: pointer; }
+/* ── vignette de prévisualisation au survol de la barre de temps (sprites générés par le serveur) ── */
+#tl-preview { position: fixed; z-index: 1200; transform: translateX(-50%); background: #0e1216; border: 2px solid var(--accent); border-radius: 6px; padding: 3px; pointer-events: none; box-shadow: 0 6px 18px rgba(0,0,0,.6); }
+#tl-preview canvas { display: block; width: 160px; height: 90px; background: #000; border-radius: 3px; }
+#tl-preview #tl-preview-t { text-align: center; font-family: var(--mono); font-size: 11px; color: var(--fg); margin-top: 2px; }
 /* ── clips : panneau d'extraction (sous la barre) et menu contextuel ── */
 #clip-panel { position: absolute; left: 10px; top: 46px; z-index: 1100; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 8px; min-width: 720px; }
 #clip-panel .cp-title { font-weight: 600; } #clip-panel .cp-title .muted { font-weight: 400; font-size: 12px; }
