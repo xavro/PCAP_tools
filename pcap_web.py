@@ -619,12 +619,28 @@ def _mission_pcaps(d):
     return []
 
 
-def missions_list():
-    """Missions du dossier des enregistrements (pour la page opérateur / ExB) : nom, 1er pcap, taille, dates, suivi possible."""
+def _mission_meta(pcap0):
+    """mission.json écrit par stratus2-capture (CR, début/fin UTC, indicatif / tail / Mission ID KLV)."""
+    p = os.path.join(os.path.dirname(pcap0), "mission.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+_CR_RE = re.compile(r"(?:^|_)(CR\d+)(?:_|$)", re.I)
+
+
+def missions_list(cr=None, callsign=None, t_from=None, t_to=None, day=None):
+    """Missions du dossier des enregistrements (page opérateur / ExB) : nom, 1er pcap, taille, dates, métadonnées
+    KLV (mission.json), suivi possible. Filtres : cr (CR1…), callsign (indicatif KLV, insensible à la casse),
+    fenêtre temporelle [t_from, t_to] (epoch s, chevauchement) ou day (YYYYMMDD, sur le début de capture)."""
     root = CAPTURES_DIR
     out = []
     if not root or not os.path.isdir(root):
         return out
+    now = time.time()
     for name in sorted(os.listdir(root)):
         d = os.path.join(root, name)
         if not os.path.isdir(d):
@@ -632,11 +648,29 @@ def missions_list():
         pcaps = _mission_pcaps(d)
         if not pcaps:
             continue
+        meta = _mission_meta(pcaps[0])
         size = sum(os.path.getsize(p) for p in pcaps)
         mtime = max(os.path.getmtime(p) for p in pcaps)
-        out.append({"name": name, "pcap": pcaps[0], "segments": len(pcaps), "bytes": size, "mtime": mtime,
-                    "recent": (time.time() - mtime) < 30, "indexed": os.path.isfile(os.path.join(os.path.dirname(pcaps[0]), name + ".idx"))})
-    out.sort(key=lambda m: -m["mtime"])
+        m_cr = (meta.get("cr") or "").upper() or ((_CR_RE.search(name) or [None, ""])[1] or "").upper()
+        start = meta.get("start_utc"); end = meta.get("end_utc")
+        recent = (now - mtime) < 30 and not meta.get("closed")
+        if cr and m_cr != cr.upper():
+            continue
+        if callsign and (meta.get("callsign") or "").strip().upper() != callsign.strip().upper():
+            continue
+        if day and (not start or time.strftime("%Y%m%d", time.gmtime(start)) != day):
+            continue
+        if (t_from is not None or t_to is not None):
+            a = start if start is not None else mtime; b = (now if recent else (end if end is not None else mtime))
+            if t_to is not None and a > t_to:
+                continue
+            if t_from is not None and b < t_from:
+                continue
+        out.append({"name": name, "pcap": pcaps[0], "segments": len(pcaps), "bytes": size, "mtime": mtime, "recent": recent,
+                    "indexed": os.path.isfile(os.path.join(os.path.dirname(pcaps[0]), name + ".idx")),
+                    "cr": m_cr or None, "callsign": meta.get("callsign"), "tail": meta.get("tail"), "mission_id": meta.get("mission_id"),
+                    "start_utc": start, "end_utc": end, "closed": bool(meta.get("closed")), "flows": meta.get("flows") or {}})
+    out.sort(key=lambda m: -(m["start_utc"] or m["mtime"]))
     return out
 
 
@@ -2334,7 +2368,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path in ("/replay", "/replay.html"):             # page opérateur (carte + vidéo + barre de temps)
                 return self._static("replay.html")
             if u.path == "/api/missions":
-                return self._json({"missions": missions_list()})
+                fl = lambda k: (float(q[k][0]) if q.get(k, [""])[0] else None)
+                return self._json({"missions": missions_list(q.get("cr", [None])[0], q.get("callsign", [None])[0], fl("from"), fl("to"), q.get("day", [None])[0])})
             if u.path == "/api/mission/resolve":
                 return self._json(mission_resolve(q.get("name", [""])[0]))
             if u.path.startswith("/static/"):
