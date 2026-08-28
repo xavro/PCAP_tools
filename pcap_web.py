@@ -619,14 +619,56 @@ def _mission_pcaps(d):
     return []
 
 
-def _mission_meta(pcap0):
-    """mission.json écrit par stratus2-capture (CR, début/fin UTC, indicatif / tail / Mission ID KLV)."""
-    p = os.path.join(os.path.dirname(pcap0), "mission.json")
+def _capture_sets():
+    """CAPTURE_SETS (même variable que stratus2-capture : CR1:6789+5454,CR2:9876) → {port: CR}."""
+    out = {}
+    for item in (os.getenv("CAPTURE_SETS", "") or "").split(","):
+        name, _, ports = item.strip().partition(":")
+        for p in ports.replace("+", " ").split():
+            if p.isdigit():
+                out[int(p)] = name.strip().upper()
+    return out
+
+
+_META_DERIVED = {}
+
+
+def _mission_meta(pcap0, pcaps=None):
+    """mission.json écrit par stratus2-capture (CR, début/fin UTC, indicatif / tail / Mission ID KLV).
+    Sans fichier (capture ancienne ou manuelle) : métadonnées DÉRIVÉES du pcap — ports et début lus dans les
+    2000 premières trames, fin = dernière écriture, CR = nom du dossier ou mapping CAPTURE_SETS (mis en cache)."""
+    d = os.path.dirname(pcap0)
+    p = os.path.join(d, "mission.json")
     try:
         with open(p, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
-        return {}
+        pass
+    key = (pcap0, os.path.getmtime(pcap0))
+    if key in _META_DERIVED:
+        return _META_DERIVED[key]
+    meta = {"derived": True, "flows": {}, "start_utc": None, "end_utc": None, "cr": None}
+    try:
+        n = 0
+        for ts, lt, fr in iter_frames(pcap0):
+            r = parse(lt, fr)
+            if r and r[0] == "UDP" and r[5]:
+                if meta["start_utc"] is None:
+                    meta["start_utc"] = ts
+                meta["flows"][str(r[4])] = meta["flows"].get(str(r[4]), 0) + 1
+            n += 1
+            if n >= 2000:
+                break
+        last = pcaps[-1] if pcaps else pcap0
+        meta["end_utc"] = os.path.getmtime(last)
+        sets = _capture_sets()
+        crs = {sets[int(pt)] for pt in meta["flows"] if int(pt) in sets}
+        if len(crs) == 1:
+            meta["cr"] = crs.pop()
+    except (OSError, ValueError):
+        pass
+    _META_DERIVED[key] = meta
+    return meta
 
 
 _CR_RE = re.compile(r"(?:^|_)(CR\d+)(?:_|$)", re.I)
@@ -648,7 +690,7 @@ def missions_list(cr=None, callsign=None, t_from=None, t_to=None, day=None):
         pcaps = _mission_pcaps(d)
         if not pcaps:
             continue
-        meta = _mission_meta(pcaps[0])
+        meta = _mission_meta(pcaps[0], pcaps)
         size = sum(os.path.getsize(p) for p in pcaps)
         mtime = max(os.path.getmtime(p) for p in pcaps)
         m_cr = (meta.get("cr") or "").upper() or ((_CR_RE.search(name) or [None, ""])[1] or "").upper()
@@ -669,7 +711,8 @@ def missions_list(cr=None, callsign=None, t_from=None, t_to=None, day=None):
         out.append({"name": name, "pcap": pcaps[0], "segments": len(pcaps), "bytes": size, "mtime": mtime, "recent": recent,
                     "indexed": os.path.isfile(os.path.join(os.path.dirname(pcaps[0]), name + ".idx")),
                     "cr": m_cr or None, "callsign": meta.get("callsign"), "tail": meta.get("tail"), "mission_id": meta.get("mission_id"),
-                    "start_utc": start, "end_utc": end, "closed": bool(meta.get("closed")), "flows": meta.get("flows") or {}})
+                    "start_utc": start, "end_utc": end, "closed": bool(meta.get("closed")), "flows": meta.get("flows") or {},
+                    "platform": meta.get("platform"), "sensor": meta.get("sensor"), "derived": bool(meta.get("derived"))})
     out.sort(key=lambda m: -(m["start_utc"] or m["mtime"]))
     return out
 
