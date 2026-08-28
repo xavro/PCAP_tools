@@ -2,17 +2,16 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<base href="../">   <!-- servie sous /api/docs : ressources et liens relatifs à la racine du serveur -->
 <title>STRATUS - Documentation API</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="static/favicon.ico">
-<link rel="stylesheet" href="static/style.css">
-<link rel="stylesheet" href="static/pages.css">
+<link rel="icon" href="../static/favicon.ico">
+<link rel="stylesheet" href="../static/style.css">
+<link rel="stylesheet" href="../static/pages.css">
 </head>
 <body class="page" data-page="docs">
 <nav class="pg-nav">
   <button id="stx-burger" class="stx-burger" aria-label="Menu" aria-expanded="false"><span></span><span></span><span></span></button>
-  <a class="pg-brand" href="missions"><img src="static/stratus.png" alt=""><b>Stratus<span>Server</span></b></a>
+  <a class="pg-brand" href="../missions"><img src="../static/stratus.png" alt=""><b>Stratus<span>Server</span></b></a>
   <span class="pg-sep"></span><span class="pg-title">Documentation API</span>
   <span class="pg-spacer"></span>
   <span class="pg-chip" id="api-chip"><span class="dot"></span> …</span>
@@ -229,7 +228,7 @@ Pas de FFmpeg, pas de HLS, pas de base SQL : tout est rejoué depuis le pcap. R�
 
   <!-- ───────────── CONSOLE ───────────── -->
   <section class="doc-section" id="console">
-    <h2>▣ Console pcap (analyste) <small><a href="./" style="color:var(--accent)">/</a></small></h2>
+    <h2>▣ Console pcap (analyste) <small><a href="../" style="color:var(--accent)">/</a></small></h2>
     <p>Analyse de pcap, rejeu + émission UDP/TCP, écoute réseau, banc de réglage du tracker GMTI, oracle de parité Java. Endpoints <code>/api/config</code>, <code>/api/streams</code>, <code>/api/flows</code>, <code>/api/klv</code>, <code>/api/timeline</code>, <code>/api/gmti/decode|track</code>, <code>/api/replay/*</code>, <code>/api/live/*</code>, <code>/ws/events</code> — documentés dans le README de PCAP_tools.</p>
   </section>
 
@@ -257,6 +256,6 @@ Pas de FFmpeg, pas de HLS, pas de base SQL : tout est rejoué depuis le pcap. R�
 </main>
 <a class="doc-top" href="#top" title="haut de page">↑</a>
 <div class="pg-foot">StratusServer v2 — ISRBOX / 33e ESRA</div>
-<script src="static/pages.js"></script>
+<script src="../static/pages.js"></script>
 </body>
 </html>
