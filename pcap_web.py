@@ -221,6 +221,45 @@ def parse_ls(payload):
     return out
 
 
+def klv_from_ts(tsdata):
+    """Local set 0601 (éventuellement PARTIEL : les premiers tags, dont position / centre / coins) trouvé dans les
+    paquets TS d'un datagramme — payloads regroupés par PID, clé UL cherchée, tags lus jusqu'à la fin des données.
+    Renvoie {tag: bytes} ou None. Suffisant pour la trace plateforme (tags 2..25, en tête du LS)."""
+    by_pid = {}
+    n = len(tsdata) - (len(tsdata) % TS_PKT)
+    for i in range(0, n, TS_PKT):
+        p = tsdata[i:i + TS_PKT]
+        if p[0] != 0x47:
+            continue
+        pid = ((p[1] & 0x1F) << 8) | p[2]; afc = (p[3] >> 4) & 3
+        off = 4
+        if afc & 2:
+            off += 1 + p[4]
+        if afc & 1 and off < TS_PKT:
+            by_pid.setdefault(pid, bytearray()).extend(p[off:])
+    for buf in by_pid.values():
+        k = buf.find(v9.MISB_0601_KEY)
+        if k < 0:
+            continue
+        i = k + len(v9.MISB_0601_KEY)
+        total, i = v9._ber_len(buf, i)
+        if total is None:
+            continue
+        end = min(len(buf), i + total); out = {}
+        while i < end:
+            tag = buf[i]; i += 1
+            if tag & 0x80:
+                if i >= end:
+                    break
+                tag = ((tag & 0x7F) << 7) | buf[i]; i += 1
+            ln, i = v9._ber_len(buf, i)
+            if ln is None or i + ln > end:
+                break
+            out[tag] = bytes(buf[i:i + ln]); i += ln
+        return out or None
+    return None
+
+
 def _f(d, tag, fn):
     v = d.get(tag)
     try:
@@ -1719,6 +1758,7 @@ class FollowEngine:
     def _clear(self):
         self.t0 = None; self.last_ts = None; self.n_packets = 0
         self.cot = []; self.dwells = []; self.gmti_dt = []; self.dwell_offset = None
+        self.klv = []; self._klv_last = {}                   # trace plateforme : [t_rel, lat, lon, alt, hdg, fc_lat, fc_lon] par dport, 1 pt / 0,5 s
         self.tracks = {}; self.track_rows = []          # rows : (id, row) dans l'ordre d'ajout (delta)
         self.streams = {}; self.watch = None; self.taps = set(); self.live = None
         self.segments = []; self.cur_seg = None; self.catching_up = True; self.bytes_read = 0
@@ -1848,6 +1888,7 @@ class FollowEngine:
         if not self.tl_path or not os.path.isfile(self.tl_path):
             return None
         cot, dwells, tracks, rows, pos, t0 = [], [], {}, [], None, None
+        klv = []
         vstreams = {}                                              # dport -> FollowStream reconstruit (points "v")
         pend = []                                                  # lignes depuis le dernier "p" (non validées)
         with open(self.tl_path, encoding="utf-8") as f:
@@ -1876,6 +1917,8 @@ class FollowEngine:
                             cot.append(pk[1])
                         elif pk[0] == "d":
                             dwells.append(pk[1])
+                        elif pk[0] == "k":
+                            klv.append(pk[1])
                         elif pk[0] == "m":
                             m = pk[1]; tracks.setdefault(m["id"], {"id": m["id"], "air": m.get("air", False), "rot": m.get("rot", False), "hits": m.get("hits", 0), "hist": []})
                         elif pk[0] == "t":
@@ -1897,13 +1940,15 @@ class FollowEngine:
         for st in vstreams.values():                               # reprise séquentielle au plus ancien des points
             if st.resume_pos and st.resume_pos < resume:
                 resume = st.resume_pos
-        self.t0 = t0; self.cot = cot; self.dwells = dwells; self.tracks = tracks; self.track_rows = rows
+        self.t0 = t0; self.cot = cot; self.dwells = dwells; self.tracks = tracks; self.track_rows = rows; self.klv = klv
+        for r in klv:
+            self._klv_last[r[7] if len(r) > 7 else 0] = t0 + r[0]
         self._id_offset = max(tracks) if tracks else 0
         gd = sorted(t0 + d[0] - d[5] / 1000.0 for d in dwells[:200] if d[5] is not None)
         self.dwell_offset = gd[len(gd) // 2] if gd else None; self.gmti_dt = gd
         if dwells or cot:
             self.last_ts = t0 + max((cot[-1][0] if cot else 0), (dwells[-1][0] if dwells else 0))
-        self._tl_loaded = len(cot) + len(dwells) + len(rows)
+        self._tl_loaded = len(cot) + len(dwells) + len(rows) + len(klv)
         return resume, pos                                         # (reprise séquentielle, dernier paquet applicatif journalisé)
 
     # -- index persistant (STRIDX01, écrit par stratus2-capture) --
@@ -2063,6 +2108,13 @@ class FollowEngine:
                 self._flow("UDP", dport, dst, len(pl), cls="MPEG-TS/4609(video)")
                 if cum is not None:
                     self._tl_write("v", dport, dst, round(ts, 6), seg_no, rec_off, cum)
+                if ts - self._klv_last.get(dport, -1e9) >= 0.5 and (self._idx_last_a is None or (seg_no, rec_off) > self._idx_last_a):
+                    d = klv_from_ts(tsdata)
+                    if d and 13 in d and 14 in d:
+                        n = klv_numeric(d)
+                        if n["lat"] is not None and n["lon"] is not None:
+                            row = [t_rel, n["lat"], n["lon"], n["alt"], n["hdg"], n["fc_lat"], n["fc_lon"], dport]
+                            self.klv.append(row); self._tl_write("k", row); self._klv_last[dport] = ts
                 if not self.catching_up and dport in self.taps:
                     video_bus("%s:%d" % (self.fid, dport)).publish(bytes(tsdata))
                 return
@@ -2165,7 +2217,19 @@ class FollowEngine:
         return {"t0": self.t0, "duration": self.duration(), "n_packets": self.n_packets, "cot": list(self.cot), "coverage": self.coverage(),
                 "dwells": list(self.dwells), "dwell_offset": self.dwell_offset, "video": self.video_info(),
                 "tracks": [{"id": r["id"], "air": r["air"], "rot": r["rot"], "hits": r["hits"], "hist": list(r["hist"])} for r in self.tracks.values()],
-                "follow": True, "catching_up": self.catching_up, "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
+                "klv": list(self.klv),
+                "follow": True, "catching_up": self.catching_up, "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows), "k": len(self.klv)}}
+
+    def track_geojson(self, dport=None):
+        """Trace plateforme (LineString par flux vidéo, WGS84) — équivalent v2 de /api/streams/{CR}/track.geojson."""
+        by = {}
+        for r in self.klv:
+            if dport is not None and r[7] != dport:
+                continue
+            by.setdefault(r[7], []).append([r[2], r[1]])
+        feats = [{"type": "Feature", "properties": {"dport": dp, "n": len(pts), "mission": os.path.basename(self._seg_base or self.state.get("pcap", ""))},
+                  "geometry": {"type": "LineString", "coordinates": pts}} for dp, pts in by.items() if len(pts) > 1]
+        return {"type": "FeatureCollection", "features": feats, "t0": self.t0, "duration": self.duration()}
 
     def mission_closed(self):
         """mission.json (stratus2-capture) : closed = la capture est terminée (silence > SILENCE_S)."""
@@ -2184,7 +2248,7 @@ class FollowEngine:
         except (OSError, ValueError):
             return False
 
-    def delta(self, cot_i, dw_i, tr_i):
+    def delta(self, cot_i, dw_i, tr_i, k_i=0):
         rows = self.track_rows[tr_i:]
         meta = {}
         for tid, _r in rows:
@@ -2194,7 +2258,8 @@ class FollowEngine:
                 "track_rows": [[tid, row] for tid, row in rows], "track_meta": list(meta.values()), "video": self.video_info(), "coverage": self.coverage(),
                 "catching_up": self.catching_up, "segment": os.path.basename(self.cur_seg) if self.cur_seg else None,
                 "edge_age_s": round(time.time() - self.edge_wall, 1) if self.edge_wall else None, "closed": self.mission_closed(),
-                "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows)}}
+                "klv": self.klv[k_i:],
+                "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows), "k": len(self.klv)}}
 
     def stream(self, dport=None):
         if not self.streams:
@@ -2511,7 +2576,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/follow/timeline":
                 return self._json(follow_get(q.get("id", [""])[0]).timeline())
             if u.path == "/api/follow/delta":
-                return self._json(follow_get(q.get("id", [""])[0]).delta(int(q.get("cot", ["0"])[0] or 0), int(q.get("dw", ["0"])[0] or 0), int(q.get("tr", ["0"])[0] or 0)))
+                return self._json(follow_get(q.get("id", [""])[0]).delta(int(q.get("cot", ["0"])[0] or 0), int(q.get("dw", ["0"])[0] or 0), int(q.get("tr", ["0"])[0] or 0), int(q.get("k", ["0"])[0] or 0)))
+            if u.path == "/api/follow/track.geojson":
+                dp = q.get("dport", [""])[0]
+                return self._json(follow_get(q.get("id", [""])[0]).track_geojson(int(dp) if dp else None))
             if u.path == "/api/live/status":
                 st = LIVE.status(); st["flows_live"] = LIVE.flows_summary(); return self._json(st)
             if u.path == "/api/live/ifaces":

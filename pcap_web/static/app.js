@@ -935,6 +935,7 @@
       tl = await withBusy("rattrapage du fichier (CoT, GMTI, pistes, vidéo)…", followWaitCatchup, ["btn-play"]);
     } catch (e) { return status("suivi : " + e.message, true); }
     pb.tl = tl; pb.tracks = tl.tracks || []; pb.seq = tl.seq; pb.on = true; pb.follow = true; pb.paused = false; pb.cotIdx = 0; pb.dwIdx = 0; pb.lastT = -1; state.retries = 0;
+    if (tl.klv && tl.klv.length) fullTrack.setLatLngs(tl.klv.map(k => [k[1], k[2]]));          // trace plateforme complète (journal KLV)
     state.mode = "play"; resetCot(); resetGmti(); resetLive(); fitOnce = false;
     pb.liveMission = opts.live !== false;                                       // false : mission terminée (lecture depuis le début, pas de « direct »)
     $("btn-edge").hidden = !pb.liveMission; $("btn-pause").disabled = false; $("btn-pause").textContent = "⏸";
@@ -955,10 +956,11 @@
   }
   async function followPoll() {
     if (!pb.on || !pb.follow || !pb.seq) return;
-    let d; try { d = await api(`/api/follow/delta?id=${pb.fid}&cot=${pb.seq.cot}&dw=${pb.seq.dw}&tr=${pb.seq.tr}`); } catch (e) { return; }
+    let d; try { d = await api(`/api/follow/delta?id=${pb.fid}&cot=${pb.seq.cot}&dw=${pb.seq.dw}&tr=${pb.seq.tr}&k=${pb.seq.k || 0}`); } catch (e) { return; }
     if (!pb.on || !pb.follow) return;
     if (d.cot.length) pb.tl.cot.push(...d.cot);
     if (d.dwells.length) pb.tl.dwells.push(...d.dwells);
+    if (d.klv && d.klv.length) { pb.tl.klv = (pb.tl.klv || []).concat(d.klv); d.klv.forEach(k => fullTrack.addLatLng([k[1], k[2]])); }
     (d.track_meta || []).forEach(m => { let tr = pb.tracks.find(t => t.id === m.id); if (!tr) pb.tracks.push({ id: m.id, air: m.air, rot: m.rot, hits: m.hits, hist: [] }); else { tr.hits = m.hits; tr.air = m.air; tr.rot = m.rot; } });
     (d.track_rows || []).forEach(([id, row]) => { const tr = pb.tracks.find(t => t.id === id); if (tr) tr.hist.push(row); });
     pb.seq = d.seq; pb.tl.duration = d.duration; pb.tl.video = d.video; pb.edgeAge = d.edge_age_s; if (d.coverage) pb.tl.coverage = d.coverage;
