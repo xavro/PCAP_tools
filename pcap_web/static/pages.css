@@ -1,6 +1,7 @@
 /* Pages StratusServer v2 (missions, health, api docs) — même thème que la console (style.css). */
-html, body { height: 100%; margin: 0; }
-body.page { background: var(--bg); color: var(--fg); font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; min-height: 100vh; }
+html.page-root, body.page { height: auto; min-height: 100%; margin: 0; overflow: auto; }   /* style.css (console) fige le défilement : on le rétablit pour les pages */
+html:has(body.page) { overflow: auto; height: auto; }
+body.page { background: var(--bg); color: var(--fg); font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; min-height: 100vh; overflow: visible; }
 .pg-nav { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 50; }
 .pg-brand { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--fg); }
 .pg-brand img { height: 28px; width: 28px; border-radius: 8px; }
