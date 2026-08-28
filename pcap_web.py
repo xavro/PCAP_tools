@@ -767,6 +767,94 @@ def mission_resolve(name):
     return {"name": name, "pcap": pcaps[0], "segments": len(pcaps), "recent": (time.time() - max(os.path.getmtime(p) for p in pcaps)) < 30}
 
 
+def _journal_klv(pcap0):
+    """Positions KLV [t_rel, lat, lon, alt, hdg, fc_lat, fc_lon, dport] et t0 depuis le journal .tl.jsonl (lignes k)."""
+    seg = follow_segments(pcap0)
+    base = seg[0] if seg else pcap0
+    p = base + ".tl.jsonl"
+    if not os.path.isfile(p):
+        return None, None
+    t0 = None; rows = []
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            try:
+                it = json.loads(line)
+            except ValueError:
+                continue
+            if it[0] == "h":
+                t0 = it[1].get("t0")
+            elif it[0] == "k":
+                rows.append(it[1])
+    return t0, rows
+
+
+def mission_klv(name, wait_s=120.0):
+    """(t0, positions KLV, pcap) d'une mission : suivi en cours s'il existe, sinon journal, sinon suivi temporaire
+    (rattrapage borné) — permet le GPX / les détails d'une capture jamais ouverte."""
+    d = os.path.join(CAPTURES_DIR or "", name)
+    pcaps = _mission_pcaps(d) if (CAPTURES_DIR and os.path.isdir(d)) else []
+    if not pcaps:
+        raise FileNotFoundError("mission introuvable : %s" % name)
+    fid = follow_id(pcaps[0])
+    eng = FOLLOWS.get(fid)
+    if eng is not None and eng.state.get("running") and not eng.catching_up:
+        return eng.t0, list(eng.klv), pcaps[0]
+    t0, rows = _journal_klv(pcaps[0])
+    if rows:
+        return t0, rows, pcaps[0]
+    st = follow_start(pcaps[0], None, None, [])
+    eng = FOLLOWS.get(st["id"]); t_end = time.time() + wait_s
+    while eng is not None and eng.catching_up and time.time() < t_end:
+        time.sleep(0.25)
+    if eng is None:
+        raise ValueError("suivi impossible")
+    return eng.t0, list(eng.klv), pcaps[0]
+
+
+def mission_gpx(name):
+    """GPX 1.1 : une <trk> par flux vidéo (positions KLV, 1 pt / 0,5 s, ele = altitude MSL, time UTC)."""
+    t0, rows, pcap0 = mission_klv(name)
+    by = {}
+    for r in rows:
+        by.setdefault(r[7], []).append(r)
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<gpx version="1.1" creator="StratusServer v2" xmlns="http://www.topografix.com/GPX/1/1">',
+           '  <metadata><name>%s</name><time>%s</time></metadata>' % (name, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 or 0)))]
+    for dp, rs in by.items():
+        out.append('  <trk><name>%s udp/%d</name><trkseg>' % (name, dp))
+        for r in rs:
+            ele = ('<ele>%.1f</ele>' % r[3]) if r[3] is not None else ''
+            out.append('    <trkpt lat="%.6f" lon="%.6f">%s<time>%s</time></trkpt>' % (
+                r[1], r[2], ele, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime((t0 or 0) + r[0])) + ("%.3fZ" % (((t0 or 0) + r[0]) % 1))[1:]))
+        out.append('  </trkseg></trk>')
+    out.append('</gpx>')
+    return "\n".join(out)
+
+
+def mission_details(name):
+    """Compat mission-launcher (/api/missions/{name}/details) depuis mission.json + positions KLV."""
+    d = os.path.join(CAPTURES_DIR or "", name)
+    pcaps = _mission_pcaps(d) if (CAPTURES_DIR and os.path.isdir(d)) else []
+    if not pcaps:
+        raise FileNotFoundError("mission introuvable : %s" % name)
+    meta = _mission_meta(pcaps[0], pcaps)
+    try:
+        t0, rows, _ = mission_klv(name, wait_s=30.0)              # suivi en cours > journal > suivi temporaire
+    except Exception:
+        t0, rows = _journal_klv(pcaps[0]); rows = rows or []
+    st = meta.get("start_utc"); en = meta.get("end_utc")
+    if meta.get("derived") and rows and t0:                       # capture sans mission.json : fin = dernière position KLV (pas la date du fichier)
+        st = st or t0; en = t0 + rows[-1][0]
+    lats = [r[1] for r in rows]; lons = [r[2] for r in rows]
+    return {"mission_name": name, "total_points": len(rows), "start_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st)) if st else None,
+            "end_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(en)) if en else None,
+            "duration_seconds": round(en - st, 1) if (st and en) else None, "unique_streams": len({r[7] for r in rows}), "unique_segments": len(pcaps),
+            "center_lat": round(sum(lats) / len(lats), 6) if lats else None, "center_lon": round(sum(lons) / len(lons), 6) if lons else None,
+            "bounds": ([min(lons), min(lats), max(lons), max(lats)] if lats else None),
+            "cr": meta.get("cr"), "callsign": meta.get("callsign"), "sensor": meta.get("sensor"), "closed": bool(meta.get("closed")),
+            "flows": meta.get("flows") or {}, "total_size_mb": round(sum(os.path.getsize(p) for p in pcaps) / 1e6, 1)}
+
+
 def coverage_bands(times, max_gap, t0=0.0):
     """Plages [[début, fin] relatifs à t0] de présence d'un flux : instants triés, une coupure dès
     qu'un trou dépasse max_gap s (réception vidéo 4609 ≈ continue ; dwells radar 4607 par passes)."""
@@ -2240,13 +2328,16 @@ class FollowEngine:
     def track_geojson(self, dport=None):
         """Trace plateforme (LineString par flux vidéo, WGS84) — équivalent v2 de /api/streams/{CR}/track.geojson."""
         by = {}
+        t0 = self.t0 or 0
         for r in self.klv:
             if dport is not None and r[7] != dport:
                 continue
-            by.setdefault(r[7], []).append([r[2], r[1]])
-        feats = [{"type": "Feature", "properties": {"dport": dp, "n": len(pts), "mission": os.path.basename(self._seg_base or self.state.get("pcap", ""))},
-                  "geometry": {"type": "LineString", "coordinates": pts}} for dp, pts in by.items() if len(pts) > 1]
-        return {"type": "FeatureCollection", "features": feats, "t0": self.t0, "duration": self.duration()}
+            e = by.setdefault(r[7], {"pts": [], "times": []})
+            e["pts"].append([r[2], r[1], r[3] if r[3] is not None else 0]); e["times"].append(int(round((t0 + r[0]) * 1000)))
+        mission = os.path.basename(self._seg_base or self.state.get("pcap", ""))
+        feats = [{"type": "Feature", "properties": {"dport": dp, "n": len(e["pts"]), "mission": mission, "mode": "full", "times": e["times"]},
+                  "geometry": {"type": "LineString", "coordinates": e["pts"]}} for dp, e in by.items() if len(e["pts"]) > 1]
+        return {"type": "FeatureCollection", "features": feats, "t0": self.t0, "duration": self.duration(), "mission_name": mission}
 
     def mission_closed(self):
         """mission.json (stratus2-capture) : closed = la capture est terminée (silence > SILENCE_S)."""
@@ -2728,6 +2819,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"follows": [e.status() for e in list(FOLLOWS.values())]})
             if u.path.startswith("/ws/gmti/"):
                 return self._ws_gmti(u.path[len("/ws/gmti/"):])
+            m_ = re.match(r"^/api/streams/([^/]+)/track\.geojson$", u.path)
+            if m_:                                                     # trackline (amorçage) du CR : contrat v1
+                eng = cr_engine(m_.group(1))
+                if eng is None:
+                    return self._err(404, "pas de mission en cours sur %s" % m_.group(1))
+                return self._json(eng.track_geojson())
+            m_ = re.match(r"^/api/missions/([^/]+)/(gpx/merged|details|track\.geojson)$", u.path) or re.match(r"^/download/([^/]+)/(gpx)$", u.path)
+            if m_:
+                name = urllib.parse.unquote(m_.group(1)); what = m_.group(2)
+                if "/" in name or "\\" in name or ".." in name:
+                    raise ValueError("nom de mission invalide")
+                if what == "details":
+                    return self._json(mission_details(name))
+                if what == "track.geojson":
+                    t0, rows, _p = mission_klv(name)
+                    eng = FollowEngine(); eng.t0 = t0; eng.klv = rows; eng._seg_base = os.path.join(CAPTURES_DIR, name, "Capture", name)
+                    return self._json(eng.track_geojson())
+                data = mission_gpx(name).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gpx+xml; charset=utf-8")
+                self.send_header("Content-Disposition", "attachment; filename=\"%s.gpx\"" % name)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/gmti/ports":
                 sets = _capture_sets_by_cr()
                 return self._json({"ports": [{"port": cr, "udp_port": (ports[1] if len(ports) > 1 else None),
