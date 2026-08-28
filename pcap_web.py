@@ -60,6 +60,7 @@ import importlib.util
 import json
 import math
 import os
+import collections
 import queue
 import re
 import socket
@@ -1759,6 +1760,12 @@ class FollowEngine:
         self.t0 = None; self.last_ts = None; self.n_packets = 0
         self.cot = []; self.dwells = []; self.gmti_dt = []; self.dwell_offset = None
         self.klv = []; self._klv_last = {}                   # trace plateforme : [t_rel, lat, lon, alt, hdg, fc_lat, fc_lon] par dport, 1 pt / 0,5 s
+        # GMTI live (C.3) : bus par moteur → /ws/gmti/{CR}, contrat du service v1 (gmti-live-isr, sensor-tracker)
+        self.cr = None; self.system = False; self.gmti_bus = Bus()
+        self.gmti_batch = {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
+        self.recent_plots = collections.deque(maxlen=2000); self.recent_dwells = collections.deque(maxlen=40)
+        self.gmti_sensor = None; self.gmti_totals = {"gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0}; self.gmti_last_rx = None
+        self.gmti_profile = "defaut"; self.gmti_overrides = {}
         self.tracks = {}; self.track_rows = []          # rows : (id, row) dans l'ordre d'ajout (delta)
         self.streams = {}; self.watch = None; self.taps = set(); self.live = None
         self.segments = []; self.cur_seg = None; self.catching_up = True; self.bytes_read = 0
@@ -2154,6 +2161,16 @@ class FollowEngine:
                     self._track_rows(t_rel)
                 except Exception as e:
                     EVENTS.publish({"type": "log", "msg": "suivi : pistage : %s" % e})
+            self.gmti_totals["gmti_plots"] += len(plots); self.gmti_totals["gmti_pkts"] += 1; self.gmti_totals["gmti_dwells"] += len(dw)
+            self.gmti_last_rx = time.time()
+            if sensor:
+                self.gmti_sensor = sensor
+            if not self.catching_up:                               # live : batch pour les abonnés /ws/gmti
+                gb = self.gmti_batch
+                gb["plots"].extend(plots); gb["pkts"] += 1; gb["dwells"].extend(dw)
+                if sensor:
+                    gb["sensor"] = sensor
+                self.recent_plots.extend(plots); self.recent_dwells.extend(dw)
             self._tl_checkpoint(seg_no, rec_off)
 
     def _track_rows(self, t_rel):
@@ -2316,6 +2333,58 @@ class FollowEngine:
                 self.state["taps"] = list(self.taps)
         return self.status()
 
+    # -- GMTI live (contrat du service v1) --
+    def gmti_status(self):
+        now = time.time()
+        st = self.live._stats(0, 0, 0, 0) if self.live else {}
+        return {"port": self.cr, "udp_port": next((int(p) for p in _capture_sets_by_cr().get(self.cr or "", [])[1:2]), None),
+                "profile": self.gmti_profile, "overrides": self.gmti_overrides,
+                "receiving": bool(self.gmti_last_rx and now - self.gmti_last_rx < 10.0),
+                "last_rx_age_s": round(now - self.gmti_last_rx, 1) if self.gmti_last_rx else None,
+                "totals": dict(self.gmti_totals), "n_dwells": st.get("n_dwells", 0), "n_ghosts": st.get("n_ghosts", 0),
+                "n_clustered": st.get("n_clustered", 0), "n_absorbed": st.get("n_absorbed", 0), "n_resets": st.get("n_resets", 0),
+                "tracks_alive": len(self.live.tk.tracks) if (self.live and self.live.tk) else 0,
+                "subscribers": len(self.gmti_bus.subs), "recording": self.state.get("pcap"), "errors": 0,
+                "mission_name": os.path.basename(self._seg_base or ""), "catching_up": self.catching_up}
+
+    def gmti_snapshot_event(self):
+        try:
+            snap = self.live.snapshot() if self.live else {"tracks": [], "contacts": None, "stats": {}}
+        except Exception as e:
+            snap = {"tracks": [], "contacts": None, "stats": {"error": str(e)}}
+        return {"type": "snapshot", "port": self.cr, "t": round(time.time(), 3), "plots": list(self.recent_plots), "sensor": self.gmti_sensor,
+                "dwells": list(self.recent_dwells), "total_plots": self.gmti_totals["gmti_plots"], "total_pkts": self.gmti_totals["gmti_pkts"],
+                "total_dwells": self.gmti_totals["gmti_dwells"], "live": snap, "status": self.gmti_status()}
+
+    def gmti_flush(self):
+        """Batch 4607 → abonnés (appelé par gmti_ticker à ~4 Hz)."""
+        gb = self.gmti_batch
+        if not gb["pkts"]:
+            return
+        plots = gb["plots"]
+        if len(plots) > 4000:
+            plots = plots[::len(plots) // 4000 + 1]
+        ev = {"type": "gmti", "port": self.cr, "t": round(time.time(), 3), "plots": plots, "sensor": gb["sensor"], "dwells": gb["dwells"][-40:],
+              "pkts": gb["pkts"], "total_plots": self.gmti_totals["gmti_plots"], "total_pkts": self.gmti_totals["gmti_pkts"], "total_dwells": self.gmti_totals["gmti_dwells"]}
+        try:
+            ev["live"] = self.live.snapshot() if self.live else {"tracks": [], "contacts": None, "stats": {}}
+        except Exception as e:
+            ev["live"] = {"tracks": [], "contacts": None, "stats": {"error": str(e)}}
+        self.gmti_batch = {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
+        self.gmti_bus.publish(ev)
+
+    def set_gmti_profile(self, profile=None, overrides=None, reset=False):
+        if self.live is None:
+            raise ValueError("pistage indisponible sur ce suivi")
+        self.live.set_profile(profile, overrides, reset)
+        if profile:
+            self.gmti_profile = profile
+        if overrides is not None:
+            self.gmti_overrides = dict(overrides)
+        if reset:
+            self.recent_plots.clear(); self.recent_dwells.clear()
+        self.gmti_bus.publish({"type": "status", **self.gmti_status()})
+
 
 FOLLOWS = {}                                          # id → FollowEngine (un par mission suivie, partagé)
 FOLLOWS_LOCK = threading.Lock()
@@ -2355,12 +2424,98 @@ def follow_start(path, watch=None, track=None, taps=()):
     return eng.status()
 
 
+CR_FOLLOW = {}                                        # CR → id du suivi « système » de sa mission en cours
+CAPTURE_STATUS_URL = os.getenv("CAPTURE_STATUS_URL", "http://127.0.0.1:8768").strip().rstrip("/")
+
+
+def _capture_sets_by_cr():
+    out = {}
+    for item in (os.getenv("CAPTURE_SETS", "") or "").split(","):
+        name, _, ports = item.strip().partition(":")
+        if name:
+            out[name.strip().upper()] = [int(p) for p in ports.replace("+", " ").split() if p.isdigit()]
+    return out
+
+
+def gmti_status_idle(cr):
+    """Statut GMTI d'un CR sans mission en cours (mêmes clés que FollowEngine.gmti_status)."""
+    ports = _capture_sets_by_cr().get((cr or "").upper(), [])
+    return {"port": (cr or "").upper(), "udp_port": (ports[1] if len(ports) > 1 else None),
+            "profile": os.getenv("GMTI_PROFILE_%s" % (cr or "").upper()) or os.getenv("GMTI_PROFILE") or "defaut", "overrides": {},
+            "receiving": False, "last_rx_age_s": None, "totals": {"gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0},
+            "n_dwells": 0, "n_ghosts": 0, "n_clustered": 0, "n_absorbed": 0, "n_resets": 0, "tracks_alive": 0,
+            "subscribers": 0, "recording": None, "errors": 0, "mission_name": None, "catching_up": False}
+
+
+def cr_engine(cr):
+    fid = CR_FOLLOW.get((cr or "").upper())
+    return FOLLOWS.get(fid) if fid else None
+
+
+def auto_follow_loop():
+    """Suit automatiquement (suivi « système », jamais détaché) la mission EN COURS de chaque CR annoncée par
+    stratus2-capture : c'est ce suivi qui porte le tracker GMTI live (/ws/gmti/{CR}), la trace KLV et le
+    journal — une mission ouverte plus tard par un opérateur est immédiatement prête."""
+    if not CAPTURES_DIR:
+        return
+    while True:
+        try:
+            with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=4) as r:
+                st = json.load(r)
+            for cr, info in (st.get("sets") or {}).items():
+                mission = info.get("mission")
+                cur = cr_engine(cr)
+                if mission:
+                    d = os.path.join(CAPTURES_DIR, mission)
+                    pcaps = _mission_pcaps(d) if os.path.isdir(d) else []
+                    if not pcaps:
+                        continue
+                    if cur is None or cur.state.get("pcap") != pcaps[0] or not cur.state.get("running"):
+                        if cur is not None:
+                            cur.system = False
+                        prof = os.getenv("GMTI_PROFILE_%s" % cr.upper()) or os.getenv("GMTI_PROFILE") or "defaut"
+                        stt = follow_start(pcaps[0], None, {"profile": prof, "overrides": {}}, [])
+                        eng = FOLLOWS.get(stt["id"])
+                        if eng is not None:
+                            eng.cr = cr.upper(); eng.system = True; eng.gmti_profile = prof
+                            CR_FOLLOW[cr.upper()] = stt["id"]
+                            EVENTS.publish({"type": "log", "msg": "suivi système %s : %s" % (cr, mission)})
+                elif cur is not None and cur.system:
+                    cur.system = False                        # mission close : le reaper l'arrêtera sans client
+                    EVENTS.publish({"type": "log", "msg": "suivi système %s : mission terminée" % cr})
+        except Exception:
+            pass
+        time.sleep(5.0)
+
+
+def gmti_ticker():
+    """Batches GMTI (~4 Hz) + status (1 Hz) vers les abonnés /ws/gmti de chaque suivi."""
+    n = 0
+    while True:
+        time.sleep(0.25); n += 1
+        for eng in list(FOLLOWS.values()):
+            if not eng.state.get("running"):
+                continue
+            try:
+                eng.gmti_flush()
+                if n % 4 == 0 and eng.gmti_bus.subs:
+                    eng.gmti_bus.publish({"type": "status", **eng.gmti_status()})
+            except Exception:
+                pass
+
+
+threading.Thread(target=gmti_ticker, name="gmti_ticker", daemon=True).start()
+
+
 def follow_reaper():
     """Arrête les suivis sans client depuis IDLE_STOP_S (les visionneurs signalent leur présence à chaque delta)."""
     while True:
         time.sleep(15.0)
         now = time.time()
         with FOLLOWS_LOCK:
+            for e in FOLLOWS.values():
+                if e.system:
+                    e.last_touch = now                        # suivi système : jamais arrêté tant que la mission est en cours
             idle = [f for f, e in FOLLOWS.items() if e.state.get("running") and now - e.last_touch > FollowEngine.IDLE_STOP_S]
             dead = [f for f, e in FOLLOWS.items() if not e.state.get("running") and now - e.last_touch > 600]
             for f in dead:
@@ -2571,6 +2726,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(ENGINE.status())
             if u.path == "/api/follow/list":
                 return self._json({"follows": [e.status() for e in list(FOLLOWS.values())]})
+            if u.path.startswith("/ws/gmti/"):
+                return self._ws_gmti(u.path[len("/ws/gmti/"):])
+            if u.path == "/api/gmti/ports":
+                sets = _capture_sets_by_cr()
+                return self._json({"ports": [{"port": cr, "udp_port": (ports[1] if len(ports) > 1 else None),
+                                              "profile": (cr_engine(cr).gmti_profile if cr_engine(cr) else (os.getenv("GMTI_PROFILE_%s" % cr) or os.getenv("GMTI_PROFILE") or "defaut"))}
+                                             for cr, ports in sets.items()]})
+            if u.path == "/api/gmti/status":
+                return self._json({"ports": {cr: (cr_engine(cr).gmti_status() if cr_engine(cr) else gmti_status_idle(cr)) for cr in _capture_sets_by_cr()},
+                                   "profiles_path": getattr(load_track_run(), "PROFILES_JSON", None)})
+            m_ = re.match(r"^/api/gmti/([^/]+)/(state|profile)$", u.path)
+            if m_:
+                eng = cr_engine(m_.group(1))
+                if eng is None:
+                    return self._err(404, "pas de mission en cours sur %s" % m_.group(1))
+                if m_.group(2) == "state":
+                    return self._json(eng.gmti_snapshot_event())
+                return self._json({"port": eng.cr, "profile": eng.gmti_profile, "overrides": eng.gmti_overrides, "effective": load_track_run().java_config(eng.gmti_profile, eng.gmti_overrides)})
             if u.path == "/api/follow/status":
                 return self._json(follow_get(q.get("id", [""])[0]).status())
             if u.path == "/api/follow/timeline":
@@ -2612,6 +2785,9 @@ class Handler(BaseHTTPRequestHandler):
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
             self.close_connection = True
 
+    def do_PUT(self):
+        return self.do_POST()
+
     def do_POST(self):
         self._strip_base()
         u = urllib.parse.urlsplit(self.path)
@@ -2647,6 +2823,16 @@ class Handler(BaseHTTPRequestHandler):
                 if is_csv_source(pcap):
                     raise ValueError("un CSV ne se suit pas : ouvrir le pcap de la capture")
                 return self._json(follow_start(pcap, body.get("watch"), body.get("track"), body.get("taps") or []))
+            m_ = re.match(r"^/api/gmti/([^/]+)/(profile|reset)$", u.path)
+            if m_:
+                eng = cr_engine(m_.group(1))
+                if eng is None:
+                    raise ValueError("pas de mission en cours sur %s" % m_.group(1))
+                if m_.group(2) == "reset":
+                    eng.set_gmti_profile(None, None, True)
+                else:
+                    eng.set_gmti_profile(body.get("profile"), body.get("overrides"), bool(body.get("reset")))
+                return self._json({"port": eng.cr, "profile": eng.gmti_profile, "overrides": eng.gmti_overrides})
             if u.path == "/api/follow/stop":
                 # Un visionneur qui part ne coupe pas les autres : le moteur s'arrête seul sans client (reaper) ;
                 # force=true = arrêt immédiat (console d'analyse).
@@ -2714,6 +2900,40 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             alive.clear()
+
+    def _ws_gmti(self, cr):
+        """Contrat du service GMTI v1 : snapshot à la connexion, puis événements gmti (~4 Hz) et status (1 Hz).
+        Sans mission en cours sur le CR : status receiving=false, puis attente (l'abonné n'a pas à se reconnecter)."""
+        if not self._ws_handshake():
+            return
+        sock = self.connection; alive = threading.Event(); alive.set()
+        threading.Thread(target=ws_reader, args=(sock, alive.clear), daemon=True).start()
+        cur = None; q = None
+        try:
+            while alive.is_set():
+                eng = cr_engine(cr)
+                if eng is not cur:
+                    if cur is not None and q is not None:
+                        cur.gmti_bus.unsubscribe(q)
+                    cur = eng; q = None
+                    if eng is not None:
+                        q = eng.gmti_bus.subscribe(maxsize=200)
+                        sock.sendall(ws_frame(json.dumps(eng.gmti_snapshot_event(), ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 1))
+                    else:
+                        sock.sendall(ws_frame(json.dumps({"type": "status", **gmti_status_idle(cr)}).encode("utf-8"), 1))
+                if q is None:
+                    time.sleep(1.0); sock.sendall(ws_frame(b"", 9)); continue
+                try:
+                    item = q.get(timeout=1.0)
+                except queue.Empty:
+                    sock.sendall(ws_frame(b"", 9)); continue
+                sock.sendall(ws_frame(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 1))
+        except OSError:
+            pass
+        finally:
+            alive.clear()
+            if cur is not None and q is not None:
+                cur.gmti_bus.unsubscribe(q)
 
     def _ws_events(self):
         if not self._ws_handshake():
@@ -2925,6 +3145,9 @@ def main():
     global BASE_PATH, CAPTURES_DIR
     BASE_PATH = ("/" + a.base_path.strip("/")) if a.base_path and a.base_path.strip("/") else ""
     CAPTURES_DIR = os.path.abspath(a.captures_dir) if a.captures_dir else None
+    if CAPTURES_DIR and os.getenv("AUTO_FOLLOW", "1").strip().lower() not in ("0", "false", "no", "off"):
+        threading.Thread(target=auto_follow_loop, name="auto_follow", daemon=True).start()
+        print("[follow] suivi automatique des missions en cours (%s, GMTI live sur /ws/gmti/{CR})" % CAPTURE_STATUS_URL, flush=True)
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     url = "http://%s:%d%s/" % ("127.0.0.1" if a.host in ("0.0.0.0", "") else a.host, a.port, BASE_PATH)
