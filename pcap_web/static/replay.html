@@ -25,6 +25,7 @@
     <button id="btn-pause" title="pause / reprise (espace)" disabled>⏸</button>
     <button id="btn-edge" class="accent" hidden title="revenir au direct (L)">⟫ Direct</button>
     <button id="btn-stop" class="danger" title="arrêter">■</button>
+    <button id="btn-clip" title="extraire un clip (.ts) entre deux instants">✂ Clip</button>
     <select id="speed" title="vitesse de lecture">
       <option value="1">×1</option><option value="2">×2</option><option value="4">×4</option><option value="8">×8</option>
     </select>
@@ -37,6 +38,31 @@
     <button id="op-full" title="plein écran (F)">⛶</button>
   </header>
 
+  <div id="clip-panel" hidden>
+    <div class="cp-title">✂ Extraction d'un clip <span class="muted">— créneau UTC (GDH), copie du TS capturé, sans ré-encodage</span></div>
+    <div class="cp-row">
+      <label>début <input id="clip-start" placeholder="HH:MM:SS" maxlength="8" autocomplete="off"><span class="z">Z</span></label>
+      <button id="clip-start-cur" title="reprendre l'instant du curseur de lecture">⟵ curseur</button>
+      <label>fin <input id="clip-end" placeholder="HH:MM:SS" maxlength="8" autocomplete="off"><span class="z">Z</span></label>
+      <button id="clip-end-cur" title="reprendre l'instant du curseur de lecture">⟵ curseur</button>
+      <span class="cp-dur">durée <b id="clip-dur">—</b></span>
+    </div>
+    <div class="cp-row">
+      <label class="chk" title="conserver le PID KLV (STANAG 4609) dans le .ts et écrire le CSV des positions"><input type="checkbox" id="clip-meta" checked> métadonnées KLV</label>
+      <label>nom <input id="clip-name" placeholder="clip_HHMMSSZ-HHMMSSZ (auto)" maxlength="100" autocomplete="off" style="width:240px"></label>
+      <span class="spacer"></span>
+      <span id="clip-msg" class="muted"></span>
+      <button id="clip-go" class="accent" disabled>✂ Extraire</button>
+      <button id="clip-close">Fermer</button>
+    </div>
+  </div>
+  <div id="clip-menu" hidden>
+    <div class="cm-title" id="cm-title"></div>
+    <button data-act="seek">▶ Aller au début</button>
+    <button data-act="ts">⬇ Télécharger le clip (.ts)</button>
+    <button data-act="csv" id="cm-csv">⬇ Positions KLV (.csv)</button>
+    <button data-act="del" class="danger">✕ Supprimer</button>
+  </div>
   <main id="op-main">
     <div id="map">
       <div class="map-ctl">
@@ -65,7 +91,7 @@
   </main>
 
   <footer id="op-tl">
-    <canvas id="timeline" height="96" title=""></canvas>
+    <canvas id="timeline" height="110" title=""></canvas>
     <div id="tl-info">
       <span>mission UTC <b id="tl-mutc">—</b></span>
       <span>t = <b id="tl-t">0.000</b> / <b id="tl-d">—</b> s</span>

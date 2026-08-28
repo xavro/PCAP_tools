@@ -32,6 +32,7 @@
       <span><i>◎</i> GMTI 4607 temps réel</span>
       <span><i>⇄</i> Tracker MTI (profils à chaud)</span>
       <span><i>↝</i> GPX / trace GeoJSON</span>
+      <span><i>✂</i> Clips .ts (avec / sans KLV)</span>
       <span><i>▦</i> Import snaps</span>
       <span class="off">HLS / VOD</span>
       <span class="off">SQLite / ZIP / Shapefile</span>
@@ -47,6 +48,7 @@
       <li><a href="#missions">▤ Missions &amp; captures <small>(6 endpoints)</small></a></li>
       <li><a href="#follow">▶ Suivi : relecture, DVR, direct <small>(6 endpoints + WS)</small></a></li>
       <li><a href="#video">▦ Vidéo MPEG-TS <small>(2 endpoints)</small></a></li>
+      <li><a href="#clips">✂ Clips <small>(4 endpoints)</small></a></li>
       <li><a href="#gmti">◎ GMTI STANAG 4607 <small>(7 endpoints + WS)</small></a></li>
       <li><a href="#snaps">▦ Import snaps <small>(3 endpoints)</small></a></li>
       <li><a href="#console">▣ Console pcap (analyste)</a></li>
@@ -199,6 +201,20 @@ Pas de FFmpeg, pas de HLS, pas de base SQL : tout est rejoué depuis le pcap. R�
       <div class="ep-body"><p>TS relu depuis le disque à partir de l'instant demandé grâce à l'index (<code>.idx</code>, points vidéo 0,5 s) ; <code>Range</code> par octets cumulés — un saut de plusieurs heures reste instantané.</p></div></div>
   </section>
 
+  <!-- ───────────── CLIPS ───────────── -->
+  <section class="doc-section" id="clips">
+    <h2>✂ Clips <small>stratus2-replay · {mission}/clips/</small></h2>
+    <p>Extrait MPEG-TS d'un créneau UTC, découpé dans le pcap maître par l'index (copie octet à octet, sans FFmpeg). Avec métadonnées : PID KLV conservé + CSV des positions ; sans : paquets KLV retirés. Les clips apparaissent sur la barre de temps de la page opérateur (lane « clips », menu clic droit).</p>
+    <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/clips/extract</span><span class="ep-who">page opérateur</span></div>
+      <div class="ep-body"><p>Corps : <code>{"mission","start_utc","end_utc","name"?,"include_metadata":true,"dport"?}</code> (epoch UTC ; durée ≤ <code>CLIP_MAX_S</code>, 3600 s par défaut ; nom <code>[A-Za-z0-9_-]</code>, sinon <code>clip_HHMMSSZ-HHMMSSZ</code>). Réponse : le sidecar <code>{name, file, start_utc, end_utc, duration, bytes, metadata, csv, klv_pid}</code>.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/clips/{m}/list</span><span class="ep-who">page opérateur, widgets</span></div>
+      <div class="ep-body"><p>Clips de la mission (sidecars <code>.json</code>), triés par début — aussi présents dans <code>/api/follow/timeline</code> (<code>clips</code>).</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/clips/{m}/{fichier}[?inline=1]</span><span class="ep-who">téléchargement</span></div>
+      <div class="ep-body"><p><code>{name}.ts</code>, <code>{name}_klv.csv</code>, <code>{name}.json</code> — en pièce jointe sauf <code>inline=1</code>.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/clips/{m}/{name}/delete</span><span class="ep-who">page opérateur</span></div>
+      <div class="ep-body"><p>Supprime le clip et ses sidecars.</p></div></div>
+  </section>
+
   <!-- ───────────── GMTI ───────────── -->
   <section class="doc-section" id="gmti">
     <h2>◎ GMTI STANAG 4607 temps réel <small>stratus2-replay · tracker de référence PCAP_tools</small></h2>
@@ -250,7 +266,9 @@ Pas de FFmpeg, pas de HLS, pas de base SQL : tout est rejoué depuis le pcap. R�
   {mission}_001.pcap …   segments pcap maître (jamais supprimés ; taille max par segment SEGMENT_MB)
   {mission}.idx          index STRIDX01 (points vidéo 0,5 s, paquets applicatifs, octets cumulés) — ouverture instantanée
   {mission}.tl.jsonl     journal de la ligne de temps décodée (h/c/d/m/t/p/v/k/f : dwells, pistes, positions KLV, flux)
-  mission.json           CR, ports, début / fin UTC, flux, indicatif / tail / Mission ID / plateforme / capteur (KLV), closed</pre>
+  mission.json           CR, ports, début / fin UTC, flux, indicatif / tail / Mission ID / plateforme / capteur (KLV), closed
+{recordings}/{mission}/clips/
+  {name}.ts · {name}.json · {name}_klv.csv   clips extraits (créneau UTC, avec / sans KLV)</pre>
   </section>
 
 </main>

@@ -2387,8 +2387,20 @@ class FollowEngine:
         return {"t0": self.t0, "duration": self.duration(), "n_packets": self.n_packets, "cot": list(self.cot), "coverage": self.coverage(),
                 "dwells": list(self.dwells), "dwell_offset": self.dwell_offset, "video": self.video_info(),
                 "tracks": [{"id": r["id"], "air": r["air"], "rot": r["rot"], "hits": r["hits"], "hist": list(r["hist"])} for r in self.tracks.values()],
-                "klv": list(self.klv),
+                "klv": list(self.klv), "mission": self.mission_name(), "clips": clips_list(self.mission_name()) if self.mission_name() else [],
                 "follow": True, "catching_up": self.catching_up, "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows), "k": len(self.klv)}}
+
+    def mission_name(self):
+        """Nom de la mission suivie (dossier {recordings}/{mission}/Capture/{mission}_NNN.pcap) — None hors dossier des enregistrements."""
+        base = self._seg_base or self._single
+        if not base or not CAPTURES_DIR:
+            return None
+        d = os.path.dirname(os.path.abspath(base))
+        if os.path.basename(d).lower() == "capture":
+            d = os.path.dirname(d)
+        if os.path.dirname(d) != os.path.abspath(CAPTURES_DIR):
+            return None
+        return os.path.basename(d)
 
     def track_geojson(self, dport=None):
         """Trace plateforme (LineString par flux vidéo, WGS84) — équivalent v2 de /api/streams/{CR}/track.geojson."""
@@ -2445,10 +2457,11 @@ class FollowEngine:
         return max(self.streams.values(), key=lambda s: s.nbytes)
 
     # -- lecture disque (DVR) --
-    def iter_ts(self, st, seg_no, rec_off, skip=0, t_min=None):
+    def iter_ts(self, st, seg_no, rec_off, skip=0, t_min=None, t_max=None):
         """TS du flux `st` relu depuis le disque à partir de (segment, offset) : saute `skip` octets
-        (reprise Range) et/ou les datagrammes datés < t_min ; enchaîne les segments suivants existants
-        et s'arrête au bord (fin des données écrites)."""
+        (reprise Range) et/ou les datagrammes datés < t_min ; s'arrête au premier datagramme > t_max
+        (extraction de clip) ; enchaîne les segments suivants existants et s'arrête au bord (fin des
+        données écrites)."""
         n = seg_no
         while self._seg_exists(n):
             try:
@@ -2470,6 +2483,8 @@ class FollowEngine:
                             continue
                         if t_min is not None and ts < t_min:
                             continue
+                        if t_max is not None and ts > t_max:
+                            return
                         tsdata = v9._ts_from_udp(r[5])
                         if not tsdata:
                             continue
@@ -2550,6 +2565,139 @@ def follow_id(path):
     seg = follow_segments(path)
     base = seg[0] if seg else path
     return hashlib.md5(os.path.abspath(base).encode("utf-8")).hexdigest()[:10]
+
+
+# ── Clips : extraits MPEG-TS d'une mission, découpés dans le pcap maître (sans FFmpeg) ─────────────
+CLIP_MAX_S = float(os.getenv("CLIP_MAX_S", "3600"))
+CLIP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+def clips_dir(mission):
+    if not mission or "/" in mission or "\\" in mission or ".." in mission:
+        raise ValueError("nom de mission invalide")
+    if not CAPTURES_DIR or not os.path.isdir(os.path.join(CAPTURES_DIR, mission)):
+        raise FileNotFoundError("mission introuvable : %s" % mission)
+    return os.path.join(CAPTURES_DIR, mission, "clips")
+
+
+def clips_list(mission):
+    """Clips extraits d'une mission (sidecars {name}.json de {mission}/clips/), triés par début."""
+    try:
+        d = clips_dir(mission)
+    except (ValueError, FileNotFoundError):
+        return []
+    out = []
+    if os.path.isdir(d):
+        for f in os.listdir(d):
+            if f.endswith(".json"):
+                try:
+                    with open(os.path.join(d, f), encoding="utf-8") as fh:
+                        c = json.load(fh)
+                    ts = os.path.join(d, c.get("file") or (c["name"] + ".ts"))
+                    c["bytes"] = os.path.getsize(ts) if os.path.isfile(ts) else c.get("bytes")
+                    c["csv"] = os.path.isfile(os.path.join(d, c["name"] + "_klv.csv"))
+                    out.append(c)
+                except Exception:
+                    continue
+    out.sort(key=lambda c: c.get("start_utc") or 0)
+    return out
+
+
+def _strip_pid(chunk, pid):
+    """Retire d'un bloc TS (paquets de 188 octets alignés) les paquets du PID donné."""
+    keep = []
+    for i in range(0, len(chunk) - 187, 188):
+        pkt = chunk[i:i + 188]
+        if pkt[0] == 0x47 and ((pkt[1] & 0x1F) << 8 | pkt[2]) == pid:
+            continue
+        keep.append(pkt)
+    return b"".join(keep)
+
+
+def clip_extract(mission, start_utc, end_utc, name=None, include_metadata=True, dport=None):
+    """Extrait [start_utc, end_utc] du flux vidéo de la mission dans {mission}/clips/{name}.ts — copie
+    octet à octet du TS capturé (aucun ré-encodage) ; sans métadonnées, les paquets du PID KLV sont
+    retirés. Avec métadonnées : {name}_klv.csv (positions KLV, 1 pt / 0,5 s) en plus. Sidecar {name}.json."""
+    start_utc, end_utc = float(start_utc), float(end_utc)
+    if not (end_utc > start_utc):
+        raise ValueError("la fin doit être postérieure au début")
+    if end_utc - start_utc > CLIP_MAX_S:
+        raise ValueError("durée maximale d'un clip : %d s" % CLIP_MAX_S)
+    d = clips_dir(mission)
+    pcap0 = mission_resolve(mission)["pcap"]
+    eng = FOLLOWS.get(follow_id(pcap0))
+    if eng is None or not eng.state.get("running"):
+        follow_start(pcap0, None, None, [])                    # ouvre le suivi (index) le temps de l'extraction
+        eng = follow_get(follow_id(pcap0))
+        for _ in range(600):                                   # rattrapage de l'index (≤ 60 s)
+            if not eng.catching_up:
+                break
+            time.sleep(0.1)
+    st = eng.stream(dport)
+    if not name:
+        name = "clip_%s-%s" % (time.strftime("%H%M%SZ", time.gmtime(start_utc)), time.strftime("%H%M%SZ", time.gmtime(end_utc)))
+    if not CLIP_NAME_RE.match(name):
+        raise ValueError("nom de clip invalide (lettres, chiffres, _ et - ; 100 caractères max)")
+    os.makedirs(d, exist_ok=True)
+    out = os.path.join(d, name + ".ts")
+    if os.path.exists(out):
+        raise ValueError("un clip nommé %s existe déjà" % name)
+    seg_no, off, _cum = st.locate_time(start_utc)
+    klv_pid = None; probe = bytearray(); n = 0
+    tmp = out + ".part"
+    try:
+        with open(tmp, "wb") as fh:
+            for chunk in eng.iter_ts(st, seg_no, off, 0, t_min=start_utc, t_max=end_utc):
+                if not include_metadata:
+                    if klv_pid is None:                        # PID KLV déterminé sur les premiers Mo (PMT)
+                        probe += chunk
+                        if len(probe) >= 2 << 20:
+                            klv_pid = v9.analyze_stream(bytes(probe)).get("klv_pid") or -1
+                            data = _strip_pid(bytes(probe), klv_pid); probe = bytearray()
+                            fh.write(data); n += len(data)
+                        continue
+                    chunk = _strip_pid(chunk, klv_pid)
+                fh.write(chunk); n += len(chunk)
+            if probe:
+                klv_pid = v9.analyze_stream(bytes(probe)).get("klv_pid") or -1
+                data = _strip_pid(bytes(probe), klv_pid); fh.write(data); n += len(data)
+        if n == 0:
+            raise ValueError("aucune donnée vidéo dans ce créneau")
+        os.replace(tmp, out)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    meta = {"name": name, "file": name + ".ts", "mission": mission, "dport": st.dport, "start_utc": start_utc, "end_utc": end_utc,
+            "duration": round(end_utc - start_utc, 3), "bytes": n, "metadata": bool(include_metadata), "created_at": time.time(),
+            "klv_pid": klv_pid if klv_pid not in (None, -1) else None}
+    if include_metadata:
+        t0 = eng.t0 or 0
+        rows = [k for k in eng.klv if start_utc <= t0 + k[0] <= end_utc and (dport is None or (len(k) > 7 and k[7] == st.dport))]
+        if rows:
+            with open(os.path.join(d, name + "_klv.csv"), "w", encoding="utf-8", newline="") as fh:
+                fh.write("utc,timestamp,lat,lon,alt_m,heading,frame_center_lat,frame_center_lon\n")
+                for k in rows:
+                    t = t0 + k[0]
+                    utc = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % (int(round((t % 1) * 1000)) % 1000)
+                    fh.write("%s,%.3f,%s\n" % (utc, t, ",".join("" if v is None else str(v) for v in k[1:7])))
+            meta["csv"] = True
+    with open(os.path.join(d, name + ".json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, ensure_ascii=False, indent=1)
+    print("[clips] %s : %s  %.1f s  %.1f Mo  métadonnées=%s" % (mission, name, meta["duration"], n / 1e6, include_metadata))
+    return meta
+
+
+def clip_delete(mission, name):
+    if not CLIP_NAME_RE.match(name or ""):
+        raise ValueError("nom de clip invalide")
+    d = clips_dir(mission); gone = 0
+    for suf in (".ts", ".json", "_klv.csv"):
+        f = os.path.join(d, name + suf)
+        if os.path.isfile(f):
+            os.remove(f); gone += 1
+    if not gone:
+        raise FileNotFoundError("clip introuvable : %s" % name)
+    return {"ok": True, "deleted": name}
 
 
 def follow_get(fid):
@@ -2957,6 +3105,31 @@ class Handler(BaseHTTPRequestHandler):
                 if eng is None:
                     return self._err(404, "pas de mission en cours sur %s" % m_.group(1))
                 return self._json(eng.track_geojson())
+            m_ = re.match(r"^/api/clips/([^/]+)/(list|[^/]+)$", u.path)
+            if m_:
+                mission = urllib.parse.unquote(m_.group(1)); what = urllib.parse.unquote(m_.group(2))
+                if what == "list":
+                    return self._json({"mission": mission, "clips": clips_list(mission)})
+                d = clips_dir(mission); path = os.path.realpath(os.path.join(d, what))
+                if not path.startswith(os.path.realpath(d) + os.sep) or not os.path.isfile(path):
+                    return self._err(404, "clip introuvable : %s" % what)
+                size = os.path.getsize(path); ext = os.path.splitext(path)[1].lower()
+                self.send_response(200)
+                self.send_header("Content-Type", {".ts": "video/mp2t", ".csv": "text/csv; charset=utf-8", ".json": "application/json"}.get(ext, "application/octet-stream"))
+                if not q.get("inline"):
+                    self.send_header("Content-Disposition", "attachment; filename=\"%s\"" % os.path.basename(path))
+                self.send_header("Content-Length", str(size)); self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                with open(path, "rb") as fh:
+                    try:
+                        while True:
+                            b = fh.read(1 << 20)
+                            if not b:
+                                break
+                            self.wfile.write(b)
+                    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                        self.close_connection = True
+                return
             m_ = re.match(r"^/api/missions/([^/]+)/(gpx/merged|details|track\.geojson)$", u.path) or re.match(r"^/download/([^/]+)/(gpx)$", u.path)
             if m_:
                 name = urllib.parse.unquote(m_.group(1)); what = m_.group(2)
@@ -3063,6 +3236,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(LIVE.status())
             if u.path == "/api/live/stop":
                 return self._json(LIVE.stop())
+            if u.path == "/api/clips/extract":
+                return self._json(clip_extract(body.get("mission"), body.get("start_utc"), body.get("end_utc"), body.get("name") or None,
+                                               bool(body.get("include_metadata", True)), body.get("dport")))
+            m_ = re.match(r"^/api/clips/([^/]+)/([^/]+)/delete$", u.path)
+            if m_:
+                return self._json(clip_delete(urllib.parse.unquote(m_.group(1)), urllib.parse.unquote(m_.group(2))))
             if u.path == "/api/follow/start":
                 pcap = body.get("pcap") or self.default_pcap
                 if not pcap or not os.path.isfile(pcap):

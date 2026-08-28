@@ -1177,7 +1177,14 @@
   const hhmmss = t => { const d = new Date(t * 1000); return isNaN(d) ? "" : d.toISOString().slice(11, 19); };
   const fmtT = t => { const t0 = tlT0(); return t0 ? hhmmss(t0 + t) : (t >= 3600 ? `${Math.floor(t / 3600)}h${String(Math.floor(t % 3600 / 60)).padStart(2, "0")}` : t >= 60 ? `${Math.floor(t / 60)}m${String(Math.round(t % 60)).padStart(2, "0")}` : `${Math.round(t)}s`); };
   const LANE_X0 = 30;                                                         // pistes de couverture (bas de la barre)
-  const lanes = H => { const h = H >= 90 ? 11 : 7, g = { y: H - h - 3, h }; return { g, v: { y: g.y - h - 3, h } }; };
+  const lanes = H => { const h = H >= 90 ? 11 : 7, g = { y: H - h - 3, h }, v = { y: g.y - h - 3, h }; return { g, v, c: H >= 108 ? { y: v.y - h - 3, h } : null }; };   // c : clips extraits (page opérateur)
+  const clipsOf = () => (pb.on && pb.tl && pb.tl.clips) || [];
+  function clipAt(ev) {                                                       // clip sous le pointeur (lane « clips »)
+    const LN = lanes(tl.height); const D = duration(); if (!LN.c || !D || !pb.on || !pb.tl) return null;
+    if (ev.offsetY < LN.c.y - 1 || ev.offsetY > LN.c.y + LN.c.h + 1) return null;
+    const t = (ev.offsetX / tl.clientWidth) * D + (pb.tl.t0 || 0);
+    return clipsOf().find(c => t >= c.start_utc && t <= c.end_utc) || null;
+  }
   function drawBands(bands, lane, color, label, W, x) {
     ctx.fillStyle = "rgba(255,255,255,.05)"; ctx.fillRect(LANE_X0, lane.y, W - LANE_X0, lane.h);
     ctx.fillStyle = color;
@@ -1188,7 +1195,7 @@
     const W = tl.clientWidth || 800; if (tl.width !== W) tl.width = W; const H = tl.height;
     ctx.clearRect(0, 0, W, H); ctx.fillStyle = "#0e1216"; ctx.fillRect(0, 0, W, H);
     const D = duration(); if (!D) return;
-    const x = t => t / D * W; const LN = lanes(H); const TOP = 14, BASE = LN.v.y - 4;   // règle · activité · couverture (bas)
+    const x = t => t / D * W; const LN = lanes(H); const TOP = 14, BASE = (LN.c || LN.v).y - 4;   // règle · activité · couverture (bas)
     if (pb.on && pb.tl) {                                    // densité CoT + dwells (lecture)
       const bins = new Float32Array(W); pb.tl.cot.forEach(c => { const i = Math.floor(x(c[0])); if (i >= 0 && i < W) bins[i]++; }); pb.tl.dwells.forEach(d => { const i = Math.floor(x(d[0])); if (i >= 0 && i < W) bins[i] += 2; });
       const mx = Math.max(1, ...bins); ctx.fillStyle = "rgba(124,255,107,.35)";
@@ -1214,6 +1221,11 @@
       drawBands(vb, LN.v, "rgba(0,200,255,.75)", "4609", W, x);
       drawBands(cov.gmti, LN.g, "rgba(124,255,107,.8)", "4607", W, x);
     }
+    if (LN.c && pb.on && pb.tl) {                            // clips extraits (violet) — clic : aller au début, clic droit : menu
+      const t0 = pb.tl.t0 || 0;
+      drawBands(clipsOf().map(c => [c.start_utc - t0, c.end_utc - t0]), LN.c, "rgba(187,134,252,.85)", "clips", W, x);
+      if (pb.clipSel) { ctx.fillStyle = "rgba(187,134,252,.25)"; ctx.fillRect(x(pb.clipSel[0] - t0), TOP, Math.max(1, x(pb.clipSel[1] - t0) - x(pb.clipSel[0] - t0)), BASE - TOP); }   // créneau en cours de saisie
+    }
     // règle : horodatage réel de la mission (UTC) si connu, sinon temps relatif
     ctx.fillStyle = "#8a9098"; ctx.font = "10px Consolas";
     const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200]; let step = steps.find(s => x(s) >= 70) || 7200;
@@ -1225,9 +1237,14 @@
     if ((state.mode === "replay") && state.replay && state.replay.running) { ctx.fillStyle = "#ff9f43"; ctx.fillRect(x(state.replay.t || 0) - 1, 0, 2, H); ctx.fillText("rejeu", x(state.replay.t || 0) + 4, BASE - 2); }
     ctx.fillStyle = "#00c8ff"; ctx.fillRect(x(off + video.currentTime) - 1, 0, 2, H);
   }
-  tl.addEventListener("mousemove", ev => { const D = duration(); if (!D) { tl.title = ""; return; } const t = (ev.offsetX / tl.clientWidth) * D; tl.title = (tlT0() ? hhmmss(tlT0() + t) + " UTC · " : "") + `t=${t.toFixed(1)} s`; });
+  tl.addEventListener("mousemove", ev => {
+    const D = duration(); if (!D) { tl.title = ""; return; } const t = (ev.offsetX / tl.clientWidth) * D;
+    const c = clipAt(ev);
+    tl.title = c ? `✂ ${c.name} · ${hhmmss(c.start_utc)}Z – ${hhmmss(c.end_utc)}Z (${Math.round(c.duration)} s${c.metadata ? ", KLV" : ""})` : (tlT0() ? hhmmss(tlT0() + t) + " UTC · " : "") + `t=${t.toFixed(1)} s`;
+  });
   tl.addEventListener("click", ev => {
     const D = duration(); if (!D) return;
+    const c = clipAt(ev); if (c) return playbackSeek(c.start_utc - (pb.tl.t0 || 0));
     const t = (ev.offsetX / tl.clientWidth) * D;
     if (pb.on) return playbackSeek(t);
     if (lv.on) return;                                     // écoute live : pas de saut
@@ -1330,7 +1347,7 @@
   function fillRecent(list) { const dl = $("recent"); dl.innerHTML = ""; (list || []).forEach(r => { const o = document.createElement("option"); o.value = r; dl.appendChild(o); }); }
 
   window.__dbg = { state, gs, map, fitTracks, drawTracks, pb, lv };          // accès console (débogage / tests)
-  window.__op = { pb, seek: playbackSeek, edge: goEdge, pause: playbackPause, load, play, state,
+  window.__op = { pb, seek: playbackSeek, edge: goEdge, pause: playbackPause, load, play, state, clipAt, hhmmss, redraw: drawTimeline,
     seekRel: dt => { if (pb.on) playbackSeek(pb.t + dt); },
     seekFrac: f => { const D = duration(); if (pb.on && D) playbackSeek(Math.max(0, Math.min(1, f)) * D); } };
   // ── Mode opérateur (replay.html) : mission/pcap et mode lus dans l'URL, enchaînement automatique ──
