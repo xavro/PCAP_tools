@@ -50,12 +50,12 @@
       <button type="button" class="stx-close" id="stx-close" aria-label="Fermer">✕</button>
     </div>
     <ul class="stx-links">
-      <li><a href="../"><svg viewBox="0 0 24 24"><path d="M3 4h18v4H3zM4 9h16v11H4zM9 12h6" fill="none" stroke="currentColor" stroke-width="2"/></svg> Missions <small>enregistrements, lecture, exports</small></a></li>
-      <li><a href="./" class="is-active"><svg viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 18h8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg> Console pcap <small>analyse, rejeu, écoute, banc GMTI</small></a></li>
-      <li><a href="../api/docs"><svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 0-3 3zM5 4v16M8 9h8M8 13h8" fill="none" stroke="currentColor" stroke-width="2"/></svg> Documentation API <small>endpoints 4609 / 4607 / snaps</small></a></li>
-      <li><a href="../health"><svg viewBox="0 0 24 24"><path d="M12 21s-7-4.5-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.5-9 9-9 9z" fill="currentColor"/><path d="M4 13h4l2-3 2 6 2-4h6" fill="none" stroke="#0e1216" stroke-width="1.8"/></svg> Health Check <small>état des services</small></a></li>
+      <li><a href="../" data-page="missions"><svg viewBox="0 0 24 24"><path d="M3 4h18v4H3zM4 9h16v11H4zM9 12h6" fill="none" stroke="currentColor" stroke-width="2"/></svg> Missions <small>enregistrements, lecture, exports</small></a></li>
+      <li><a href="./" class="is-active" data-page="console"><svg viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 18h8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg> Console pcap <small>analyse, rejeu, écoute, banc GMTI</small></a></li>
+      <li><a href="../api/docs" data-page="docs"><svg viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 0-3 3zM5 4v16M8 9h8M8 13h8" fill="none" stroke="currentColor" stroke-width="2"/></svg> Documentation API <small>endpoints 4609 / 4607 / snaps</small></a></li>
+      <li><a href="../health" data-page="health"><svg viewBox="0 0 24 24"><path d="M12 21s-7-4.5-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.5-9 9-9 9z" fill="currentColor"/><path d="M4 13h4l2-3 2 6 2-4h6" fill="none" stroke="#0e1216" stroke-width="1.8"/></svg> Health Check <small>état des services</small></a></li>
     </ul>
-    <div class="stx-drawer-foot"><a href="../api/health">&lt;/&gt; /api/health</a><a href="../api/gmti/status">⌖ /api/gmti/status</a></div>
+    <div class="stx-drawer-foot"><a href="../api/health" data-api="api/health">&lt;/&gt; /api/health</a><a href="../api/gmti/status" data-api="api/gmti/status">⌖ /api/gmti/status</a></div>
   </aside>
   <div id="statusbar">
     <span id="sb-state" class="sb-state stopped">■ arrêt</span>

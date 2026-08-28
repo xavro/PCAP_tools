@@ -1,0 +1,40 @@
+/* Pages StratusServer v2 (missions, health, api docs) — même thème que la console (style.css). */
+html, body { height: 100%; margin: 0; }
+body.page { background: var(--bg); color: var(--fg); font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; min-height: 100vh; }
+.pg-nav { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 50; }
+.pg-brand { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--fg); }
+.pg-brand img { height: 28px; width: 28px; border-radius: 8px; }
+.pg-brand b { font-weight: 700; letter-spacing: .02em; } .pg-brand b span { color: var(--accent); font-weight: 400; }
+.pg-sep { width: 1px; height: 22px; background: var(--border); }
+.pg-title { color: var(--muted); font-size: .9rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.pg-spacer { flex: 1; }
+.pg-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--muted); padding: 2px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel2); font-family: var(--mono); white-space: nowrap; }
+.pg-chip b { color: var(--fg); font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
+.dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+main.pg { flex: 1; padding: 16px 20px; max-width: 1400px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.pg-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.pg-tools input, .pg-tools select { font: inherit; color: var(--fg); background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+.pg-tools .muted { color: var(--muted); font-size: 12px; }
+table.pg { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+table.pg th { text-align: left; color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: .72rem; letter-spacing: .05em; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--panel2); }
+table.pg td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.pg tr:hover td { background: rgba(0,200,255,.05); }
+table.pg td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; border: 1px solid var(--border); color: var(--muted); }
+.tag.live { color: var(--danger); border-color: rgba(255,82,82,.5); background: rgba(255,82,82,.1); }
+.tag.done { color: var(--ok); border-color: rgba(124,255,107,.35); background: rgba(124,255,107,.08); }
+.tag.open { color: var(--warn); border-color: rgba(255,213,79,.4); background: rgba(255,213,79,.08); }
+a.btn, button.btn { display: inline-block; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--fg); text-decoration: none; font-size: 12px; cursor: pointer; margin-right: 4px; }
+a.btn:hover, button.btn:hover { border-color: var(--accent); }
+a.btn.accent { background: var(--accent); color: #001018; border-color: var(--accent); font-weight: 600; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+.card h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; display: flex; align-items: center; gap: 8px; }
+.card .v { font-size: 22px; font-weight: 600; font-family: var(--mono); }
+.card .s { color: var(--muted); font-size: 12px; margin-top: 4px; }
+pre.pg { background: #0b0f13; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; overflow: auto; }
+.doc h2 { font-size: 15px; color: var(--accent); border-left: 3px solid var(--accent); padding-left: 8px; margin: 22px 0 8px; }
+.doc table.pg td:first-child { font-family: var(--mono); font-size: 12px; white-space: nowrap; color: var(--warn); }
+.doc code { font-family: var(--mono); background: var(--panel2); color: var(--warn); padding: 0 4px; border-radius: 4px; }
+.pg-foot { color: var(--muted); font-size: 11px; padding: 10px 20px; border-top: 1px solid var(--border); font-family: var(--mono); }

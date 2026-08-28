@@ -2593,6 +2593,44 @@ def _capture_sets_by_cr():
     return out
 
 
+def health_status():
+    """État des services v2 pour la page Health : démon de capture, suivis, MediaMTX, disque, télémétrie."""
+    out = {"ts": time.time(), "capture": {"ok": False}, "replay": {"ok": True}, "mediamtx": {"ok": False}, "disk": None, "klv": {}}
+    try:
+        with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=3) as r:
+            st = json.load(r)
+        out["capture"] = {"ok": True, **st}
+        for cr in (st.get("sets") or {}):
+            try:
+                with urllib.request.urlopen("%s/api/streams/%s/klv" % (CAPTURE_STATUS_URL, cr), timeout=2) as r:
+                    k = json.load(r); out["klv"][cr] = {"age_s": k.get("age_s"), "callsign": k.get("PlatformCallSign"), "fl": k.get("FlightLevel")}
+            except Exception:
+                pass
+    except Exception as e:
+        out["capture"] = {"ok": False, "error": str(e)}
+    try:
+        out["replay"] = {"ok": True, "missions": len(missions_list()),
+                         "follows": [{"id": e.fid, "mission": os.path.basename(e._seg_base or e.state.get("pcap", "")), "cr": e.cr, "duration": e.duration(),
+                                      "n_packets": e.n_packets, "tracks": len(e.tracks), "gmti_subscribers": len(e.gmti_bus.subs), "system": e.system,
+                                      "catching_up": e.catching_up} for e in list(FOLLOWS.values()) if e.state.get("running")]}
+    except Exception as e:
+        out["replay"] = {"ok": False, "error": str(e)}
+    try:
+        with urllib.request.urlopen(os.getenv("MEDIAMTX_API_URL", "http://127.0.0.1:9998") + "/v3/paths/list", timeout=2) as r:
+            pl = json.load(r)
+        items = pl.get("items") or []
+        out["mediamtx"] = {"ok": True, "paths": len(items), "ready": sum(1 for p in items if p.get("ready")), "items": [{"name": p.get("name"), "ready": p.get("ready"), "readers": len(p.get("readers") or [])} for p in items]}
+    except Exception as e:
+        out["mediamtx"] = {"ok": False, "error": str(e)}
+    try:
+        if CAPTURES_DIR:
+            import shutil
+            du = shutil.disk_usage(CAPTURES_DIR); out["disk"] = {"path": CAPTURES_DIR, "total": du.total, "used": du.used, "free": du.free}
+    except Exception:
+        pass
+    return out
+
+
 def gmti_status_idle(cr):
     """Statut GMTI d'un CR sans mission en cours (mêmes clés que FollowEngine.gmti_status)."""
     ports = _capture_sets_by_cr().get((cr or "").upper(), [])
@@ -2803,6 +2841,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html")
             if u.path in ("/replay", "/replay.html"):             # page opérateur (carte + vidéo + barre de temps)
                 return self._static("replay.html")
+            if u.path in ("/missions", "/missions.html"):         # pages StratusServer v2
+                return self._static("missions.html")
+            if u.path in ("/health", "/health.html"):
+                return self._static("health.html")
+            if u.path in ("/api/docs", "/docs", "/apidocs.html"):
+                return self._static("apidocs.html")
+            if u.path == "/api/health":
+                return self._json(health_status())
+            if u.path == "/api/capture/status":                   # proxy vers le démon (accès direct :8767 sans nginx)
+                try:
+                    with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=3) as r:
+                        return self._json(json.load(r))
+                except Exception as e:
+                    return self._err(502, "capture injoignable : %s" % e)
             m_ = re.match(r"^/api/snaps/([^/]+)/(list|file/([^/]+))$", u.path)
             if m_:
                 label = urllib.parse.unquote(m_.group(1))

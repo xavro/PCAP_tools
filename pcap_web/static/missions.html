@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>STRATUS - Missions</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="static/favicon.ico">
+<link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="static/pages.css">
+</head>
+<body class="page" data-page="missions">
+<nav class="pg-nav">
+  <button id="stx-burger" class="stx-burger" aria-label="Menu" aria-expanded="false"><span></span><span></span><span></span></button>
+  <a class="pg-brand" href="missions"><img src="static/stratus.png" alt=""><b>Stratus<span>Server</span></b></a>
+  <span class="pg-sep"></span><span class="pg-title">Missions</span>
+  <span class="pg-spacer"></span>
+  <span class="pg-chip" title="captures"><b id="n-missions">–</b> missions</span>
+  <span class="pg-chip" title="volume des captures"><b id="stat-size">–</b></span>
+  <span class="pg-chip" id="api-chip"><span class="dot"></span> …</span>
+</nav>
+<main class="pg">
+  <div class="pg-tools">
+    <input id="f-search" type="search" placeholder="filtrer : nom, CR, indicatif…" style="min-width:260px">
+    <select id="f-cr"><option value="">tous les CR</option></select>
+    <select id="f-state"><option value="">tous états</option><option value="live">en cours</option><option value="done">terminées</option></select>
+    <span class="muted" id="hint">captures réseau (pcap maître) du dossier des enregistrements — mise à jour toutes les 10 s</span>
+  </div>
+  <table class="pg">
+    <thead><tr><th>Mission</th><th>CR</th><th>Indicatif · capteur</th><th>Début (UTC)</th><th>Fin</th><th>Durée</th><th>Flux</th><th>Taille</th><th>État</th><th>Actions</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="10" class="mono" style="color:var(--muted)">chargement…</td></tr></tbody>
+  </table>
+</main>
+<div class="pg-foot">StratusServer v2 — capture pcap maître · relecture / DVR · live WebRTC · GMTI</div>
+<script src="static/pages.js"></script>
+<script>
+(() => {
+  const { U, api, hhmm, ymd, dur, size, $ } = window.STX;
+  let all = [];
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function render() {
+    const q = $("f-search").value.trim().toLowerCase(), cr = $("f-cr").value, st = $("f-state").value;
+    const rows = all.filter(m => (!q || `${m.name} ${m.cr || ""} ${m.callsign || ""} ${m.sensor || ""}`.toLowerCase().includes(q)) && (!cr || m.cr === cr) && (!st || (st === "live" ? m.recent : !m.recent)));
+    $("rows").innerHTML = rows.length ? rows.map(m => {
+      const flows = Object.entries(m.flows || {}).map(([p, n]) => `${p}`).join(", ");
+      const state = m.recent ? '<span class="tag live">● en cours</span>' : (m.closed ? '<span class="tag done">terminée</span>' : '<span class="tag open">interrompue</span>');
+      const end = m.recent ? "—" : hhmm(m.end_utc);
+      const d = m.start_utc && m.end_utc ? (m.recent ? (Date.now() / 1000 - m.start_utc) : (m.end_utc - m.start_utc)) : null;
+      return `<tr><td class="mono"><b>${esc(m.name)}</b></td><td class="mono">${esc(m.cr || "—")}</td><td class="mono">${esc(m.callsign || "")}${m.callsign && m.sensor ? " · " : ""}<span style="color:var(--muted)">${esc(m.sensor || "")}</span></td>
+        <td class="mono">${ymd(m.start_utc)} ${hhmm(m.start_utc)}</td><td class="mono">${end}</td><td class="mono">${dur(d)}</td><td class="mono" style="color:var(--muted)">${esc(flows)}</td><td class="mono">${size(m.bytes)}</td><td>${state}</td>
+        <td><a class="btn accent" href="${U("replay?mission=" + encodeURIComponent(m.name) + (m.recent ? "&live=1" : ""))}" title="${m.recent ? "direct + retour arrière" : "relecture"}">${m.recent ? "▶ Direct" : "▶ Relire"}</a><a class="btn" href="${U("api/missions/" + encodeURIComponent(m.name) + "/gpx/merged")}" title="trajectoire GPX (positions KLV)">GPX</a><a class="btn" href="${U("api/missions/" + encodeURIComponent(m.name) + "/details")}" title="détails JSON">⋯</a></td></tr>`;
+    }).join("") : '<tr><td colspan="10" class="mono" style="color:var(--muted)">aucune capture</td></tr>';
+  }
+  async function load() {
+    try {
+      const r = await api("/api/missions"); all = r.missions || [];
+      $("n-missions").textContent = all.length; $("stat-size").textContent = size(all.reduce((a, m) => a + (m.bytes || 0), 0));
+      const crs = [...new Set(all.map(m => m.cr).filter(Boolean))].sort(); const sel = $("f-cr"); const cur = sel.value;
+      sel.innerHTML = '<option value="">tous les CR</option>' + crs.map(c => `<option value="${c}">${c}</option>`).join(""); sel.value = cur;
+      render();
+    } catch (e) { $("rows").innerHTML = `<tr><td colspan="10" class="mono" style="color:var(--danger)">erreur : ${esc(e.message)}</td></tr>`; }
+  }
+  ["f-search", "f-cr", "f-state"].forEach(id => $(id).addEventListener("input", render));
+  load(); setInterval(load, 10000);
+})();
+</script>
+</body>
+</html>

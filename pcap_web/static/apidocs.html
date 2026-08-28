@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>STRATUS - Documentation API</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="static/favicon.ico">
+<link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="static/pages.css">
+</head>
+<body class="page" data-page="docs">
+<nav class="pg-nav">
+  <button id="stx-burger" class="stx-burger" aria-label="Menu" aria-expanded="false"><span></span><span></span><span></span></button>
+  <a class="pg-brand" href="missions"><img src="static/stratus.png" alt=""><b>Stratus<span>Server</span></b></a>
+  <span class="pg-sep"></span><span class="pg-title">Documentation API</span>
+  <span class="pg-spacer"></span>
+  <span class="pg-chip" id="api-chip"><span class="dot"></span> …</span>
+</nav>
+<main class="pg doc">
+  <p style="color:var(--muted)">StratusServer v2 — le <b>pcap est l'enregistrement maître</b> de chaque mission (capture passive par CR, sessions par le trafic). Base URL : <code>https://&lt;hôte&gt;:8444</code> (nginx : <code>/api/streams/*</code>, <code>/api/capture/*</code>, <code>/ws/klv/*</code> → démon de capture ; <code>/live/*</code> → MediaMTX ; le reste → serveur de relecture). CORS ouvert, pas d'authentification (réseau fermé).</p>
+
+  <h2>Capture (démon <code>stratus2-capture</code>)</h2>
+  <table class="pg"><thead><tr><th>Endpoint</th><th>Rôle</th></tr></thead><tbody>
+    <tr><td>GET /api/capture/status</td><td>état du sniffer, mode de session, ensembles par CR (mission en cours, indicatif, relais live, silence)</td></tr>
+    <tr><td>POST /api/capture/{CR}/start · /stop</td><td>capture manuelle <code>{"mission":"NOM"}</code> / arrêt (rend la main au mode trafic)</td></tr>
+    <tr><td>GET /api/streams/{CR}/webrtc-url</td><td>live WebRTC (fmv-deck) : <code>whep_url</code>, <code>ice_servers</code>, <code>stream_state</code>, <code>mission_name</code></td></tr>
+    <tr><td>GET /api/streams/{CR}/klv · WS /ws/klv/{CR}</td><td>télémétrie KLV 0601 décodée (≤ 5 Hz) : position, cap/attitude, altitude, FOV, portée, centre image, coins, indicatif, pression → FL</td></tr>
+    <tr><td>GET /api/streams/auto-record/active-mission/{CR} · /sessions</td><td>mission en cours (404 = aucune) — compat sensor-tracker</td></tr>
+    <tr><td>GET /api/streams/events</td><td>SSE : <code>auto_record_started</code> / <code>auto_record_stopped</code> par CR</td></tr>
+    <tr><td>GET /api/missions/recordings?search=CRn</td><td>liste compat (mission-launcher) : <code>is_active</code>, <code>duration_seconds</code>, <code>has_metadata</code>, <code>total_size_mb</code></td></tr>
+  </tbody></table>
+
+  <h2>Missions (serveur de relecture)</h2>
+  <table class="pg"><thead><tr><th>Endpoint</th><th>Rôle</th></tr></thead><tbody>
+    <tr><td>GET /api/missions?cr=&amp;callsign=&amp;from=&amp;to=&amp;day=</td><td>captures avec <code>mission.json</code> (CR, indicatif, capteur, début/fin UTC, flux, <code>recent</code>, <code>closed</code>) — filtres CR / indicatif / fenêtre / jour</td></tr>
+    <tr><td>GET /api/mission/resolve?name=</td><td>pcap maître d'une mission</td></tr>
+    <tr><td>GET /api/missions/{m}/details</td><td>points, début/fin, durée, centre, emprise, taille (compat mission-launcher)</td></tr>
+    <tr><td>GET /api/missions/{m}/gpx/merged · /download/{m}/gpx</td><td>trajectoire GPX 1.1 (positions KLV, 1 pt / 0,5 s, ele, time)</td></tr>
+    <tr><td>GET /api/missions/{m}/track.geojson · /api/streams/{CR}/track.geojson</td><td>trace plateforme (LineString [lon,lat,alt] + <code>times</code> ms) — mission / CR en cours</td></tr>
+    <tr><td>GET /api/snaps/{m}/list · /file/{f} · POST /processed/{f}</td><td>snaps du partage MASTER MISSION (widget snaps-import)</td></tr>
+  </tbody></table>
+
+  <h2>Suivi (relecture, DVR, direct) — un suivi par mission, partagé</h2>
+  <table class="pg"><thead><tr><th>Endpoint</th><th>Rôle</th></tr></thead><tbody>
+    <tr><td>POST /api/follow/start</td><td><code>{pcap, watch, track:{profile}, taps}</code> → ouvre ou rejoint le suivi (<code>id</code>, <code>joined</code>)</td></tr>
+    <tr><td>GET /api/follow/status?id= · /timeline · /delta?cot=&amp;dw=&amp;tr=&amp;k=</td><td>rattrapage, ligne de temps (dwells, pistes, positions KLV, couverture 4609/4607), ajouts</td></tr>
+    <tr><td>POST /api/follow/follow · /stop</td><td>flux vidéo poussés (<code>taps</code>) · détachement (<code>force</code> = arrêt)</td></tr>
+    <tr><td>GET /api/follow/list · /track.geojson?id=</td><td>suivis actifs · trace du suivi</td></tr>
+    <tr><td>WS /ws/video?dport=&amp;follow=</td><td>MPEG-TS poussé au bord du direct</td></tr>
+    <tr><td>GET /video.ts?follow=&amp;dport=&amp;from=</td><td>TS relu depuis le disque à partir de l'instant (retour arrière, Range par octets cumulés)</td></tr>
+    <tr><td>GET /replay?mission=NOM[&amp;live=1]</td><td>page opérateur (carte | vidéo | barre de temps)</td></tr>
+  </tbody></table>
+
+  <h2>GMTI 4607 (tracker de référence PCAP_tools)</h2>
+  <table class="pg"><thead><tr><th>Endpoint</th><th>Rôle</th></tr></thead><tbody>
+    <tr><td>WS /ws/gmti/{CR}</td><td><code>snapshot</code> à la connexion, puis <code>gmti</code> (~4 Hz : plots, dwells, pistes, contacts) et <code>status</code> (1 Hz) — contrat du service v1</td></tr>
+    <tr><td>GET /api/gmti/ports · /status · /{CR}/state</td><td>ports 4607 par CR, état, instantané</td></tr>
+    <tr><td>GET|PUT /api/gmti/{CR}/profile · POST /{CR}/reset</td><td>profil / surcharges à chaud, remise à zéro des pistes</td></tr>
+    <tr><td>GET /api/gmti/profiles · POST /api/gmti/profiles/reload · PUT /api/gmti/profiles</td><td>dépôt partagé <code>gmti_profiles.json</code> (console, processor Java)</td></tr>
+  </tbody></table>
+
+  <h2>Console pcap (analyste) — <code>/console/</code></h2>
+  <p style="color:var(--muted)">Analyse de pcap, rejeu + émission UDP/TCP, écoute réseau, banc de réglage du tracker GMTI, oracle de parité Java. Endpoints <code>/api/streams</code>, <code>/api/flows</code>, <code>/api/klv</code>, <code>/api/timeline</code>, <code>/api/gmti/decode|track</code>, <code>/api/replay/*</code>, <code>/api/live/*</code>, <code>/ws/events</code> — documentés dans le README de PCAP_tools.</p>
+
+  <h2>Fichiers d'une mission</h2>
+  <pre class="pg">{recordings}/{YYYYMMDD_HHMMZ_CRn}/Capture/
+  {mission}_001.pcap …   segments pcap maître (jamais supprimés)
+  {mission}.idx          index (points vidéo 0,5 s, paquets applicatifs) — ouverture instantanée
+  {mission}.tl.jsonl     journal de la ligne de temps décodée (dwells, pistes, positions KLV, flux)
+  mission.json           CR, ports, début/fin UTC, flux, indicatif / tail / Mission ID / plateforme / capteur (KLV), closed</pre>
+</main>
+<div class="pg-foot">StratusServer v2 — ISRBOX / 33e ESRA</div>
+<script src="static/pages.js"></script>
+</body>
+</html>

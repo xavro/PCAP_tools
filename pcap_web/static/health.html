@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>STRATUS - Health Check</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="static/favicon.ico">
+<link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="static/pages.css">
+</head>
+<body class="page" data-page="health">
+<nav class="pg-nav">
+  <button id="stx-burger" class="stx-burger" aria-label="Menu" aria-expanded="false"><span></span><span></span><span></span></button>
+  <a class="pg-brand" href="missions"><img src="static/stratus.png" alt=""><b>Stratus<span>Server</span></b></a>
+  <span class="pg-sep"></span><span class="pg-title">Health Check</span>
+  <span class="pg-spacer"></span>
+  <span class="pg-chip" id="api-chip"><span class="dot"></span> …</span>
+</nav>
+<main class="pg">
+  <div class="cards" id="cards"></div>
+  <h3 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Capture par CR</h3>
+  <table class="pg"><thead><tr><th>CR</th><th>Ports</th><th>Mission en cours</th><th>Indicatif</th><th>Dernier paquet</th><th>Relais live</th><th>Télémétrie</th></tr></thead><tbody id="sets"></tbody></table>
+  <h3 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:18px">Suivis en cours (relecture / GMTI live)</h3>
+  <table class="pg"><thead><tr><th>Mission</th><th>CR</th><th>Durée</th><th>Paquets</th><th>Pistes</th><th>Abonnés</th><th>Type</th></tr></thead><tbody id="follows"></tbody></table>
+  <pre class="pg" id="raw" style="margin-top:16px;max-height:320px"></pre>
+</main>
+<div class="pg-foot">StratusServer v2 — <span id="ts"></span></div>
+<script src="static/pages.js"></script>
+<script>
+(() => {
+  const { api, dur, size, $ } = window.STX;
+  const card = (t, v, s, st) => `<div class="card"><h3><span class="dot ${st}"></span>${t}</h3><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  async function load() {
+    try {
+      const h = await api("/api/health");
+      const c = h.capture, r = h.replay, m = h.mediamtx, d = h.disk;
+      $("cards").innerHTML =
+        card("Capture", c.ok ? (c.mode || "ok") : "hors ligne", c.ok ? `${c.session_mode || ""} · ${Object.values(c.sets || {}).filter(s => s.mission).length} mission(s) en cours` : (c.error || ""), c.ok ? "ok" : "err") +
+        card("Relecture / API", "ok", `${(r.follows || []).length} suivi(s) actif(s) · ${r.missions} mission(s)`, "ok") +
+        card("Live WebRTC (MediaMTX)", m.ok ? `${m.ready}/${m.paths} flux` : "injoignable", m.ok ? "paths prêts / configurés" : (m.error || ""), m.ok ? (m.ready ? "ok" : "warn") : "err") +
+        card("Disque enregistrements", d ? `${(100 * d.used / d.total).toFixed(0)} %` : "—", d ? `${size(d.free)} libres / ${size(d.total)}` : "", d ? (d.free / d.total < 0.1 ? "err" : d.free / d.total < 0.2 ? "warn" : "ok") : "warn");
+      $("sets").innerHTML = Object.entries(c.sets || {}).map(([cr, s]) => `<tr><td class="mono"><b>${cr}</b></td><td class="mono">${(s.ports || []).join(" + ")}</td><td class="mono">${s.mission ? '<span class="tag live">● ' + s.mission + "</span>" : '<span class="tag">—</span>'}</td><td class="mono">${s.callsign || ""}</td><td class="mono">${s.idle_s != null ? s.idle_s + " s" : "—"}</td><td class="mono">${s.relay ? `udp/${s.relay.port} · ${s.relay.pkts} pkts` : "off"}</td><td class="mono">${(h.klv || {})[cr] ? `${(h.klv[cr].age_s ?? "?")} s` : "—"}</td></tr>`).join("") || '<tr><td colspan="7" class="mono" style="color:var(--muted)">capture injoignable</td></tr>';
+      $("follows").innerHTML = (r.follows || []).map(f => `<tr><td class="mono">${f.mission}</td><td class="mono">${f.cr || ""}</td><td class="mono">${dur(f.duration)}</td><td class="mono">${f.n_packets}</td><td class="mono">${f.tracks}</td><td class="mono">${f.gmti_subscribers}</td><td>${f.system ? '<span class="tag open">système</span>' : '<span class="tag">visionneur</span>'}</td></tr>`).join("") || '<tr><td colspan="7" class="mono" style="color:var(--muted)">aucun</td></tr>';
+      $("raw").textContent = JSON.stringify(h, null, 1); $("ts").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+    } catch (e) { $("cards").innerHTML = card("API", "hors ligne", e.message, "err"); }
+  }
+  load(); setInterval(load, 5000);
+})();
+</script>
+</body>
+</html>

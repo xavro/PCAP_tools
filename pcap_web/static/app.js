@@ -17,8 +17,13 @@
   if (BASE !== "/") {
     const fav = $("favicon"); if (fav) fav.href = BASE + "../static/images/favicon.ico";   // favicon StratusServer
     const logo = document.querySelector(".stx-drawer-head img"); if (logo) { logo.onerror = () => { logo.onerror = null; logo.src = U("static/stratus.png"); }; logo.src = BASE + "../static/images/Stratus%20Server.png"; }
+  }
+  {                                                   // tiroir toujours disponible : pages v2 (racine) ou pages du serveur parent (/console/)
     const burger = $("stx-burger"), drawer = $("stx-drawer"), backdrop = $("stx-backdrop");
     burger.hidden = false;
+    const root = BASE === "/" ? "" : "../";
+    drawer.querySelectorAll("a[data-page]").forEach(a => { const k = a.dataset.page; a.href = k === "console" ? "./" : (k === "missions" ? (BASE === "/" ? "missions" : "../") : root + ({ docs: "api/docs", health: "health" }[k])); });
+    drawer.querySelectorAll(".stx-drawer-foot a[data-api]").forEach(a => { a.href = root + a.dataset.api; });
     const open = on => { drawer.classList.toggle("open", on); backdrop.hidden = !on; burger.setAttribute("aria-expanded", on ? "true" : "false"); drawer.setAttribute("aria-hidden", on ? "false" : "true"); };
     burger.addEventListener("click", () => open(!drawer.classList.contains("open")));
     $("stx-close").addEventListener("click", () => open(false)); backdrop.addEventListener("click", () => open(false));
