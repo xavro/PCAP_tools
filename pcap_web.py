@@ -855,6 +855,71 @@ def mission_details(name):
             "flows": meta.get("flows") or {}, "total_size_mb": round(sum(os.path.getsize(p) for p in pcaps) / 1e6, 1)}
 
 
+# ── Snaps (passerelle fichiers MASTER MISSION, contrat du v1 : widget ExB snaps-import) ─────────
+MISSIONS_PATH = os.getenv("MISSIONS_PATH", "").strip()
+SNAPS_SUBDIR = os.getenv("SNAPS_SUBDIR", "3-Production/1-Snaps").strip().strip("/")
+SNAPS_PROCESSED_SUBDIR = os.getenv("SNAPS_PROCESSED_SUBDIR", "3-Production/1-Snaps/snaps_traités").strip().strip("/")
+SNAPS_EXT = (".jpg", ".jpeg", ".png")
+_SNAPS_DIR_CACHE = {}
+
+
+def snaps_mission_dir(label):
+    """Dossier MASTER d'une mission : <racine>/<label> ou <racine>/*/*/<label> (année/mois), sous la racine."""
+    import glob
+    if not MISSIONS_PATH:
+        raise ValueError("MISSIONS_PATH non configuré")
+    if not label or "/" in label or "\\" in label or ".." in label:
+        raise ValueError("label mission invalide")
+    c = _SNAPS_DIR_CACHE.get(label)
+    if c and os.path.isdir(c):
+        return c
+    root = os.path.realpath(MISSIONS_PATH)
+    direct = os.path.join(root, label)
+    cands = [direct] if os.path.isdir(direct) else [p for p in glob.glob(os.path.join(glob.escape(root), "*", "*", glob.escape(label))) if os.path.isdir(p)]
+    if not cands:
+        raise FileNotFoundError("dossier mission introuvable sous la racine missions : %s" % label)
+    d = os.path.realpath(sorted(cands)[0])
+    if not d.startswith(root + os.sep):
+        raise ValueError("accès refusé")
+    _SNAPS_DIR_CACHE[label] = d
+    return d
+
+
+def snaps_file(label, filename, processed=False):
+    if not filename or "/" in filename or "\\" in filename or ".." in filename or not filename.lower().endswith(SNAPS_EXT):
+        raise ValueError("nom de fichier invalide")
+    d = os.path.join(snaps_mission_dir(label), SNAPS_PROCESSED_SUBDIR if processed else SNAPS_SUBDIR)
+    return os.path.join(d, filename)
+
+
+def snaps_list(label):
+    d = os.path.join(snaps_mission_dir(label), SNAPS_SUBDIR)
+    if not os.path.isdir(d):
+        return {"mission_name": label, "folder_exists": False, "files": []}
+    files = []
+    for n in sorted(os.listdir(d)):
+        p = os.path.join(d, n)
+        if n.lower().endswith(SNAPS_EXT) and os.path.isfile(p):
+            st = os.stat(p)
+            files.append({"filename": n, "size": st.st_size, "modified": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(st.st_mtime))})
+    return {"mission_name": label, "folder_exists": True, "files": files}
+
+
+def snaps_archive(label, filename):
+    """Déplace 1-Snaps/<f> vers snaps_traités/<f> (suffixe _vN en cas de collision)."""
+    import shutil
+    src = snaps_file(label, filename)
+    if not os.path.isfile(src):
+        raise FileNotFoundError("snap introuvable : %s" % filename)
+    dst_dir = os.path.join(snaps_mission_dir(label), SNAPS_PROCESSED_SUBDIR)
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, filename); base, ext = os.path.splitext(filename); v = 1
+    while os.path.exists(dst):
+        dst = os.path.join(dst_dir, "%s_v%d%s" % (base, v, ext)); v += 1
+    shutil.move(src, dst)
+    return {"mission_name": label, "filename": filename, "archived_as": os.path.basename(dst)}
+
+
 def coverage_bands(times, max_gap, t0=0.0):
     """Plages [[début, fin] relatifs à t0] de présence d'un flux : instants triés, une coupure dès
     qu'un trou dépasse max_gap s (réception vidéo 4609 ≈ continue ; dwells radar 4607 par passes)."""
@@ -2691,7 +2756,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _err(self, code, msg):
-        self._json({"error": msg}, code)
+        self._json({"error": msg, "detail": msg}, code)
 
     def _pcap(self, q):
         p = q.get("pcap", [self.default_pcap or ""])[0]
@@ -2738,6 +2803,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html")
             if u.path in ("/replay", "/replay.html"):             # page opérateur (carte + vidéo + barre de temps)
                 return self._static("replay.html")
+            m_ = re.match(r"^/api/snaps/([^/]+)/(list|file/([^/]+))$", u.path)
+            if m_:
+                label = urllib.parse.unquote(m_.group(1))
+                if m_.group(2) == "list":
+                    return self._json(snaps_list(label))
+                p = snaps_file(label, urllib.parse.unquote(m_.group(3)))
+                if not os.path.isfile(p):
+                    raise FileNotFoundError("snap introuvable")
+                with open(p, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png" if p.lower().endswith(".png") else "image/jpeg")
+                self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-cache")
+                self.send_header("Access-Control-Allow-Origin", "*"); self.send_header("Access-Control-Expose-Headers", "*")
+                self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/missions":
                 fl = lambda k: (float(q[k][0]) if q.get(k, [""])[0] else None)
                 return self._json({"missions": missions_list(q.get("cr", [None])[0], q.get("callsign", [None])[0], fl("from"), fl("to"), q.get("day", [None])[0])})
@@ -2948,6 +3028,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     eng.set_gmti_profile(body.get("profile"), body.get("overrides"), bool(body.get("reset")))
                 return self._json({"port": eng.cr, "profile": eng.gmti_profile, "overrides": eng.gmti_overrides})
+            m_ = re.match(r"^/api/snaps/([^/]+)/processed/([^/]+)$", u.path)
+            if m_:
+                return self._json(snaps_archive(urllib.parse.unquote(m_.group(1)), urllib.parse.unquote(m_.group(2))))
             if u.path == "/api/follow/stop":
                 # Un visionneur qui part ne coupe pas les autres : le moteur s'arrête seul sans client (reaper) ;
                 # force=true = arrêt immédiat (console d'analyse).
