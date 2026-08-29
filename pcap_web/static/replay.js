@@ -147,11 +147,13 @@
   });
   // ══ Captures SNAP : image + métadonnées à l'instant courant → PNG + slide PowerPoint ; lane « snaps » ; agent poste ══
   const sPanel = $("snap-panel"), sMenu = $("snap-menu"), sMsg = $("snap-msg"), sDesc = $("snap-desc"), sAgent = $("snap-agent"), sGo = $("snap-go");
-  sAgent.checked = localStorage.getItem("op.snapAgent") === "1";
+  sAgent.checked = localStorage.getItem("op.snapAgent") !== "0";                 // coché par défaut (agent poste StratusSnap)
   sAgent.addEventListener("change", () => localStorage.setItem("op.snapAgent", sAgent.checked ? "1" : "0"));
   const setSMsg = (text, cls) => { sMsg.textContent = ""; sMsg.className = "muted " + (cls || ""); if (typeof text === "string") sMsg.textContent = text; else sMsg.appendChild(text); };
   const agentUrl = (m, id) => `stratus-snap://capture?server=${encodeURIComponent(location.origin)}&mission=${encodeURIComponent(m)}&id=${encodeURIComponent(id)}`;
-  const callAgent = (m, id) => { try { const f = document.createElement("iframe"); f.style.display = "none"; f.src = agentUrl(m, id); document.body.appendChild(f); setTimeout(() => f.remove(), 3000); } catch (e) { /* protocole non enregistré : rien */ } };
+  // Lancement de l'agent poste par le protocole stratus-snap:// (location.assign : la page reste affichée ; sans
+  // agent enregistré, le navigateur ignore ou signale « aucune application »).
+  const callAgent = (m, id) => { try { window.location.assign(agentUrl(m, id)); } catch (e) { /* protocole non enregistré */ } };
   async function refreshSnaps() {
     const m = mission(); const pb = pbOf(); if (!m || !pb || !pb.tl) return;
     try { const r = await fetch(`api/captures/${encodeURIComponent(m)}/list`); const j = await r.json(); if (r.ok && j.captures) { pb.tl.captures = j.captures; if (op().redraw) op().redraw(); } } catch (e) { /* silencieux */ }
