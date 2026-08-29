@@ -3622,6 +3622,14 @@ class Handler(BaseHTTPRequestHandler):
             self._err(400, str(e))
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
             self.close_connection = True
+        except Exception as e:                                     # erreur interne : réponse JSON (sinon nginx renvoie 502)
+            import traceback; traceback.print_exc()
+            try:
+                self._err(500, "%s : %s" % (type(e).__name__, e))
+            except Exception:
+                self.close_connection = True
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
 
     def do_PUT(self):
         return self.do_POST()
@@ -3719,6 +3727,14 @@ class Handler(BaseHTTPRequestHandler):
             self._err(404, "route inconnue")
         except (FileNotFoundError, ValueError) as e:
             self._err(400, str(e))
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
+        except Exception as e:                                     # erreur interne : réponse JSON (sinon nginx renvoie 502)
+            import traceback; traceback.print_exc()
+            try:
+                self._err(500, "%s : %s" % (type(e).__name__, e))
+            except Exception:
+                self.close_connection = True
 
     # ── WebSocket ─────────────────────────────────────────────────────────
     def _ws_handshake(self):
