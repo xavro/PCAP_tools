@@ -146,9 +146,7 @@
     } catch (e) { setMsg("erreur : " + e.message, "err"); go.disabled = false; }
   });
   // ══ Captures SNAP : image + métadonnées à l'instant courant → PNG + slide PowerPoint ; lane « snaps » ; agent poste ══
-  const sPanel = $("snap-panel"), sMenu = $("snap-menu"), sMsg = $("snap-msg"), sDesc = $("snap-desc"), sAgent = $("snap-agent"), sGo = $("snap-go");
-  sAgent.checked = localStorage.getItem("op.snapAgent") !== "0";                 // coché par défaut (agent poste StratusSnap)
-  sAgent.addEventListener("change", () => localStorage.setItem("op.snapAgent", sAgent.checked ? "1" : "0"));
+  const sPanel = $("snap-panel"), sMenu = $("snap-menu"), sMsg = $("snap-msg"), sDesc = $("snap-desc"), sGo = $("snap-go");
   const setSMsg = (text, cls) => { sMsg.textContent = ""; sMsg.className = "muted " + (cls || ""); if (typeof text === "string") sMsg.textContent = text; else sMsg.appendChild(text); };
   const agentUrl = (m, id) => `stratus-snap://capture?server=${encodeURIComponent(location.origin)}&mission=${encodeURIComponent(m)}&id=${encodeURIComponent(id)}`;
   // Lancement de l'agent poste par le protocole stratus-snap:// (location.assign : la page reste affichée ; sans
@@ -169,7 +167,7 @@
   sGo.addEventListener("click", async () => {
     const pb = pbOf(); const m = mission(); const t0 = tlT0(); if (!m || !t0) return;
     const t = t0 + pb.t; const st = op().state; const dport = st && st.cur ? st.cur.dport : null;
-    sGo.disabled = true; setSMsg("capture en cours…"); if (!pb.paused && op().pause) op().pause(true);
+    sGo.disabled = true; setSMsg("capture en cours…");                     // la lecture continue : l'instant capturé est celui du clic
     try {
       const r = await fetch("api/captures/snap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mission: m, t_utc: t, description: sDesc.value.trim() || null, dport }) });
       const j = await r.json(); if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
@@ -179,7 +177,7 @@
       span.append(" · "); const b = document.createElement("a"); b.href = `api/captures/${encodeURIComponent(m)}/deck.pptx`; b.textContent = "deck PPTX"; span.appendChild(b);
       if (j.deck_error) span.append(` · deck : ${j.deck_error}`);
       setSMsg(span, "ok"); sDesc.value = "";
-      if (sAgent.checked) callAgent(m, j.id);
+      callAgent(m, j.id);                                                  // agent poste StratusSnap (PowerPoint ouvert) — sans effet s'il n'est pas installé
       await refreshSnaps();
     } catch (e) { setSMsg("erreur : " + e.message, "err"); }
     sGo.disabled = false;
