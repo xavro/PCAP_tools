@@ -2964,7 +2964,7 @@ def _snap_frame_and_klv(eng, st, t_utc, png_path):
     Le TS de [t_utc − 4 s, t_utc + 0,15 s] est envoyé à ffmpeg (-update 1 : la dernière image écrite reste)."""
     if not FFMPEG:
         raise RuntimeError("ffmpeg indisponible : capture d'image impossible")
-    t_a = max((st.t0 or t_utc) - 0.001, t_utc - 4.0); t_b = t_utc + 0.15
+    t_a = max((st.t0 or t_utc) - 0.001, t_utc - 3.0); t_b = t_utc + 0.15
     seg_no, off, _cum = st.locate_time(t_a)
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-fflags", "+genpts+discardcorrupt", "-f", "mpegts", "-i", "pipe:0",
            "-an", "-sn", "-dn", "-map", "0:v:0", "-vsync", "0", "-update", "1", "-frames:v", "100000", "-y", png_path]
@@ -3039,24 +3039,43 @@ def snap_capture(mission, t_utc, description=None, dport=None, snaps_label=None)
         try:
             import snap_pptx
             meta["mgrs_fmt"] = snap_pptx.fmt_mgrs(mgrs)
-            values = dict(meta, ts=ts_klv or t_utc)
-            deck = os.path.join(d, "%s_SNAPS.pptx" % mission)
-            meta["slide"] = snap_pptx.append_capture(deck, SNAP_TEMPLATE, png, values); meta["deck"] = os.path.basename(deck)
-        except Exception as e:
-            meta["deck_error"] = str(e); print("[captures] %s : deck PPTX : %s" % (mission, e))
-        if SNAPS_EXPORT and snaps_label:
-            try:
-                sd = os.path.join(snaps_mission_dir(snaps_label), SNAPS_SUBDIR)
-                os.makedirs(sd, exist_ok=True)
-                name = "%s_DR_%sZ_SNAP_%s%s.png" % (time.strftime("%y%m%d", time.gmtime(t_utc)), time.strftime("%H%M", time.gmtime(t_utc)), mgrs or "NOFIX",
-                                                    ("_" + re.sub(r"[^\w\-]+", "_", description).strip("_")) if description else "")
-                shutil.copyfile(png, os.path.join(sd, name)); meta["share_png"] = name
-            except Exception as e:
-                meta["share_error"] = str(e); print("[captures] %s : partage snaps : %s" % (mission, e))
+        except Exception:
+            pass
+        meta["deck"] = "%s_SNAPS.pptx" % mission; meta["pending"] = True
         with open(os.path.join(d, cid + ".json"), "w", encoding="utf-8") as fh:
             json.dump(meta, fh, ensure_ascii=False, indent=1)
-    print("[captures] %s : %s  %s  MGRS %s  slide %s" % (mission, cid, time.strftime("%H:%M:%SZ", time.gmtime(t_utc)), mgrs, meta.get("slide")))
+    print("[captures] %s : %s  %s  MGRS %s" % (mission, cid, time.strftime("%H:%M:%SZ", time.gmtime(t_utc)), mgrs))
+    # Deck PowerPoint serveur et copie dans le partage : en arrière-plan (la réponse — et l'agent poste — n'attendent
+    # que le PNG et la fiche) ; la fiche est réécrite à la fin (slide, share_png, erreurs éventuelles).
+    threading.Thread(target=_snap_finish, args=(d, cid, dict(meta), png, ts_klv or t_utc, snaps_label), daemon=True, name="snap-" + cid).start()
     return meta
+
+
+def _snap_finish(d, cid, meta, png, ts, snaps_label):
+    mission, mgrs, description, t_utc = meta["mission"], meta.get("mgrs"), meta.get("description") or "", meta["t_utc"]
+    try:
+        import snap_pptx
+        deck = os.path.join(d, "%s_SNAPS.pptx" % mission)
+        meta["slide"] = snap_pptx.append_capture(deck, SNAP_TEMPLATE, png, dict(meta, ts=ts))
+    except Exception as e:
+        meta["deck_error"] = str(e); print("[captures] %s : deck PPTX : %s" % (mission, e))
+    if SNAPS_EXPORT and snaps_label:
+        try:
+            sd = os.path.join(snaps_mission_dir(snaps_label), SNAPS_SUBDIR)
+            os.makedirs(sd, exist_ok=True)
+            name = "%s_DR_%sZ_SNAP_%s%s.png" % (time.strftime("%y%m%d", time.gmtime(t_utc)), time.strftime("%H%M", time.gmtime(t_utc)), mgrs or "NOFIX",
+                                                ("_" + re.sub(r"[^\w\-]+", "_", description).strip("_")) if description else "")
+            shutil.copyfile(png, os.path.join(sd, name)); meta["share_png"] = name
+        except Exception as e:
+            meta["share_error"] = str(e); print("[captures] %s : partage snaps : %s" % (mission, e))
+    meta["pending"] = False
+    try:
+        with CAPTURES_LOCK:
+            with open(os.path.join(d, cid + ".json"), "w", encoding="utf-8") as fh:
+                json.dump(meta, fh, ensure_ascii=False, indent=1)
+    except Exception as e:
+        print("[captures] %s : fiche %s : %s" % (mission, cid, e))
+    print("[captures] %s : %s  slide %s%s" % (mission, cid, meta.get("slide"), (" · partage " + meta["share_png"]) if meta.get("share_png") else ""))
 
 
 def capture_delete(mission, cid):
