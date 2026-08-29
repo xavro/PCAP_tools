@@ -2897,12 +2897,8 @@ class ThumbWorker:
                         break
             except (OSError, ValueError) as e:                 # ffmpeg terminé avant la fin du flux (erreur) : on lit sa sortie
                 feed_err = e
-            try:
-                proc.stdin.close()
-            except (OSError, ValueError):
-                pass
-            try:
-                _o, err = proc.communicate(timeout=300)
+            try:                                               # communicate() vide et ferme stdin lui-même (ne pas le fermer avant :
+                _o, err = proc.communicate(timeout=300)        # sous Linux il fait stdin.flush() → ValueError « flush of closed file »)
             except subprocess.TimeoutExpired:
                 proc.kill(); err = b"timeout"
             if feed_err is not None and proc.returncode == 0 and not os.path.isfile(tmp):
