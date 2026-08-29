@@ -2882,30 +2882,33 @@ class ThumbWorker:
         os.makedirs(self.dir, exist_ok=True)
         fname = "sprite_%03d.jpg" % k; out = os.path.join(self.dir, fname); tmp = out + ".part.jpg"
         vf = "fps=1/%g,scale=%d:%d,tile=%dx%d" % (THUMB_INTERVAL_S, THUMB_W, THUMB_H, THUMB_COLS, THUMB_ROWS)
-        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-skip_frame", "nokey", "-fflags", "+genpts+discardcorrupt",
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-skip_frame", "nokey", "-fflags", "+genpts+discardcorrupt",
                "-f", "mpegts", "-i", "pipe:0", "-an", "-sn", "-dn", "-map", "0:v:0", "-vf", vf, "-frames:v", "1", "-q:v", "4", "-y", tmp]
         t_start = time.time()
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.busy = True
         try:
             seg_no, off, _cum = st.locate_time(t_a)
+            fed = 0; feed_err = None
             try:
                 for chunk in eng.iter_ts(st, seg_no, off, 0, t_min=t_a, t_max=t_b):
-                    proc.stdin.write(chunk)
+                    proc.stdin.write(chunk); fed += len(chunk)
                     if eng.stop_event.is_set():
                         break
-            except (BrokenPipeError, OSError):
-                pass
+            except (OSError, ValueError) as e:                 # ffmpeg terminé avant la fin du flux (erreur) : on lit sa sortie
+                feed_err = e
             try:
                 proc.stdin.close()
-            except OSError:
+            except (OSError, ValueError):
                 pass
             try:
                 _o, err = proc.communicate(timeout=300)
             except subprocess.TimeoutExpired:
                 proc.kill(); err = b"timeout"
+            if feed_err is not None and proc.returncode == 0 and not os.path.isfile(tmp):
+                err = (err or b"") + (" | écriture : %s (%d octets envoyés)" % (feed_err, fed)).encode()
             if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1000:
-                self.error = "ffmpeg (code %s) : %s" % (proc.returncode, (err or b"").decode("utf-8", "replace").strip()[-300:])
+                self.error = "ffmpeg (code %s, %d octets envoyés) : %s" % (proc.returncode, fed, (err or b"").decode("utf-8", "replace").strip()[-400:] or "(aucun message)")
                 print("[thumbs] %s sprite %d : %s" % (self.mission, k, self.error))
                 if os.path.isfile(tmp):
                     os.remove(tmp)
