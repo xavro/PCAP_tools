@@ -26,6 +26,7 @@
     <button id="btn-edge" class="accent" hidden title="revenir au direct (L)">⟫ Direct</button>
     <button id="btn-stop" class="danger" title="arrêter">■</button>
     <button id="btn-clip" title="extraire un clip (.ts) entre deux instants">✂ Clip</button>
+    <button id="btn-snap" title="capture SNAP : image + métadonnées à l'instant courant → PNG + slide PowerPoint (S)">📸 Snap</button>
     <select id="speed" title="vitesse de lecture">
       <option value="1">×1</option><option value="2">×2</option><option value="4">×4</option><option value="8">×8</option>
     </select>
@@ -55,6 +56,26 @@
       <button id="clip-go" class="accent" disabled>✂ Extraire</button>
       <button id="clip-close">Fermer</button>
     </div>
+  </div>
+  <div id="snap-panel" hidden>
+    <div class="cp-title">📸 Capture SNAP <span class="muted">— image à l'instant courant + métadonnées KLV (MGRS, altitude, cap) → PNG + slide PowerPoint</span></div>
+    <div class="cp-row">
+      <span class="cp-dur">instant <b id="snap-t">—</b></span>
+      <label>description <input id="snap-desc" placeholder="ex. HANGAR NORD (optionnel)" maxlength="120" autocomplete="off" style="width:260px"></label>
+      <label class="chk" title="insère aussi la slide dans le PowerPoint ouvert sur ce poste (agent StratusSnap)"><input type="checkbox" id="snap-agent"> PowerPoint du poste</label>
+      <span class="spacer"></span>
+      <span id="snap-msg" class="muted"></span>
+      <button id="snap-go" class="accent">📸 Capturer</button>
+      <button id="snap-close">Fermer</button>
+    </div>
+  </div>
+  <div id="snap-menu" hidden>
+    <div class="cm-title" id="sm-title"></div>
+    <button data-act="seek">▶ Aller à l'instant</button>
+    <button data-act="png">⬇ Image (.png)</button>
+    <button data-act="deck">⬇ Deck PowerPoint de la mission</button>
+    <button data-act="agent">▣ Insérer dans le PowerPoint du poste</button>
+    <button data-act="del" class="danger">✕ Supprimer</button>
   </div>
   <div id="clip-menu" hidden>
     <div class="cm-title" id="cm-title"></div>
@@ -91,7 +112,7 @@
   </main>
 
   <footer id="op-tl">
-    <canvas id="timeline" height="110" title=""></canvas>
+    <canvas id="timeline" height="124" title=""></canvas>
     <div id="tl-preview" hidden><canvas width="160" height="90"></canvas><div id="tl-preview-t">—</div></div>
     <div id="tl-info">
       <span>mission UTC <b id="tl-mutc">—</b></span>

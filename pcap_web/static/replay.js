@@ -145,6 +145,69 @@
       await refreshClips();
     } catch (e) { setMsg("erreur : " + e.message, "err"); go.disabled = false; }
   });
+  // ══ Captures SNAP : image + métadonnées à l'instant courant → PNG + slide PowerPoint ; lane « snaps » ; agent poste ══
+  const sPanel = $("snap-panel"), sMenu = $("snap-menu"), sMsg = $("snap-msg"), sDesc = $("snap-desc"), sAgent = $("snap-agent"), sGo = $("snap-go");
+  sAgent.checked = localStorage.getItem("op.snapAgent") === "1";
+  sAgent.addEventListener("change", () => localStorage.setItem("op.snapAgent", sAgent.checked ? "1" : "0"));
+  const setSMsg = (text, cls) => { sMsg.textContent = ""; sMsg.className = "muted " + (cls || ""); if (typeof text === "string") sMsg.textContent = text; else sMsg.appendChild(text); };
+  const agentUrl = (m, id) => `stratus-snap://capture?server=${encodeURIComponent(location.origin)}&mission=${encodeURIComponent(m)}&id=${encodeURIComponent(id)}`;
+  const callAgent = (m, id) => { try { const f = document.createElement("iframe"); f.style.display = "none"; f.src = agentUrl(m, id); document.body.appendChild(f); setTimeout(() => f.remove(), 3000); } catch (e) { /* protocole non enregistré : rien */ } };
+  async function refreshSnaps() {
+    const m = mission(); const pb = pbOf(); if (!m || !pb || !pb.tl) return;
+    try { const r = await fetch(`api/captures/${encodeURIComponent(m)}/list`); const j = await r.json(); if (r.ok && j.captures) { pb.tl.captures = j.captures; if (op().redraw) op().redraw(); } } catch (e) { /* silencieux */ }
+  }
+  setInterval(refreshSnaps, 30000);
+  const openSnap = () => { const pb = pbOf(); if (!tlT0()) return; sPanel.hidden = false; $("btn-snap").classList.add("on"); $("snap-t").textContent = hms(tlT0() + pb.t) + "Z"; setSMsg(""); sDesc.focus(); };
+  const closeSnap = () => { sPanel.hidden = true; $("btn-snap").classList.remove("on"); };
+  $("btn-snap").addEventListener("click", () => sPanel.hidden ? openSnap() : closeSnap());
+  $("snap-close").addEventListener("click", closeSnap);
+  setInterval(() => { if (!sPanel.hidden && tlT0()) $("snap-t").textContent = hms(tlT0() + pbOf().t) + "Z"; }, 500);
+  document.addEventListener("keydown", e => { if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return; if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.altKey && window.__op && tlT0()) { e.preventDefault(); if (sPanel.hidden) openSnap(); } });
+  sDesc.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sGo.click(); } });
+  sGo.addEventListener("click", async () => {
+    const pb = pbOf(); const m = mission(); const t0 = tlT0(); if (!m || !t0) return;
+    const t = t0 + pb.t; const st = op().state; const dport = st && st.cur ? st.cur.dport : null;
+    sGo.disabled = true; setSMsg("capture en cours…"); if (!pb.paused && op().pause) op().pause(true);
+    try {
+      const r = await fetch("api/captures/snap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mission: m, t_utc: t, description: sDesc.value.trim() || null, dport }) });
+      const j = await r.json(); if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
+      const span = document.createElement("span");
+      span.append(`✔ ${hms(j.t_klv || j.t_utc)}Z · ${j.mgrs_fmt || "sans position"}${j.slide ? " · slide " + j.slide : ""}${j.share_png ? " · partage ✓" : ""} — `);
+      const a = document.createElement("a"); a.href = `api/captures/${encodeURIComponent(m)}/${encodeURIComponent(j.png)}?download=1`; a.textContent = "PNG"; span.appendChild(a);
+      span.append(" · "); const b = document.createElement("a"); b.href = `api/captures/${encodeURIComponent(m)}/deck.pptx`; b.textContent = "deck PPTX"; span.appendChild(b);
+      if (j.deck_error) span.append(` · deck : ${j.deck_error}`);
+      setSMsg(span, "ok"); sDesc.value = "";
+      if (sAgent.checked) callAgent(m, j.id);
+      await refreshSnaps();
+    } catch (e) { setSMsg("erreur : " + e.message, "err"); }
+    sGo.disabled = false;
+  });
+  let sCur = null, sDel = false;
+  const hideSMenu = () => { sMenu.hidden = true; sCur = null; sDel = false; sMenu.querySelector('[data-act="del"]').textContent = "✕ Supprimer"; };
+  tl.addEventListener("contextmenu", ev => {
+    const c = op() && op().snapAt(ev); if (!c) return;
+    ev.preventDefault(); ev.stopImmediatePropagation(); sCur = c; sDel = false;
+    $("sm-title").textContent = `📸 ${hms(c.t_utc)}Z${c.description ? " · " + c.description : ""}${c.mgrs_fmt ? " · " + c.mgrs_fmt : ""}`;
+    sMenu.hidden = false; const r = sMenu.getBoundingClientRect();
+    sMenu.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 8) + "px"; sMenu.style.top = Math.max(8, ev.clientY - r.height - 8) + "px";
+  }, true);
+  document.addEventListener("mousedown", ev => { if (!sMenu.hidden && !sMenu.contains(ev.target)) hideSMenu(); });
+  document.addEventListener("keydown", ev => { if (ev.key === "Escape") { hideSMenu(); if (!sPanel.hidden) closeSnap(); } });
+  sMenu.addEventListener("click", async ev => {
+    const b = ev.target.closest("button"); if (!b || !sCur) return;
+    const m = mission(); const act = b.dataset.act;
+    if (act === "seek") { op().seek(sCur.t_utc - (tlT0() || 0)); hideSMenu(); }
+    else if (act === "png") { window.open(`api/captures/${encodeURIComponent(m)}/${encodeURIComponent(sCur.png)}?download=1`, "_blank"); hideSMenu(); }
+    else if (act === "deck") { window.open(`api/captures/${encodeURIComponent(m)}/deck.pptx`, "_blank"); hideSMenu(); }
+    else if (act === "agent") { callAgent(m, sCur.id); hideSMenu(); }
+    else if (act === "del") {
+      if (!sDel) { sDel = true; b.textContent = "✕ Confirmer la suppression (la slide du deck est conservée)"; return; }
+      try { const r = await fetch(`api/captures/${encodeURIComponent(m)}/${encodeURIComponent(sCur.id)}/delete`, { method: "POST" }); const j = await r.json(); if (!r.ok || j.error) throw new Error(j.error || r.status); }
+      catch (e) { $("status").textContent = "suppression impossible : " + e.message; }
+      hideSMenu(); refreshSnaps();
+    }
+  });
+
   // ── menu contextuel sur un clip de la barre de temps ──
   let cur = null, delArmed = false;
   const hideMenu = () => { menu.hidden = true; cur = null; delArmed = false; menu.querySelector('[data-act="del"]').textContent = "✕ Supprimer"; };

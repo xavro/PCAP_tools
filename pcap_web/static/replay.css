@@ -25,7 +25,7 @@ body.operator { background: var(--bg); }
 #video-col .hud { position: absolute; right: 8px; top: 8px; font-family: var(--mono); font-size: 11px; color: var(--fg); background: rgba(0,0,0,.45); padding: 3px 6px; border-radius: 4px; pointer-events: none; white-space: pre; }
 
 #op-tl { border-top: 1px solid var(--border); background: var(--panel); padding: 6px 12px 4px; }
-#op-tl #timeline { width: 100%; height: 110px; display: block; cursor: pointer; }
+#op-tl #timeline { width: 100%; height: 124px; display: block; cursor: pointer; }
 /* ── vignette de prévisualisation au survol de la barre de temps (sprites générés par le serveur) ── */
 #tl-preview { position: fixed; z-index: 1200; transform: translateX(-50%); background: #0e1216; border: 2px solid var(--accent); border-radius: 6px; padding: 3px; pointer-events: none; box-shadow: 0 6px 18px rgba(0,0,0,.6); }
 #tl-preview canvas { display: block; width: 160px; height: 90px; background: #000; border-radius: 3px; }
@@ -41,6 +41,17 @@ body.operator { background: var(--bg); }
 #clip-panel .spacer { flex: 1; }
 #clip-panel #clip-msg { font-family: var(--mono); font-size: 12px; max-width: 420px; } #clip-panel #clip-msg.err { color: var(--danger); } #clip-panel #clip-msg.ok { color: var(--ok); }
 #clip-panel #clip-msg a { color: var(--accent); }
+#snap-panel { position: absolute; left: 10px; top: 46px; z-index: 1100; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 8px; min-width: 720px; }
+#snap-panel .cp-title { font-weight: 600; } #snap-panel .cp-title .muted { font-weight: 400; font-size: 12px; }
+#snap-panel .cp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#snap-panel label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+#snap-panel .cp-dur b { font-family: var(--mono); color: var(--fg); } #snap-panel .spacer { flex: 1; }
+#snap-panel #snap-msg { font-family: var(--mono); font-size: 12px; max-width: 460px; } #snap-panel #snap-msg.err { color: var(--danger); } #snap-panel #snap-msg.ok { color: var(--ok); } #snap-panel #snap-msg a { color: var(--accent); }
+#snap-menu { position: fixed; z-index: 1150; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: flex; flex-direction: column; min-width: 240px; }
+#snap-menu .cm-title { font-family: var(--mono); font-size: 11px; color: #ff9f43; padding: 4px 8px 6px; border-bottom: 1px solid var(--border); margin-bottom: 3px; white-space: nowrap; }
+#snap-menu button { text-align: left; background: transparent; border: 0; padding: 6px 8px; border-radius: 5px; }
+#snap-menu button:hover { background: var(--panel2); } #snap-menu button.danger { color: var(--danger); }
+#op-bar #btn-snap.on { border-color: #ff9f43; color: #ff9f43; }
 #clip-menu { position: fixed; z-index: 1150; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: flex; flex-direction: column; min-width: 220px; }
 #clip-menu .cm-title { font-family: var(--mono); font-size: 11px; color: #bb86fc; padding: 4px 8px 6px; border-bottom: 1px solid var(--border); margin-bottom: 3px; white-space: nowrap; }
 #clip-menu button { text-align: left; background: transparent; border: 0; padding: 6px 8px; border-radius: 5px; }

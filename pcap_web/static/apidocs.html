@@ -34,6 +34,7 @@
       <span><i>↝</i> GPX / trace GeoJSON</span>
       <span><i>✂</i> Clips .ts (avec / sans KLV)</span>
       <span><i>▣</i> Vignettes (survol de la barre)</span>
+      <span><i>📸</i> Captures SNAP → PowerPoint</span>
       <span><i>▦</i> Import snaps</span>
       <span class="off">HLS / VOD</span>
       <span class="off">SQLite / ZIP / Shapefile</span>
@@ -50,6 +51,7 @@
       <li><a href="#follow">▶ Suivi : relecture, DVR, direct <small>(6 endpoints + WS)</small></a></li>
       <li><a href="#video">▦ Vidéo MPEG-TS <small>(2 endpoints)</small></a></li>
       <li><a href="#clips">✂ Clips <small>(4 endpoints)</small></a></li>
+      <li><a href="#captures">📸 Captures SNAP <small>(5 endpoints)</small></a></li>
       <li><a href="#thumbnails">▣ Vignettes <small>(2 endpoints)</small></a></li>
       <li><a href="#gmti">◎ GMTI STANAG 4607 <small>(7 endpoints + WS)</small></a></li>
       <li><a href="#snaps">▦ Import snaps <small>(3 endpoints)</small></a></li>
@@ -217,6 +219,22 @@ Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniqu
       <div class="ep-body"><p>Supprime le clip et ses sidecars.</p></div></div>
   </section>
 
+  <!-- ───────────── CAPTURES ───────────── -->
+  <section class="doc-section" id="captures">
+    <h2>📸 Captures SNAP <small>stratus2-replay · ffmpeg + python-pptx · {mission}/captures/</small></h2>
+    <p>Image de la vidéo à l'instant demandé (frame exacte, résolution native) + métadonnées KLV à cet instant (centre image → <b>MGRS</b>, altitude capteur et élévation en <b>ft</b>, cap, indicatif, capteur) → <code>{id}.png</code> + <code>{id}.json</code>, slide ajoutée au deck <code>{mission}_SNAPS.pptx</code> (template <code>SNAP_TEMPLATE</code>, forme « ImageSnaps », placeholders <code>{Precision Time Stamp:Date(…)}</code>, <code>{FrameCenter:Geo(MGRS)}</code>, <code>{Sensor True Altitude(…)}</code>, <code>{Frame Center Elevation(…)}</code>, <code>{Platform Heading Angle(…)}</code>, <code>{Platform Designation}</code>, <code>_DESCRIPTION</code>), PNG copié dans le partage MASTER MISSION (<code>yyMMdd_DR_HHmmZ_SNAP_&lt;MGRS&gt;_&lt;desc&gt;.png</code>, <code>SNAPS_EXPORT</code>). Lane « snaps » sur la barre de temps ; l'agent poste <code>stratus-snap://</code> insère la slide dans le PowerPoint ouvert.</p>
+    <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/captures/snap</span><span class="ep-who">page opérateur, widget</span></div>
+      <div class="ep-body"><p>Corps : <code>{"mission","t_utc","description"?,"dport"?,"snaps_label"?}</code> (<code>snaps_label</code> = label de la mission ExB pour le dépôt dans le partage). Réponse : la fiche <code>{id, t_utc, t_klv, png, mgrs, mgrs_fmt, alt_ft, fc_elev_ft, hdg, callsign, sensor, slide, deck, share_png, deck_error?, share_error?}</code>.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/captures/{m}/list</span><span class="ep-who">page opérateur, widget, agent</span></div>
+      <div class="ep-body"><p>Captures de la mission (aussi dans <code>/api/follow/timeline</code>, <code>captures</code>).</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/captures/{m}/{id}.png · {id}.json · deck.pptx</span><span class="ep-who">téléchargement, agent</span></div>
+      <div class="ep-body"><p>Image (<code>?download=1</code> en pièce jointe), fiche, deck PowerPoint de la mission.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/captures/template.pptx</span><span class="ep-who">agent poste</span></div>
+      <div class="ep-body"><p>Template PowerPoint en vigueur (slide 1 = modèle) — l'agent l'utilise pour insérer la slide dans le PowerPoint ouvert.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/captures/{m}/{id}/delete</span><span class="ep-who">page opérateur, widget</span></div>
+      <div class="ep-body"><p>Supprime PNG + fiche (la slide déjà ajoutée au deck est conservée).</p></div></div>
+  </section>
+
   <!-- ───────────── THUMBNAILS ───────────── -->
   <section class="doc-section" id="thumbnails">
     <h2>▣ Vignettes <small>stratus2-replay · ffmpeg · {mission}/thumbnails/</small></h2>
@@ -281,6 +299,8 @@ Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniqu
   mission.json           CR, ports, début / fin UTC, flux, indicatif / tail / Mission ID / plateforme / capteur (KLV), closed
 {recordings}/{mission}/clips/
   {name}.ts · {name}.json · {name}_klv.csv   clips extraits (créneau UTC, avec / sans KLV)
+{recordings}/{mission}/captures/
+  {id}.png · {id}.json · {mission}_SNAPS.pptx   captures SNAP (image + KLV) et deck PowerPoint
 {recordings}/{mission}/thumbnails/
   sprite_NNN.jpg · index.json                 vignettes (10×10 par 1000 s) pour la prévisualisation</pre>
   </section>

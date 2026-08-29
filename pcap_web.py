@@ -2394,6 +2394,7 @@ class FollowEngine:
                 "dwells": list(self.dwells), "dwell_offset": self.dwell_offset, "video": self.video_info(),
                 "tracks": [{"id": r["id"], "air": r["air"], "rot": r["rot"], "hits": r["hits"], "hist": list(r["hist"])} for r in self.tracks.values()],
                 "klv": list(self.klv), "mission": self.mission_name(), "clips": clips_list(self.mission_name()) if self.mission_name() else [],
+                "captures": captures_list(self.mission_name()) if self.mission_name() else [],
                 "follow": True, "catching_up": self.catching_up, "seq": {"cot": len(self.cot), "dw": len(self.dwells), "tr": len(self.track_rows), "k": len(self.klv)}}
 
     def mission_name(self):
@@ -2917,6 +2918,160 @@ class ThumbWorker:
             self.busy = False
 
 
+# ── Captures SNAP : image de la vidéo à l'instant t + métadonnées KLV → PNG/JSON + slide PowerPoint (template) ──
+SNAP_TEMPLATE = os.getenv("SNAP_TEMPLATE", "/data/templates/Template.pptx")
+SNAPS_EXPORT = os.getenv("SNAPS_EXPORT", "1") not in ("0", "false", "no")     # copie du PNG dans le partage MASTER MISSION
+CAPTURES_LOCK = threading.Lock()
+FT_PER_M = 3.280839895
+
+
+def captures_dir(mission):
+    if not mission or "/" in mission or "\\" in mission or ".." in mission:
+        raise ValueError("nom de mission invalide")
+    if not CAPTURES_DIR or not os.path.isdir(os.path.join(CAPTURES_DIR, mission)):
+        raise FileNotFoundError("mission introuvable : %s" % mission)
+    return os.path.join(CAPTURES_DIR, mission, "captures")
+
+
+def captures_list(mission):
+    try:
+        d = captures_dir(mission)
+    except (ValueError, FileNotFoundError):
+        return []
+    out = []
+    if os.path.isdir(d):
+        for f in os.listdir(d):
+            if f.endswith(".json") and f != "deck.json":
+                try:
+                    with open(os.path.join(d, f), encoding="utf-8") as fh:
+                        out.append(json.load(fh))
+                except Exception:
+                    continue
+    out.sort(key=lambda c: c.get("t_utc") or 0)
+    return out
+
+
+def _klv_strings(d):
+    """Chaînes utiles d'un LS 0601 {tag: bytes} : indicatif (10), capteur (11), Mission ID (3), tail (4), plateforme (59)."""
+    def txt(t):
+        b = d.get(t)
+        return b.decode("utf-8", "replace").strip("\x00 ") if b else None
+    return {"callsign": txt(10), "sensor": txt(11), "mission_id": txt(3), "tail": txt(4), "platform": txt(59)}
+
+
+def _snap_frame_and_klv(eng, st, t_utc, png_path):
+    """Frame décodée la plus proche de t_utc (≤ t_utc) écrite en PNG (résolution native) + dernier LS KLV avant t_utc.
+    Le TS de [t_utc − 4 s, t_utc + 0,15 s] est envoyé à ffmpeg (-update 1 : la dernière image écrite reste)."""
+    if not FFMPEG:
+        raise RuntimeError("ffmpeg indisponible : capture d'image impossible")
+    t_a = max((st.t0 or t_utc) - 0.001, t_utc - 4.0); t_b = t_utc + 0.15
+    seg_no, off, _cum = st.locate_time(t_a)
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-fflags", "+genpts+discardcorrupt", "-f", "mpegts", "-i", "pipe:0",
+           "-an", "-sn", "-dn", "-map", "0:v:0", "-vsync", "0", "-update", "1", "-frames:v", "100000", "-y", png_path]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    merged = {}; last_ts = None; fed = 0
+    try:
+        for chunk in eng.iter_ts(st, seg_no, off, 0, t_min=t_a, t_max=t_b):
+            try:
+                proc.stdin.write(chunk); fed += len(chunk)
+            except (OSError, ValueError):
+                pass
+            d = klv_from_ts(chunk)
+            if d:
+                merged.update(d)                                   # LS partiels : les derniers tags vus l'emportent
+                if 2 in d:
+                    last_ts = d
+    finally:
+        try:
+            _o, err = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill(); err = b"timeout"
+    if not os.path.isfile(png_path) or os.path.getsize(png_path) < 1000:
+        raise RuntimeError("aucune image décodée à cet instant (ffmpeg %s : %s ; %d octets)" % (proc.returncode, (err or b"").decode("utf-8", "replace").strip()[-300:], fed))
+    return merged
+
+
+def snap_capture(mission, t_utc, description=None, dport=None, snaps_label=None):
+    """Capture SNAP à t_utc : PNG + JSON dans {mission}/captures/, slide ajoutée au deck {mission}/captures/{mission}_SNAPS.pptx
+    (template SNAP_TEMPLATE), copie du PNG nommé selon la convention dans le partage MASTER MISSION si `snaps_label` résolu."""
+    t_utc = float(t_utc)
+    d = captures_dir(mission)
+    pcap0 = mission_resolve(mission)["pcap"]
+    eng = FOLLOWS.get(follow_id(pcap0))
+    if eng is None or not eng.state.get("running"):
+        follow_start(pcap0, None, None, [])
+        eng = follow_get(follow_id(pcap0))
+        for _ in range(600):
+            if not eng.catching_up:
+                break
+            time.sleep(0.1)
+    st = eng.stream(dport)
+    if st.t0 is None or t_utc < st.t0 - 1 or (st.t1 is not None and t_utc > st.t1 + 1):
+        raise ValueError("instant hors du flux vidéo")
+    os.makedirs(d, exist_ok=True)
+    description = re.sub(r"[\r\n\t]+", " ", (description or "")).strip()[:120]
+    with CAPTURES_LOCK:
+        base = time.strftime("%y%m%d_%H%M%S", time.gmtime(t_utc)); cid = base; k = 1
+        while os.path.exists(os.path.join(d, cid + ".json")):
+            k += 1; cid = "%s_%d" % (base, k)
+        png = os.path.join(d, cid + ".png")
+        ls = _snap_frame_and_klv(eng, st, t_utc, png)
+        n = klv_numeric(ls) if ls else {}
+        strs = _klv_strings(ls) if ls else {}
+        fc_lat, fc_lon = n.get("fc_lat"), n.get("fc_lon")
+        if fc_lat is None and n.get("lat") is not None:
+            fc_lat, fc_lon = n["lat"], n["lon"]                 # sans centre image : position capteur
+        mgrs = None
+        if fc_lat is not None:
+            try:
+                import mgrs_lite
+                mgrs = mgrs_lite.latlon_to_mgrs(fc_lat, fc_lon, 5)
+            except Exception:
+                mgrs = None
+        ts_klv = (n.get("ts_us") / 1e6) if n.get("ts_us") else None
+        meta = {"id": cid, "mission": mission, "t_utc": t_utc, "t_klv": ts_klv, "png": cid + ".png", "description": description, "dport": st.dport,
+                "lat": n.get("lat"), "lon": n.get("lon"), "alt_m": n.get("alt"), "alt_ft": (n["alt"] * FT_PER_M) if n.get("alt") is not None else None,
+                "hdg": n.get("hdg"), "fc_lat": fc_lat, "fc_lon": fc_lon, "fc_elev_m": n.get("fc_alt"),
+                "fc_elev_ft": (n["fc_alt"] * FT_PER_M) if n.get("fc_alt") is not None else None,
+                "hfov": n.get("hfov"), "vfov": n.get("vfov"), "slant_m": n.get("slant"), "mgrs": mgrs, "mgrs_fmt": None,
+                "callsign": strs.get("callsign"), "sensor": strs.get("sensor"), "mission_id": strs.get("mission_id"), "platform": strs.get("platform"),
+                "created_at": time.time(), "deck": None, "slide": None, "share_png": None}
+        try:
+            import snap_pptx
+            meta["mgrs_fmt"] = snap_pptx.fmt_mgrs(mgrs)
+            values = dict(meta, ts=ts_klv or t_utc)
+            deck = os.path.join(d, "%s_SNAPS.pptx" % mission)
+            meta["slide"] = snap_pptx.append_capture(deck, SNAP_TEMPLATE, png, values); meta["deck"] = os.path.basename(deck)
+        except Exception as e:
+            meta["deck_error"] = str(e); print("[captures] %s : deck PPTX : %s" % (mission, e))
+        if SNAPS_EXPORT and snaps_label:
+            try:
+                sd = os.path.join(snaps_mission_dir(snaps_label), SNAPS_SUBDIR)
+                os.makedirs(sd, exist_ok=True)
+                name = "%s_DR_%sZ_SNAP_%s%s.png" % (time.strftime("%y%m%d", time.gmtime(t_utc)), time.strftime("%H%M", time.gmtime(t_utc)), mgrs or "NOFIX",
+                                                    ("_" + re.sub(r"[^\w\-]+", "_", description).strip("_")) if description else "")
+                shutil.copyfile(png, os.path.join(sd, name)); meta["share_png"] = name
+            except Exception as e:
+                meta["share_error"] = str(e); print("[captures] %s : partage snaps : %s" % (mission, e))
+        with open(os.path.join(d, cid + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=1)
+    print("[captures] %s : %s  %s  MGRS %s  slide %s" % (mission, cid, time.strftime("%H:%M:%SZ", time.gmtime(t_utc)), mgrs, meta.get("slide")))
+    return meta
+
+
+def capture_delete(mission, cid):
+    if not re.match(r"^\d{6}_\d{6}(_\d+)?$", cid or ""):
+        raise ValueError("identifiant invalide")
+    d = captures_dir(mission); gone = 0
+    for suf in (".png", ".json"):
+        f = os.path.join(d, cid + suf)
+        if os.path.isfile(f):
+            os.remove(f); gone += 1
+    if not gone:
+        raise FileNotFoundError("capture introuvable : %s" % cid)
+    return {"ok": True, "deleted": cid}                    # la slide déjà ajoutée au deck est conservée
+
+
 def follow_get(fid):
     with FOLLOWS_LOCK:
         eng = FOLLOWS.get(fid or "")
@@ -2988,6 +3143,7 @@ def health_status():
     except Exception as e:
         out["mediamtx"] = {"ok": False, "error": str(e)}
     out["thumbnails"] = {"enabled": THUMBS_ON, "ffmpeg": FFMPEG}
+    out["captures"] = {"template": os.path.isfile(SNAP_TEMPLATE), "template_path": SNAP_TEMPLATE, "snaps_export": SNAPS_EXPORT}
     try:
         if CAPTURES_DIR:
             du = shutil.disk_usage(CAPTURES_DIR); out["disk"] = {"path": CAPTURES_DIR, "total": du.total, "used": du.used, "free": du.free}
@@ -3322,6 +3478,32 @@ class Handler(BaseHTTPRequestHandler):
                 if eng is None:
                     return self._err(404, "pas de mission en cours sur %s" % m_.group(1))
                 return self._json(eng.track_geojson())
+            if u.path == "/api/captures/template.pptx":
+                if not os.path.isfile(SNAP_TEMPLATE):
+                    return self._err(404, "template introuvable : %s" % SNAP_TEMPLATE)
+                data = open(SNAP_TEMPLATE, "rb").read()
+                self.send_response(200); self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+                self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-cache"); self.end_headers(); self.wfile.write(data)
+                return
+            m_ = re.match(r"^/api/captures/([^/]+)/(list|deck\.pptx|[^/]+\.(?:png|json|pptx))$", u.path)
+            if m_:
+                mission = urllib.parse.unquote(m_.group(1)); what = urllib.parse.unquote(m_.group(2))
+                if what == "list":
+                    return self._json({"mission": mission, "template": os.path.isfile(SNAP_TEMPLATE), "captures": captures_list(mission)})
+                d = captures_dir(mission)
+                if what == "deck.pptx":
+                    what = "%s_SNAPS.pptx" % mission
+                path = os.path.realpath(os.path.join(d, what))
+                if not path.startswith(os.path.realpath(d) + os.sep) or not os.path.isfile(path):
+                    return self._err(404, "capture introuvable : %s" % what)
+                data = open(path, "rb").read(); ext = os.path.splitext(path)[1].lower()
+                self.send_response(200)
+                self.send_header("Content-Type", {".png": "image/png", ".json": "application/json", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation"}.get(ext, "application/octet-stream"))
+                if ext == ".pptx" or q.get("download"):
+                    self.send_header("Content-Disposition", "attachment; filename=\"%s\"" % os.path.basename(path))
+                self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-cache")
+                self.end_headers(); self.wfile.write(data)
+                return
             m_ = re.match(r"^/api/thumbnails/([^/]+)/(index|sprite_\d{3}\.jpg)$", u.path)
             if m_:
                 mission = urllib.parse.unquote(m_.group(1)); what = m_.group(2)
@@ -3472,6 +3654,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(LIVE.status())
             if u.path == "/api/live/stop":
                 return self._json(LIVE.stop())
+            if u.path == "/api/captures/snap":
+                return self._json(snap_capture(body.get("mission"), body.get("t_utc"), body.get("description"), body.get("dport"), body.get("snaps_label")))
+            m_ = re.match(r"^/api/captures/([^/]+)/([^/]+)/delete$", u.path)
+            if m_:
+                return self._json(capture_delete(urllib.parse.unquote(m_.group(1)), urllib.parse.unquote(m_.group(2))))
             if u.path == "/api/clips/extract":
                 return self._json(clip_extract(body.get("mission"), body.get("start_utc"), body.get("end_utc"), body.get("name") or None,
                                                bool(body.get("include_metadata", True)), body.get("dport")))
