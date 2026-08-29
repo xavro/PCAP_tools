@@ -30,6 +30,12 @@
     <tbody id="rows"><tr><td colspan="10" class="mono" style="color:var(--muted)">chargement…</td></tr></tbody>
   </table>
 </main>
+<div id="row-menu" class="row-menu" hidden>
+  <div class="t" id="rm-title"></div>
+  <button id="rm-replay">▶ Ouvrir dans la page opérateur</button>
+  <button id="rm-details">⋯ Détails (JSON)</button>
+  <button id="rm-del" class="danger">✕ Supprimer l'enregistrement</button>
+</div>
 <div class="pg-foot">StratusServer v2 — capture pcap maître · relecture / DVR · live WebRTC · GMTI</div>
 <script src="static/pages.js"></script>
 <script>
@@ -47,7 +53,7 @@
       const d = m.start_utc && m.end_utc ? (m.recent ? (Date.now() / 1000 - m.start_utc) : (m.end_utc - m.start_utc)) : null;
       return `<tr><td class="mono"><b>${esc(m.name)}</b></td><td class="mono">${esc(m.cr || "—")}</td><td class="mono">${esc(m.callsign || "")}${m.callsign && m.sensor ? " · " : ""}<span style="color:var(--muted)">${esc(m.sensor || "")}</span></td>
         <td class="mono">${ymd(m.start_utc)} ${hhmm(m.start_utc)}</td><td class="mono">${end}</td><td class="mono">${dur(d)}</td><td class="mono" style="color:var(--muted)">${esc(flows)}</td><td class="mono">${size(m.bytes)}</td><td>${state}</td>
-        <td><a class="btn accent" href="${U("replay?mission=" + encodeURIComponent(m.name) + (m.recent ? "&live=1" : ""))}" title="${m.recent ? "direct + retour arrière" : "relecture"}">${m.recent ? "▶ Direct" : "▶ Relire"}</a><a class="btn" href="${U("api/missions/" + encodeURIComponent(m.name) + "/gpx/merged")}" title="trajectoire GPX (positions KLV)">GPX</a><a class="btn" href="${U("api/missions/" + encodeURIComponent(m.name) + "/details")}" title="détails JSON">⋯</a></td></tr>`;
+        <td><a class="btn accent" href="${U("replay?mission=" + encodeURIComponent(m.name) + (m.recent ? "&live=1" : ""))}" title="${m.recent ? "direct + retour arrière" : "relecture"}">${m.recent ? "▶ Direct" : "▶ Relire"}</a><a class="btn" href="${U("api/missions/" + encodeURIComponent(m.name) + "/gpx/merged")}" title="trajectoire GPX (positions KLV)">GPX</a><button class="btn" data-menu="${esc(m.name)}" data-live="${m.recent ? 1 : 0}" title="autres actions">⋯</button></td></tr>`;
     }).join("") : '<tr><td colspan="10" class="mono" style="color:var(--muted)">aucune capture</td></tr>';
   }
   async function load() {
@@ -60,6 +66,25 @@
     } catch (e) { $("rows").innerHTML = `<tr><td colspan="10" class="mono" style="color:var(--danger)">erreur : ${esc(e.message)}</td></tr>`; }
   }
   ["f-search", "f-cr", "f-state"].forEach(id => $(id).addEventListener("input", render));
+  // menu ⋯ d'une mission : détails JSON, suppression (deux clics, refusée si la mission est en cours)
+  const menu = $("row-menu"); let cur = null, armed = false;
+  const hide = () => { menu.hidden = true; cur = null; armed = false; $("rm-del").textContent = "✕ Supprimer l'enregistrement"; };
+  document.addEventListener("click", ev => {
+    const b = ev.target.closest("button[data-menu]");
+    if (b) { cur = b.dataset.menu; armed = false; $("rm-title").textContent = cur; $("rm-del").disabled = b.dataset.live === "1"; $("rm-del").title = b.dataset.live === "1" ? "mission en cours : arrêter la capture d'abord" : ""; menu.hidden = false; const r = b.getBoundingClientRect(); const mr = menu.getBoundingClientRect(); menu.style.left = Math.min(r.left, window.innerWidth - mr.width - 8) + "px"; menu.style.top = (r.bottom + 4) + "px"; ev.stopPropagation(); return; }
+    if (!menu.hidden && !menu.contains(ev.target)) hide();
+  });
+  document.addEventListener("keydown", ev => { if (ev.key === "Escape") hide(); });
+  $("rm-details").addEventListener("click", () => { if (cur) window.open(U("api/missions/" + encodeURIComponent(cur) + "/details"), "_blank"); hide(); });
+  $("rm-replay").addEventListener("click", () => { if (cur) window.open(U("replay?mission=" + encodeURIComponent(cur)), "_blank"); hide(); });
+  $("rm-del").addEventListener("click", async () => {
+    if (!cur) return;
+    if (!armed) { armed = true; $("rm-del").textContent = "✕ Confirmer la suppression définitive"; return; }
+    const name = cur; hide();
+    try { await api("/api/missions/" + encodeURIComponent(name) + "/delete", { method: "POST" }); $("hint").textContent = `mission ${name} supprimée`; }
+    catch (e) { $("hint").textContent = `suppression refusée : ${e.message}`; $("hint").style.color = "var(--danger)"; setTimeout(() => { $("hint").style.color = ""; }, 6000); }
+    load();
+  });
   load(); setInterval(load, 10000);
 })();
 </script>

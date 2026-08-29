@@ -3078,6 +3078,35 @@ def _snap_finish(d, cid, meta, png, ts, snaps_label):
     print("[captures] %s : %s  slide %s%s" % (mission, cid, meta.get("slide"), (" · partage " + meta["share_png"]) if meta.get("share_png") else ""))
 
 
+def mission_delete(name):
+    """Supprime le dossier d'une mission (pcap maître, index, journal, clips, captures, vignettes). Refusé si la mission
+    est en cours (démon de capture) ; les suivis de relecture ouverts dessus sont arrêtés d'abord."""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise ValueError("nom de mission invalide")
+    d = os.path.join(CAPTURES_DIR or "", name)
+    if not CAPTURES_DIR or not os.path.isdir(d) or os.path.realpath(os.path.dirname(d)) != os.path.realpath(CAPTURES_DIR):
+        raise FileNotFoundError("mission introuvable : %s" % name)
+    try:
+        with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=3) as r:
+            st = json.load(r)
+        for cr, s_ in (st.get("sets") or {}).items():
+            if s_.get("mission") == name:
+                raise ValueError("mission en cours d'enregistrement sur %s : arrêter la capture d'abord" % cr)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        if isinstance(e, ValueError) and "en cours" in str(e):
+            raise
+    with FOLLOWS_LOCK:
+        engs = [e for e in FOLLOWS.values() if e.state.get("running") and e.mission_name() == name]
+    for e in engs:
+        if e.system:
+            raise ValueError("mission suivie en direct (suivi système) : impossible de la supprimer")
+        e.stop()
+    time.sleep(0.3)
+    shutil.rmtree(d)
+    print("[missions] supprimée : %s" % name)
+    return {"ok": True, "deleted": name}
+
+
 def capture_delete(mission, cid):
     if not re.match(r"^\d{6}_\d{6}(_\d+)?$", cid or ""):
         raise ValueError("identifiant invalide")
@@ -3681,6 +3710,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(LIVE.status())
             if u.path == "/api/live/stop":
                 return self._json(LIVE.stop())
+            m_ = re.match(r"^/api/missions/([^/]+)/delete$", u.path)
+            if m_:
+                return self._json(mission_delete(urllib.parse.unquote(m_.group(1))))
             if u.path == "/api/captures/snap":
                 return self._json(snap_capture(body.get("mission"), body.get("t_utc"), body.get("description"), body.get("dport"), body.get("snaps_label")))
             m_ = re.match(r"^/api/captures/([^/]+)/([^/]+)/delete$", u.path)

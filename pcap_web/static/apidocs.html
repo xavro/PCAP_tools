@@ -47,7 +47,7 @@
       <li><a href="#capture">● Capture <small>(3 endpoints)</small></a></li>
       <li><a href="#live">⚡ Live WebRTC &amp; télémétrie KLV <small>(2 + WS)</small></a></li>
       <li><a href="#compat">⇄ Compatibilité widgets ExB <small>(4 endpoints + SSE)</small></a></li>
-      <li><a href="#missions">▤ Missions &amp; captures <small>(6 endpoints)</small></a></li>
+      <li><a href="#missions">▤ Missions &amp; captures <small>(7 endpoints)</small></a></li>
       <li><a href="#follow">▶ Suivi : relecture, DVR, direct <small>(6 endpoints + WS)</small></a></li>
       <li><a href="#video">▦ Vidéo MPEG-TS <small>(2 endpoints)</small></a></li>
       <li><a href="#clips">✂ Clips <small>(4 endpoints)</small></a></li>
@@ -168,6 +168,8 @@ Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniqu
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/missions/{m}/track.geojson</span><span class="ep-who">widgets</span></div>
       <div class="ep-body"><p>Trace plateforme de la mission (GeoJSON LineString + <code>times</code>).</p></div></div>
 
+    <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/missions/{m}/delete</span><span class="ep-who">page Missions</span></div>
+      <div class="ep-body"><p>Supprime définitivement le dossier de la mission (pcap maître, index, journal, clips, captures, vignettes). Refusé (400) si la mission est en cours d'enregistrement ou suivie en direct ; les suivis de relecture ouverts sont arrêtés.</p></div></div>
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/replay?mission=NOM[&amp;live=1][&amp;profile=]</span><span class="ep-who">page opérateur</span></div>
       <div class="ep-body"><p>Carte | vidéo | barre de temps. <code>live=1</code> : suit le bord du direct (DVR) ; sans : ouverture en pause au début. <code>?pcap=/chemin</code> accepté aussi.</p></div></div>
   </section>
@@ -275,7 +277,7 @@ Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniqu
   <!-- ───────────── CONSOLE ───────────── -->
   <section class="doc-section" id="console">
     <h2>▣ Console pcap (analyste) <small><a href="../" style="color:var(--accent)">/</a></small></h2>
-    <p>Analyse de pcap, rejeu + émission UDP/TCP, écoute réseau, banc de réglage du tracker GMTI, oracle de parité Java. Endpoints <code>/api/config</code>, <code>/api/streams</code>, <code>/api/flows</code>, <code>/api/klv</code>, <code>/api/timeline</code>, <code>/api/gmti/decode|track</code>, <code>/api/replay/*</code>, <code>/api/live/*</code>, <code>/ws/events</code> — documentés dans le README de PCAP_tools.</p>
+    <p>Analyse de pcap, rejeu + émission UDP/TCP, écoute réseau, banc de réglage du tracker GMTI, oracle de parité Java. Endpoints <code>/api/config</code>, <code>/api/settings</code>, <code>/api/browse</code>, <code>/api/streams</code>, <code>/api/flows</code>, <code>/api/klv</code>, <code>/api/timeline</code>, <code>/api/cot/*</code>, <code>/api/fused/export.geojson</code>, <code>/api/gmti/decode|track|track/detail|publish|parity.zip</code>, <code>/api/replay/*</code>, <code>/api/live/*</code>, <code>/live.ts</code>, <code>/basemap</code>, <code>/ws/events</code> — documentés dans le README de PCAP_tools.</p>
   </section>
 
   <!-- ───────────── SYSTEM ───────────── -->
@@ -286,7 +288,9 @@ Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniqu
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/config</span><span class="ep-who">pages (chip API)</span></div>
       <div class="ep-body"><p>Configuration du serveur de relecture (dossiers, ports GMTI, profil).</p></div></div>
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/missions · /replay · /health · /api/docs · /</span><span class="ep-who">navigateur</span></div>
-      <div class="ep-body"><p>Pages : missions, opérateur, health check, cette documentation, console pcap.</p></div></div>
+      <div class="ep-body"><p>Pages : missions, opérateur (ouverte depuis la page Missions : ▶ Direct / Relire), health check, cette documentation, console pcap.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/capture/status</span><span class="ep-who">pages (accès direct :8767)</span></div>
+      <div class="ep-body"><p>Relais vers le démon de capture (<code>CAPTURE_STATUS_URL</code>) pour les pages servies sans nginx.</p></div></div>
   </section>
 
   <!-- ───────────── FILES ───────────── -->
