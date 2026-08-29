@@ -1102,7 +1102,9 @@
     follow(n);
     if (idx === state.applied + 1) { if (n.lat != null) trace.addLatLng([n.lat, n.lon]); }
     else trace.setLatLngs(state.sets.slice(0, idx + 1).filter((x, i) => x.num.lat != null && (i % 3 === 0 || i === idx)).map(x => [x.num.lat, x.num.lon]));
-    $("hud").textContent = `capteur ${fmt(n.lat)} ${fmt(n.lon)}  alt ${fmt(n.alt, 0)} m\ncap ${fmt(n.hdg, 1)}°  tang ${fmt(n.pitch, 1)}°  roul ${fmt(n.roll, 1)}°\nFOV ${fmt(n.hfov, 2)}°×${fmt(n.vfov, 2)}°  portée ${fmt(n.slant, 0)} m\ncentre ${fmt(n.fc_lat)} ${fmt(n.fc_lon)}` + (vidgap.last != null ? `\npiste ${vidgap.id} à ${vidgap.last.toFixed(0)} m du centre image` : "");
+    $("hud").textContent = (document.body.classList.contains("operator")
+      ? `centre  ${n.fc_lat != null ? (MGRS.toMGRS(n.fc_lat, n.fc_lon, 5) || "").replace(/^(\d{1,2}[A-Z])([A-Z]{2})(\d{5})(\d{5})$/, "$1 $2 $3 $4") + "  " + fmt(n.fc_lat) + " " + fmt(n.fc_lon) : "—"}\nélév. centre  ${n.fc_alt != null ? fmt(n.fc_alt, 0) + " m (" + (n.fc_alt * 3.28084).toFixed(0) + " ft)" : "—"}\nportée  ${fmt(n.slant, 0)} m    FOV  ${fmt(n.hfov, 2)}°×${fmt(n.vfov, 2)}°`
+      : `capteur ${fmt(n.lat)} ${fmt(n.lon)}  alt ${fmt(n.alt, 0)} m\ncap ${fmt(n.hdg, 1)}°  tang ${fmt(n.pitch, 1)}°  roul ${fmt(n.roll, 1)}°\nFOV ${fmt(n.hfov, 2)}°×${fmt(n.vfov, 2)}°  portée ${fmt(n.slant, 0)} m\ncentre ${fmt(n.fc_lat)} ${fmt(n.fc_lon)}`) + (vidgap.last != null ? `\npiste ${vidgap.id} à ${vidgap.last.toFixed(0)} m du centre image` : "");
     $("tl-utc").textContent = utc(n.ts_us);
     $("tl-lag").textContent = (tms - s.pts).toFixed(0);
     if (performance.now() - state.tableAt > 120) { renderTable(s.fields, true); state.tableAt = performance.now(); }
@@ -1234,6 +1236,7 @@
       const t0 = pb.tl.t0 || 0;
       drawBands(clipsOf().map(c => [c.start_utc - t0, c.end_utc - t0]), LN.c, "rgba(187,134,252,.85)", "clips", W, x);
       if (pb.clipSel) { ctx.fillStyle = "rgba(187,134,252,.25)"; ctx.fillRect(x(pb.clipSel[0] - t0), TOP, Math.max(1, x(pb.clipSel[1] - t0) - x(pb.clipSel[0] - t0)), BASE - TOP); }   // créneau en cours de saisie
+      if (pb.clipAim != null) { ctx.fillStyle = "#bb86fc"; ctx.fillRect(x(pb.clipAim) - 1, 0, 2, H); ctx.font = "10px Consolas"; ctx.fillText(hhmmss(t0 + pb.clipAim) + "Z", Math.min(W - 60, x(pb.clipAim) + 4), 24); }   // ligne de visée (placer début / fin)
     }
     if (LN.s && pb.on && pb.tl) {                            // captures SNAP (orange) — clic : aller à l'instant, clic droit : menu
       const t0 = pb.tl.t0 || 0; drawBands([], LN.s, "#ff9f43", "snaps", W, x); ctx.fillStyle = "#ff9f43";

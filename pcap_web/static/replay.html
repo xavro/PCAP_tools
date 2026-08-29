@@ -26,7 +26,7 @@
     <button id="btn-edge" class="accent" hidden title="revenir au direct (L)">⟫ Direct</button>
     <button id="btn-stop" class="danger" title="arrêter">■</button>
     <button id="btn-clip" title="extraire un clip (.ts) entre deux instants">✂ Clip</button>
-    <button id="btn-snap" title="capture SNAP : image + métadonnées à l'instant courant → PNG + slide PowerPoint (S)">📸 Snap</button>
+    <button id="btn-snap" title="capture SNAP : image + métadonnées à l'instant courant → PNG + slide PowerPoint (S ou Ctrl+Shift+C)">📸 Snap</button>
     <select id="speed" title="vitesse de lecture">
       <option value="1">×1</option><option value="2">×2</option><option value="4">×4</option><option value="8">×8</option>
     </select>
@@ -40,41 +40,31 @@
   </header>
 
   <div id="clip-panel" hidden>
-    <div class="cp-title">✂ Extraction d'un clip <span class="muted">— créneau UTC (GDH), copie du TS capturé, sans ré-encodage</span></div>
     <div class="cp-row">
+      <span class="cp-title" title="créneau UTC (GDH) · copie du TS capturé, sans ré-encodage">✂ Clip</span>
       <label>début <input id="clip-start" placeholder="HH:MM:SS" maxlength="8" autocomplete="off"><span class="z">Z</span></label>
-      <button id="clip-start-cur" title="reprendre l'instant du curseur de lecture">⟵ curseur</button>
+      <button id="clip-start-cur" title="placer le début à la souris sur la barre de temps (Échap pour annuler)">📍</button>
       <label>fin <input id="clip-end" placeholder="HH:MM:SS" maxlength="8" autocomplete="off"><span class="z">Z</span></label>
-      <button id="clip-end-cur" title="reprendre l'instant du curseur de lecture">⟵ curseur</button>
+      <button id="clip-end-cur" title="placer la fin à la souris sur la barre de temps (Échap pour annuler)">📍</button>
       <span class="cp-dur">durée <b id="clip-dur">—</b></span>
-    </div>
-    <div class="cp-row">
-      <label class="chk" title="conserver le PID KLV (STANAG 4609) dans le .ts et écrire le CSV des positions"><input type="checkbox" id="clip-meta" checked> métadonnées KLV</label>
-      <label>nom <input id="clip-name" placeholder="clip_HHMMSSZ-HHMMSSZ (auto)" maxlength="100" autocomplete="off" style="width:240px"></label>
+      <label class="chk" title="conserver le PID KLV (STANAG 4609) dans le .ts et écrire le CSV des positions"><input type="checkbox" id="clip-meta" checked> KLV</label>
       <span class="spacer"></span>
       <span id="clip-msg" class="muted"></span>
       <button id="clip-go" class="accent" disabled>✂ Extraire</button>
       <button id="clip-close">Fermer</button>
     </div>
   </div>
-  <div id="snap-panel" hidden>
-    <div class="cp-title">📸 Capture SNAP <span class="muted">— image à l'instant courant + métadonnées KLV (MGRS, altitude, cap) → PNG + slide PowerPoint</span></div>
-    <div class="cp-row">
-      <span class="cp-dur">instant <b id="snap-t">—</b></span>
-      <label>description <input id="snap-desc" placeholder="ex. HANGAR NORD (optionnel)" maxlength="120" autocomplete="off" style="width:260px"></label>
-      <span class="spacer"></span>
-      <span id="snap-msg" class="muted"></span>
-      <button id="snap-go" class="accent">📸 Capturer</button>
-      <button id="snap-close">Fermer</button>
-    </div>
-  </div>
   <div id="snap-menu" hidden>
     <div class="cm-title" id="sm-title"></div>
-    <button data-act="seek">▶ Aller à l'instant</button>
     <button data-act="png">⬇ Image (.png)</button>
-    <button data-act="deck">⬇ Deck PowerPoint de la mission</button>
     <button data-act="agent">▣ Insérer dans le PowerPoint du poste</button>
-    <button data-act="del" class="danger">✕ Supprimer</button>
+  </div>
+  <div id="video-menu" hidden>
+    <div class="cm-title" id="vm-title"></div>
+    <button data-act="mgrs">📋 Copier les coordonnées (MGRS)</button>
+    <button data-act="ll">📋 Copier lat / lon (WGS84)</button>
+    <button data-act="meas">📏 Mesurer un cap / distance</button>
+    <button data-act="meas-clear">✕ Effacer la mesure vidéo</button>
   </div>
   <div id="clip-menu" hidden>
     <div class="cm-title" id="cm-title"></div>
@@ -107,6 +97,9 @@
       <video id="video" controls muted playsinline></video>
       <div class="overlay" id="mode-badge">—</div>
       <div class="hud" id="hud"></div>
+      <div id="v-cursor" hidden></div>
+      <svg id="v-meas" hidden></svg>
+      <div id="v-toast" hidden></div>
     </div>
   </main>
 
