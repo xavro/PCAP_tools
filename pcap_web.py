@@ -2609,13 +2609,77 @@ def clips_list(mission):
     return out
 
 
-def _strip_pid(chunk, pid):
-    """Retire d'un bloc TS (paquets de 188 octets alignés) les paquets du PID donné."""
+_CRC32_MPEG = None
+
+
+def _crc32_mpeg(data):
+    """CRC-32/MPEG-2 (polynôme 0x04C11DB7, init 0xFFFFFFFF, sans réflexion) des sections PSI."""
+    global _CRC32_MPEG
+    if _CRC32_MPEG is None:
+        tbl = []
+        for i in range(256):
+            c = i << 24
+            for _ in range(8):
+                c = ((c << 1) ^ 0x04C11DB7) if (c & 0x80000000) else (c << 1)
+            tbl.append(c & 0xFFFFFFFF)
+        _CRC32_MPEG = tbl
+    crc = 0xFFFFFFFF
+    for b in data:
+        crc = ((crc << 8) & 0xFFFFFFFF) ^ _CRC32_MPEG[((crc >> 24) ^ b) & 0xFF]
+    return crc
+
+
+def _pmt_without_pid(pkt, drop_pid):
+    """Paquet PMT (section unique) réécrit sans l'entrée d'élément `drop_pid` ; None si non modifiable."""
+    if not (pkt[1] & 0x40) or not (pkt[3] & 0x10):            # payload_unit_start requis, payload présent
+        return None
+    off = 4
+    if pkt[3] & 0x20:
+        off += 1 + pkt[4]
+    ptr = pkt[off]; sec = off + 1 + ptr
+    if sec + 12 > 188 or pkt[sec] != 0x02:
+        return None
+    slen = ((pkt[sec + 1] & 0x0F) << 8) | pkt[sec + 2]
+    end = sec + 3 + slen
+    if end > 188:
+        return None                                            # section sur plusieurs paquets : non gérée
+    hdr = bytearray(pkt[sec:sec + 12])
+    pil = ((pkt[sec + 10] & 0x0F) << 8) | pkt[sec + 11]
+    body = bytearray(pkt[sec + 12:sec + 12 + pil])             # descripteurs programme
+    i = sec + 12 + pil; changed = False; loop = bytearray()
+    while i + 5 <= end - 4:
+        st, epid = pkt[i], ((pkt[i + 1] & 0x1F) << 8) | pkt[i + 2]
+        el = ((pkt[i + 3] & 0x0F) << 8) | pkt[i + 4]
+        n = 5 + el
+        if epid == drop_pid:
+            changed = True
+        else:
+            loop += pkt[i:i + n]
+        i += n
+    if not changed:
+        return None
+    new_len = 9 + len(body) + len(loop) + 4                    # après section_length : 9 octets fixes … + CRC
+    hdr[1] = (hdr[1] & 0xF0) | ((new_len >> 8) & 0x0F); hdr[2] = new_len & 0xFF
+    section = bytes(hdr) + bytes(body) + bytes(loop)
+    section += struct.pack(">I", _crc32_mpeg(section))
+    out = bytearray(pkt[:sec]) + section
+    if len(out) > 188:
+        return None
+    return bytes(out + b"\xff" * (188 - len(out)))
+
+
+def _strip_pid(chunk, pid, pmt_pids=()):
+    """Retire d'un bloc TS (paquets de 188 octets alignés) les paquets du PID donné et son entrée dans la PMT."""
     keep = []
     for i in range(0, len(chunk) - 187, 188):
         pkt = chunk[i:i + 188]
-        if pkt[0] == 0x47 and ((pkt[1] & 0x1F) << 8 | pkt[2]) == pid:
+        if pkt[0] != 0x47:
+            keep.append(pkt); continue
+        p = ((pkt[1] & 0x1F) << 8) | pkt[2]
+        if p == pid:
             continue
+        if p in pmt_pids:
+            pkt = _pmt_without_pid(pkt, pid) or pkt
         keep.append(pkt)
     return b"".join(keep)
 
@@ -2649,7 +2713,7 @@ def clip_extract(mission, start_utc, end_utc, name=None, include_metadata=True, 
     if os.path.exists(out):
         raise ValueError("un clip nommé %s existe déjà" % name)
     seg_no, off, _cum = st.locate_time(start_utc)
-    klv_pid = None; probe = bytearray(); n = 0
+    klv_pid = None; pmt_pids = (); probe = bytearray(); n = 0
     tmp = out + ".part"
     try:
         with open(tmp, "wb") as fh:
@@ -2658,15 +2722,15 @@ def clip_extract(mission, start_utc, end_utc, name=None, include_metadata=True, 
                     if klv_pid is None:                        # PID KLV déterminé sur les premiers Mo (PMT)
                         probe += chunk
                         if len(probe) >= 2 << 20:
-                            klv_pid = v9.analyze_stream(bytes(probe)).get("klv_pid") or -1
-                            data = _strip_pid(bytes(probe), klv_pid); probe = bytearray()
+                            info = v9.analyze_stream(bytes(probe)); klv_pid = info.get("klv_pid") or -1; pmt_pids = tuple(info.get("pmt_pids") or ())
+                            data = _strip_pid(bytes(probe), klv_pid, pmt_pids); probe = bytearray()
                             fh.write(data); n += len(data)
                         continue
-                    chunk = _strip_pid(chunk, klv_pid)
+                    chunk = _strip_pid(chunk, klv_pid, pmt_pids)
                 fh.write(chunk); n += len(chunk)
             if probe:
-                klv_pid = v9.analyze_stream(bytes(probe)).get("klv_pid") or -1
-                data = _strip_pid(bytes(probe), klv_pid); fh.write(data); n += len(data)
+                info = v9.analyze_stream(bytes(probe)); klv_pid = info.get("klv_pid") or -1; pmt_pids = tuple(info.get("pmt_pids") or ())
+                data = _strip_pid(bytes(probe), klv_pid, pmt_pids); fh.write(data); n += len(data)
         if n == 0:
             raise ValueError("aucune donnée vidéo dans ce créneau")
         os.replace(tmp, out)
@@ -2760,7 +2824,7 @@ class ThumbWorker:
     def __init__(self, eng):
         self.eng = eng; self.mission = eng.mission_name(); self.dir = os.path.join(CAPTURES_DIR, self.mission, "thumbnails")
         self.index = {"interval": THUMB_INTERVAL_S, "w": THUMB_W, "h": THUMB_H, "cols": THUMB_COLS, "rows": THUMB_ROWS, "window_s": THUMB_WINDOW_S, "t0": None, "sprites": {}}
-        self.partial_edge = -1e9; self.partial_k = None; self.thread = None; self.busy = False
+        self.partial_edge = -1e9; self.partial_k = None; self.thread = None; self.busy = False; self.error = None
 
     def start(self):
         p = os.path.join(self.dir, "index.json")
@@ -2786,7 +2850,7 @@ class ThumbWorker:
                 if not eng.catching_up and eng.streams:
                     self._step()
             except Exception as e:
-                print("[thumbs] %s : %s" % (self.mission, e))
+                self.error = str(e); print("[thumbs] %s : %s" % (self.mission, e))
             eng.stop_event.wait(5.0)
 
     def _step(self):
@@ -2841,7 +2905,8 @@ class ThumbWorker:
             except subprocess.TimeoutExpired:
                 proc.kill(); err = b"timeout"
             if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1000:
-                print("[thumbs] %s sprite %d : ffmpeg %s : %s" % (self.mission, k, proc.returncode, (err or b"").decode("utf-8", "replace").strip()[-300:]))
+                self.error = "ffmpeg (code %s) : %s" % (proc.returncode, (err or b"").decode("utf-8", "replace").strip()[-300:])
+                print("[thumbs] %s sprite %d : %s" % (self.mission, k, self.error))
                 if os.path.isfile(tmp):
                     os.remove(tmp)
                 return
@@ -3265,6 +3330,8 @@ class Handler(BaseHTTPRequestHandler):
                     idx = thumbs_index(mission)
                     eng = FOLLOWS.get(follow_id(mission_resolve(mission)["pcap"])) if os.path.isdir(os.path.join(CAPTURES_DIR or "", mission)) else None
                     idx["generating"] = bool(eng and eng.thumbs and eng.thumbs.busy)
+                    idx["worker"] = bool(eng and eng.thumbs); idx["error"] = eng.thumbs.error if eng and eng.thumbs else None
+                    idx["ffmpeg"] = FFMPEG
                     return self._json(idx)
                 path = os.path.join(thumbs_dir(mission), what)
                 if not os.path.isfile(path):
