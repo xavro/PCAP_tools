@@ -1949,10 +1949,9 @@ class FollowEngine:
         with self.lock:
             if self.state.get("running"):
                 raise ValueError("ce suivi est déjà en cours")
-            if ENGINE.status().get("running"):
-                raise ValueError("un rejeu est en cours : l'arrêter d'abord")
-            if LIVE.status().get("running"):
-                raise ValueError("une écoute réseau est en cours : l'arrêter d'abord")
+            # NB : un rejeu-émission (ENGINE) ou une écoute réseau (LIVE) peuvent tourner en même temps que des
+            # suivis — ils n'ont aucune ressource commune (le verrou historique de la console mono-vue empêchait
+            # le suivi système de démarrer quand la console du serveur servait à émettre un flux de test).
             if self.thread is not None and self.thread.is_alive():   # ancien suivi arrêté : attendre la fin de sa boucle
                 self.stop_event.set(); self.thread.join(5.0)
             self._clear()
