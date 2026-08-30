@@ -3144,7 +3144,14 @@ def follow_start(path, watch=None, track=None, taps=()):
             st = eng.status(); st["joined"] = True
             return st
         eng = FOLLOWS[fid] = FollowEngine(fid)
-    eng.start(path, watch, track, taps)
+    try:
+        eng.start(path, watch, track, taps)
+    except Exception as e:
+        import traceback
+        print("[follow] démarrage impossible (%s) : %s" % (os.path.basename(path), e), flush=True); traceback.print_exc()
+        with FOLLOWS_LOCK:
+            FOLLOWS.pop(fid, None)
+        raise
     return eng.status()
 
 
@@ -3246,8 +3253,9 @@ def auto_follow_loop():
                 elif cur is not None and cur.system:
                     cur.system = False                        # mission close : le reaper l'arrêtera sans client
                     EVENTS.publish({"type": "log", "msg": "suivi système %s : mission terminée" % cr})
-        except Exception:
-            pass
+        except Exception as e:
+            import traceback
+            print("[follow] suivi automatique : %s" % e, flush=True); traceback.print_exc()
         time.sleep(5.0)
 
 
