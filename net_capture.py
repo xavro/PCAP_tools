@@ -247,6 +247,11 @@ class Capture:
 
     def _loop_frames(self, s, ip_only):
         PACKET_OUTGOING = 4                                   # sll_pkttype : trame ÉMISE par cette machine
+        # Trafic de TEST émis depuis la machine de capture elle-même (rejeu d'un pcap vers 127.0.0.1 / son
+        # propre IP) : selon le chemin (lo, adresse locale, multicast bouclé), la seule copie visible peut être
+        # la copie SORTANTE. CAPTURE_ACCEPT_OUTGOING=1 la conserve — à n'activer QUE pour ces essais, sinon
+        # chaque datagramme réseau est compté deux fois.
+        accept_out = os.getenv("CAPTURE_ACCEPT_OUTGOING", "").strip().lower() in ("1", "true", "yes", "on")
         while not self.stop_event.is_set():
             try:
                 data, addr = s.recvfrom(262144)
@@ -261,7 +266,7 @@ class Capture:
             # AF_PACKET voit chaque paquet local DEUX fois (sortie puis entrée sur lo, ou émetteur sur
             # le même hôte) : on ignore les trames sortantes, sinon chaque datagramme est dupliqué
             # (erreurs de continuité TS, vidéo en macroblocs à la relecture).
-            if not ip_only and len(addr) >= 3 and addr[2] == PACKET_OUTGOING:
+            if not ip_only and not accept_out and len(addr) >= 3 and addr[2] == PACKET_OUTGOING:
                 continue
             if ip_only:
                 if data[0] >> 4 != 4 or len(data) < 28 or data[9] != 17:      # IPv4 + UDP seulement
