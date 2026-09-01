@@ -3506,6 +3506,23 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, code, msg):
         self._json({"error": msg, "detail": msg}, code)
 
+    def _cors_if_direct(self):
+        """
+        En-têtes CORS pour les réponses binaires, **uniquement en accès direct**
+        (:8767 sans reverse proxy).
+
+        Derrière nginx, c'est lui l'autorité : il pose déjà
+        `Access-Control-Allow-Origin: $http_origin` (`add_header … always`). Un
+        second en-tête fait **rejeter la réponse par le navigateur**
+        (« Failed to fetch »), alors que curl, qui ignore CORS, la reçoit sans
+        problème — d'où un symptôme déroutant. On détecte le passage par le
+        proxy aux en-têtes `X-Forwarded-*` qu'il ajoute.
+        """
+        if self.headers.get("X-Forwarded-For") or self.headers.get("X-Forwarded-Proto"):
+            return
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "*")
+
     def _pcap(self, q):
         p = q.get("pcap", [self.default_pcap or ""])[0]
         if not p or not os.path.isfile(p):
@@ -3578,7 +3595,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png" if p.lower().endswith(".png") else "image/jpeg")
                 self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-cache")
-                self.send_header("Access-Control-Allow-Origin", "*"); self.send_header("Access-Control-Expose-Headers", "*")
+                self._cors_if_direct()
                 self.end_headers(); self.wfile.write(data); return
             m_ = re.match(r"^/api/missions/([^/]+)/prepa/(list|file|shapeset)$", u.path)
             if m_:
@@ -3597,9 +3614,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/zip" if fname.lower().endswith(".zip") else "application/octet-stream")
                 self.send_header("Content-Disposition", 'attachment; filename="%s"' % fname)
                 self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-cache")
-                # Pas d'en-tête CORS ici : nginx en ajoute déjà un (Access-Control-Allow-Origin
-                # $http_origin). En poser un second fait rejeter la réponse par le navigateur
-                # (« Failed to fetch ») alors que curl, qui ignore CORS, la reçoit très bien.
+                self._cors_if_direct()
                 self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/missions":
                 fl = lambda k: (float(q[k][0]) if q.get(k, [""])[0] else None)
@@ -3774,7 +3789,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/gpx+xml; charset=utf-8")
                 self.send_header("Content-Disposition", "attachment; filename=\"%s.gpx\"" % name)
                 self.send_header("Content-Length", str(len(data)))
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._cors_if_direct()
                 self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/gmti/ports":
                 sets = _capture_sets_by_cr()
