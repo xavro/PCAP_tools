@@ -922,6 +922,140 @@ def snaps_archive(label, filename):
     return {"mission_name": label, "filename": filename, "archived_as": os.path.basename(dst)}
 
 
+# ── Préparation mission (passerelle fichiers MASTER MISSION : widget ExB data-loader) ───────────
+# L'opérateur Pro dépose ses couches dans <mission>/<préparation>/ ; l'opérateur web les charge
+# depuis son widget. Le serveur ne fait que lister / servir / déposer : parsing, symbologie et
+# affichage restent côté navigateur. Les imports venus du web atterrissent dans le sous-dossier
+# `web/` pour que la provenance reste lisible des deux côtés.
+PREPA_SUBDIR = os.getenv("PREPA_SUBDIR", "2-Preparation").strip().strip("/")
+PREPA_WEB_SUBDIR = os.getenv("PREPA_WEB_SUBDIR", "web").strip().strip("/")
+PREPA_EXT = (".shp", ".kml", ".kmz", ".gpx", ".csv", ".xlsx", ".xls", ".geojson", ".json", ".zip")
+PREPA_SIDECARS = (".dbf", ".shx", ".prj", ".cpg")      # annexes shapefile : jamais listées seules
+PREPA_MAX_DEPTH = 2                                    # profondeur de parcours sous la préparation
+_PREPA_DIR_CACHE = {}
+
+
+def prepa_dir(label):
+    """
+    Dossier de préparation d'une mission. Chemin configuré (PREPA_SUBDIR) d'abord ; à défaut,
+    premier sous-dossier de premier niveau dont le nom évoque la préparation — la numérotation du
+    dossier MASTER a bougé au fil des versions, un renommage ne doit pas casser l'import.
+    """
+    c = _PREPA_DIR_CACHE.get(label)
+    if c and os.path.isdir(c):
+        return c
+    mdir = snaps_mission_dir(label)                     # résolution + garde racine partagées avec les snaps
+    d = os.path.realpath(os.path.join(mdir, PREPA_SUBDIR))
+    if not (d.startswith(mdir + os.sep) and os.path.isdir(d)):
+        d = None
+        for n in sorted(os.listdir(mdir)):
+            p = os.path.join(mdir, n)
+            if os.path.isdir(p) and "prepa" in n.lower().replace("é", "e").replace("è", "e"):
+                d = os.path.realpath(p)
+                break
+    if not d:
+        raise FileNotFoundError("dossier de préparation introuvable pour %s (attendu : %s)" % (label, PREPA_SUBDIR))
+    _PREPA_DIR_CACHE[label] = d
+    return d
+
+
+def prepa_path(label, rel, must_exist=True):
+    """Fichier sous le dossier de préparation, avec garde anti-traversée."""
+    root = prepa_dir(label)
+    r = (rel or "").replace("\\", "/").strip("/")
+    if not r or ".." in r.split("/"):
+        raise ValueError("chemin invalide")
+    p = os.path.realpath(os.path.join(root, r))
+    if not p.startswith(root + os.sep):
+        raise ValueError("accès refusé")
+    if must_exist and not os.path.isfile(p):
+        raise FileNotFoundError("fichier introuvable : %s" % rel)
+    return p
+
+
+def prepa_list(label):
+    """
+    Fichiers vecteur importables. Un shapefile est UNE entrée, avec l'état de ses annexes : le
+    widget prévient qu'il manque le .prj avant que l'opérateur ne clique (sans projection, un
+    fichier Lambert 93 se poserait à des milliers de kilomètres).
+    """
+    root = prepa_dir(label)
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        depth = 0 if rel_dir == "." else rel_dir.count(os.sep) + 1
+        if depth >= PREPA_MAX_DEPTH:
+            dirnames[:] = []
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for n in sorted(filenames):
+            ext = os.path.splitext(n)[1].lower()
+            if ext not in PREPA_EXT:
+                continue
+            full = os.path.join(dirpath, n)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            e = {"path": os.path.relpath(full, root).replace(os.sep, "/"),
+                 "name": os.path.splitext(n)[0], "ext": ext,
+                 "kind": "shapeset" if ext == ".shp" else "file",
+                 "size_bytes": st.st_size,
+                 "modified": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(st.st_mtime))}
+            if ext == ".shp":
+                base = os.path.splitext(full)[0]
+                present = {s: os.path.exists(base + s) for s in PREPA_SIDECARS}
+                e["sidecars"] = present
+                e["missing"] = [s for s in (".dbf", ".prj") if not present[s]]   # .shx = simple index
+                e["complete"] = not e["missing"]
+                e["size_bytes"] = st.st_size + sum(os.path.getsize(base + s) for s, ok in present.items() if ok)
+            files.append(e)
+    files.sort(key=lambda f: f["path"].lower())
+    return {"mission_name": label, "dir": os.path.basename(root), "count": len(files), "files": files}
+
+
+def prepa_shapeset(label, rel):
+    """Shapefile complet zippé (.shp + annexes présentes) : le seul format qui garantit que
+    géométries, attributs et projection arrivent ensemble dans un navigateur."""
+    import io, zipfile
+    shp = prepa_path(label, rel)
+    if not shp.lower().endswith(".shp"):
+        raise ValueError("le chemin doit désigner un .shp")
+    base = os.path.splitext(shp)[0]
+    name = os.path.basename(base)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(shp, name + ".shp")
+        for s in PREPA_SIDECARS:
+            if os.path.exists(base + s):
+                z.write(base + s, name + s)
+    return name + ".zip", buf.getvalue()
+
+
+def prepa_upload(label, filename, data):
+    """Dépose un fichier dans <préparation>/<PREPA_WEB_SUBDIR> (suffixe _vN en cas de collision,
+    même convention que l'archivage des snaps)."""
+    n = os.path.basename(filename or "")
+    if not n or "/" in n or "\\" in n or ".." in n:
+        raise ValueError("nom de fichier invalide")
+    if os.path.splitext(n)[1].lower() not in (PREPA_EXT + PREPA_SIDECARS):
+        raise ValueError("extension non acceptée : %s" % n)
+    root = prepa_dir(label)
+    dst_dir = os.path.realpath(os.path.join(root, PREPA_WEB_SUBDIR))
+    if not dst_dir.startswith(root + os.sep):
+        raise ValueError("accès refusé")
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, n)
+    base, ext = os.path.splitext(n)
+    v = 1
+    while os.path.exists(dst):
+        dst = os.path.join(dst_dir, "%s_v%d%s" % (base, v, ext))
+        v += 1
+    with open(dst, "wb") as f:
+        f.write(data)
+    return {"mission_name": label, "count": 1,
+            "files": [{"path": os.path.relpath(dst, root).replace(os.sep, "/"), "size_bytes": len(data)}]}
+
+
 def coverage_bands(times, max_gap, t0=0.0):
     """Plages [[début, fin] relatifs à t0] de présence d'un flux : instants triés, une coupure dès
     qu'un trou dépasse max_gap s (réception vidéo 4609 ≈ continue ; dwells radar 4607 par passes)."""
@@ -3446,6 +3580,27 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-cache")
                 self.send_header("Access-Control-Allow-Origin", "*"); self.send_header("Access-Control-Expose-Headers", "*")
                 self.end_headers(); self.wfile.write(data); return
+            m_ = re.match(r"^/api/missions/([^/]+)/prepa/(list|file|shapeset)$", u.path)
+            if m_:
+                label = urllib.parse.unquote(m_.group(1))
+                if m_.group(2) == "list":
+                    return self._json(prepa_list(label))
+                rel = q.get("path", [""])[0]
+                if m_.group(2) == "shapeset":
+                    fname, data = prepa_shapeset(label, rel)
+                else:
+                    fp = prepa_path(label, rel)
+                    fname = os.path.basename(fp)
+                    with open(fp, "rb") as f:
+                        data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip" if fname.lower().endswith(".zip") else "application/octet-stream")
+                self.send_header("Content-Disposition", 'attachment; filename="%s"' % fname)
+                self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-cache")
+                # Pas d'en-tête CORS ici : nginx en ajoute déjà un (Access-Control-Allow-Origin
+                # $http_origin). En poser un second fait rejeter la réponse par le navigateur
+                # (« Failed to fetch ») alors que curl, qui ignore CORS, la reçoit très bien.
+                self.end_headers(); self.wfile.write(data); return
             if u.path == "/api/missions":
                 fl = lambda k: (float(q[k][0]) if q.get(k, [""])[0] else None)
                 return self._json({"missions": missions_list(q.get("cr", [None])[0], q.get("callsign", [None])[0], fl("from"), fl("to"), q.get("day", [None])[0])})
@@ -3693,6 +3848,21 @@ class Handler(BaseHTTPRequestHandler):
         self._strip_base()
         u = urllib.parse.urlsplit(self.path)
         n = int(self.headers.get("Content-Length") or 0)
+        # Dépôt d'un fichier de préparation : corps = octets bruts, nom en query string.
+        # Traité AVANT le parsing JSON du corps, qui échouerait sur du binaire.
+        m_ = re.match(r"^/api/missions/([^/]+)/prepa/upload$", u.path)
+        if m_:
+            try:
+                q_ = urllib.parse.parse_qs(u.query)
+                data = self.rfile.read(n) if n else b""
+                if not data:
+                    raise ValueError("corps vide")
+                return self._json(prepa_upload(urllib.parse.unquote(m_.group(1)), q_.get("name", [""])[0], data))
+            except (FileNotFoundError, ValueError) as e:
+                return self._err(400, str(e))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                return self._err(500, "%s : %s" % (type(e).__name__, e))
         try:
             body = json.loads(self.rfile.read(n).decode("utf-8") or "{}") if n else {}
         except ValueError:
