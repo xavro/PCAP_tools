@@ -865,8 +865,18 @@ SNAPS_EXT = (".jpg", ".jpeg", ".png")
 _SNAPS_DIR_CACHE = {}
 
 
+# Profondeur de recherche sous la racine missions. L'arborescence nominale est
+# <racine>/<année>/<mois>/<label>, mais la racine configurée n'est pas toujours
+# celle du pays : un partage monté une ou deux marches plus haut
+# (…/00-MISSIONS/00-FRANCE) donne un label à 4 niveaux. Chercher en profondeur
+# évite un « dossier mission introuvable » qui n'est qu'un chemin mal placé.
+MISSION_SEARCH_DEPTH = 5
+
+
 def snaps_mission_dir(label):
-    """Dossier MASTER d'une mission : <racine>/<label> ou <racine>/*/*/<label> (année/mois), sous la racine."""
+    """Dossier MASTER d'une mission sous la racine : <racine>/<label>, sinon
+    recherche par niveaux croissants (<racine>/*/<label>, <racine>/*/*/<label>…)
+    jusqu'à MISSION_SEARCH_DEPTH — le plus proche de la racine l'emporte."""
     import glob
     if not MISSIONS_PATH:
         raise ValueError("MISSIONS_PATH non configuré")
@@ -877,9 +887,19 @@ def snaps_mission_dir(label):
         return c
     root = os.path.realpath(MISSIONS_PATH)
     direct = os.path.join(root, label)
-    cands = [direct] if os.path.isdir(direct) else [p for p in glob.glob(os.path.join(glob.escape(root), "*", "*", glob.escape(label))) if os.path.isdir(p)]
+    cands = []
+    if os.path.isdir(direct):
+        cands = [direct]
+    else:
+        for depth in range(1, MISSION_SEARCH_DEPTH + 1):
+            pattern = os.path.join(glob.escape(root), *(["*"] * depth), glob.escape(label))
+            cands = [p for p in glob.glob(pattern) if os.path.isdir(p)]
+            if cands:
+                break
     if not cands:
-        raise FileNotFoundError("dossier mission introuvable sous la racine missions : %s" % label)
+        raise FileNotFoundError(
+            "dossier mission introuvable sous la racine missions %s (jusqu'à %d niveaux) : %s"
+            % (MISSIONS_PATH, MISSION_SEARCH_DEPTH, label))
     d = os.path.realpath(sorted(cands)[0])
     if not d.startswith(root + os.sep):
         raise ValueError("accès refusé")
