@@ -247,7 +247,13 @@ def _decode_dwell_full(b, seg):
         elif bit == 9: d["scale_lon"] = _ba32(b, p)
         elif bit == 22: d["clat"] = _sa32(b, p)
         elif bit == 23: d["clon"] = _ba32(b, p)
-        elif bit == 24: d["range_he"] = _u16(b, p) / 256.0             # B16 : km, 8 bits fractionnaires
+        # D25 Dwell Range Half Extent — B16 en km, **7 bits fractionnaires** (LSB 1/128 km,
+        # plage 0-511,99 km). Mesuré sur captures réelles (volCAE2/volCAE3, 27 700 plots) :
+        # avec 1/256 le rapport |portée_plot - R| / ΔR déborde jusqu'à 2,1 et 1,7 à 10,7 % des
+        # cibles tombent HORS de leur propre cellule ; avec 1/128 la distribution se coupe net
+        # à 1,0 (0,06 à 0,08 % de résidus au bord). Une cible est par construction dans la
+        # cellule que le radar vient d'éclairer : ce taux de contenance est la référence.
+        elif bit == 24: d["range_he"] = _u16(b, p) / 128.0
         elif bit == 25: d["angle_he"] = _u16(b, p) * (360.0 / 65536.0)  # BA16 : degrés
         p += FIELD_SIZE[bit]
 
