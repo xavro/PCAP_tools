@@ -271,6 +271,20 @@ def _f(d, tag, fn):
         return None
 
 
+def valid_ll(lat, lon):
+    """Position KLV exploitable ? Une coupure du flux de métadonnées (ou un Local Set incomplet) publie des tags
+    13/14 à zéro : le point (0, 0) au large de l'Afrique ferait un aller-retour aberrant dans la ficelle de vol.
+    On écarte aussi tout ce qui sort des bornes WGS84."""
+    if lat is None or lon is None:
+        return False
+    try:
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+            return False
+    except TypeError:
+        return False
+    return abs(lat) > 1e-6 or abs(lon) > 1e-6
+
+
 def klv_numeric(d):
     """Valeurs numériques utiles pour la carte à partir d'un LS {tag: bytes}."""
     s, u = v9._s, v9._u
@@ -786,7 +800,9 @@ def _journal_klv(pcap0):
             if it[0] == "h":
                 t0 = it[1].get("t0")
             elif it[0] == "k":
-                rows.append(it[1])
+                r = it[1]
+                if len(r) > 2 and valid_ll(r[1], r[2]):        # journaux antérieurs : points (0, 0) écartés à la lecture
+                    rows.append(r)
     return t0, rows
 
 
@@ -2440,8 +2456,9 @@ class FollowEngine:
                     d = klv_from_ts(tsdata)
                     if d and 13 in d and 14 in d:
                         n = klv_numeric(d)
-                        if n["lat"] is not None and n["lon"] is not None:
-                            row = [t_rel, n["lat"], n["lon"], n["alt"], n["hdg"], n["fc_lat"], n["fc_lon"], dport]
+                        if valid_ll(n["lat"], n["lon"]):
+                            fc_lat, fc_lon = (n["fc_lat"], n["fc_lon"]) if valid_ll(n["fc_lat"], n["fc_lon"]) else (None, None)
+                            row = [t_rel, n["lat"], n["lon"], n["alt"], n["hdg"], fc_lat, fc_lon, dport]
                             self.klv.append(row); self._tl_write("k", row); self._klv_last[dport] = ts
                 if not self.catching_up and dport in self.taps:
                     video_bus("%s:%d" % (self.fid, dport)).publish(bytes(tsdata))
