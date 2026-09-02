@@ -897,9 +897,18 @@ def snaps_mission_dir(label):
             if cands:
                 break
     if not cands:
+        # Dire ce que le serveur voit réellement sous la racine : c'est ce qui
+        # distingue en un coup d'œil un montage vide (partage non propagé au
+        # conteneur, ou conteneur non recréé) d'un label qui ne correspond à
+        # aucun dossier. Sans cela, le diagnostic demande un shell sur la VM.
+        try:
+            seen = sorted(os.listdir(root))
+        except Exception as e:
+            seen = ["<illisible : %s>" % e]
+        apercu = ", ".join(seen[:8]) + ("…" if len(seen) > 8 else "") if seen else "(vide)"
         raise FileNotFoundError(
-            "dossier mission introuvable sous la racine missions %s (jusqu'à %d niveaux) : %s"
-            % (MISSIONS_PATH, MISSION_SEARCH_DEPTH, label))
+            "dossier mission introuvable : %s. Racine %s (explorée sur %d niveaux) contient : %s"
+            % (label, MISSIONS_PATH, MISSION_SEARCH_DEPTH, apercu))
     d = os.path.realpath(sorted(cands)[0])
     if not d.startswith(root + os.sep):
         raise ValueError("accès refusé")
