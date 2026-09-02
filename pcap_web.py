@@ -1312,6 +1312,11 @@ def fused_geojson(path, profile, limit=0):
 SETTINGS_PATH = os.path.join(HERE, "pcap_web_settings.json")
 PCAP_EXT = (".pcap", ".pcapng", ".cap", ".csv")          # .csv = détections GMTI (enregistrement StratusServer / banc)
 BASE_PATH = ""                                             # préfixe d'URL (derrière un reverse proxy : /console)
+# Attente entre deux lectures du pcap suivi. Le GMTI live transite par ce chemin :
+# 0,1 s au lieu de 0,3 s ramène la latence de la chaîne au niveau de l'agrégation 4 Hz,
+# qui devient alors le terme dominant. Réglable sans reconstruction d'image.
+FOLLOW_POLL_S = float(os.getenv("FOLLOW_POLL_S", "0.1") or 0.1)
+
 CAPTURES_DIR = None                                        # dossier proposé par défaut dans « Parcourir »
 
 
@@ -2417,7 +2422,10 @@ class FollowEngine:
                 if self.catching_up and tail.offset >= tail.size():
                     self.catching_up = False
                     EVENTS.publish({"type": "log", "msg": "suivi : rattrapage terminé (%d paquets, %.1f s) — au bord du direct" % (self.n_packets, self.duration())})
-                time.sleep(0.3)
+                # Cadence de relecture du fichier suivi : 2e moitié de la latence du GMTI
+                # live (la 1re étant le flush côté capture). Au bord du direct on veut être
+                # court ; pendant le rattrapage la boucle ne dort pas, elle enchaîne.
+                time.sleep(FOLLOW_POLL_S)
         finally:
             if tail is not None:
                 tail.close()
