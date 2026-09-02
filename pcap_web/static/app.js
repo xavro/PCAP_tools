@@ -237,7 +237,11 @@
   const dwellLine = L.polyline([], { color: "#7cff6b", weight: 1, dashArray: "3 5", opacity: .7, renderer: canvasR });
   function onGmtiBatch(b) {
     gmti.stats.pkts = b.total_pkts; gmti.stats.plots = b.total_plots; gmti.stats.dwells = b.total_dwells || 0;
-    if ($("gmti-dwell").checked && b.dwells && b.dwells.length) {
+    // `$` rend un <div> factice quand le contrôle n'existe pas — la page opérateur
+    // (replay.html) n'a pas la case « dwell » de la console d'analyse, et `.checked`
+    // y valait donc `undefined`, ce qui masquait les cellules de balayage en direct.
+    // Contrôle absent = couche active ; l'opérateur la masque par la légende (data-ly).
+    if (($("gmti-dwell").checked ?? true) && b.dwells && b.dwells.length) {
       b.dwells.forEach(d => {
         let ly;
         // Non interactifs (pas d'infobulle ni de survol) : les dwells défilent sans cesse sous la souris.
