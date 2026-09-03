@@ -117,7 +117,14 @@
       try { value = d ? d[2](val) : hex(val).slice(0, 32); } catch (e) { value = hex(val); }
       fields.push({ tag, name, unit, value });
     }
-    const g = t => raw[t] ? TAGS[t][2](raw[t]) : null;
+    // Ordre des coins : l'ordre MISB (haut-gauche, haut-droit, bas-droit, bas-gauche) n'est pas respecté par tous les flux ; un ordre permuté trace un quadrilatère CROISÉ (« nœud papillon »). Tri par angle polaire autour du barycentre : le polygone obtenu est simple quel que soit l'ordre publié.
+  function orderCorners(c) {
+    if (!c || c.length !== 4 || c.some(p => p == null || p[0] == null || p[1] == null)) return c;
+    const cLat = (c[0][0] + c[1][0] + c[2][0] + c[3][0]) / 4, cLon = (c[0][1] + c[1][1] + c[2][1] + c[3][1]) / 4;
+    const kx = Math.cos(cLat * Math.PI / 180);
+    return c.slice().sort((a, b) => Math.atan2(a[0] - cLat, (a[1] - cLon) * kx) - Math.atan2(b[0] - cLat, (b[1] - cLon) * kx));
+  }
+  const g = t => raw[t] ? TAGS[t][2](raw[t]) : null;
     const num = { ts_us: g(2), hdg: g(5), pitch: g(6), roll: g(7), lat: g(13), lon: g(14), alt: g(15),
       hfov: g(16), vfov: g(17), rel_az: g(18), rel_el: g(19), slant: g(21),
       fc_lat: g(23), fc_lon: g(24), fc_alt: g(25), tgt_lat: g(40), tgt_lon: g(41), corners: null };
@@ -126,6 +133,7 @@
     } else if (num.fc_lat != null && [26,27,28,29,30,31,32,33].every(t => raw[t])) {
       num.corners = [0,1,2,3].map(c => [num.fc_lat + g(26 + 2 * c), num.fc_lon + g(27 + 2 * c)]);
     }
+    num.corners = orderCorners(num.corners);
     return { fields, num };
   }
 
