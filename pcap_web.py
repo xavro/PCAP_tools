@@ -2104,6 +2104,7 @@ class FollowEngine:
         self.gmti_batch = {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
         self.recent_plots = collections.deque(maxlen=2000); self.recent_dwells = collections.deque(maxlen=40)
         self.gmti_sensor = None; self.gmti_totals = {"gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0}; self.gmti_last_rx = None
+        self.gmti_relay_rx = None                       # dernier datagramme 4607 reçu par le relais de la capture
         self.gmti_profile = "defaut"; self.gmti_overrides = {}
         self.tracks = {}; self.track_rows = []          # rows : (id, row) dans l'ordre d'ajout (delta)
         self.streams = {}; self.watch = None; self.taps = set(); self.live = None
@@ -2501,22 +2502,32 @@ class FollowEngine:
                 self.dwells[-1].append(plots)
             for row in self.dwells[n_dw0:]:
                 self._tl_write("d", row)
+            # Relais actif : le pistage et le batch live sont déjà faits par
+            # `gmti_ingest_live`, en direct. Ce chemin ne garde que le JOURNAL —
+            # dwells datés en temps de capture et points de reprise — sinon le
+            # tracker verrait deux fois chaque dwell.
+            relayed = self.gmti_relay_active()
             if self.live is not None and gmti_pcap_to_csv is not None:
                 try:
-                    self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                    if not relayed:
+                        self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                    # L'état des pistes est journalisé dans les deux cas : sous relais
+                    # il a ~0,3 s d'avance sur la position pcap, sans conséquence pour
+                    # une reprise de ligne de temps.
                     self._track_rows(t_rel)
                 except Exception as e:
                     EVENTS.publish({"type": "log", "msg": "suivi : pistage : %s" % e})
-            self.gmti_totals["gmti_plots"] += len(plots); self.gmti_totals["gmti_pkts"] += 1; self.gmti_totals["gmti_dwells"] += len(dw)
-            self.gmti_last_rx = time.time()
-            if sensor:
-                self.gmti_sensor = sensor
-            if not self.catching_up:                               # live : batch pour les abonnés /ws/gmti
-                gb = self.gmti_batch
-                gb["plots"].extend(plots); gb["pkts"] += 1; gb["dwells"].extend(dw)
+            if not relayed:
+                self.gmti_totals["gmti_plots"] += len(plots); self.gmti_totals["gmti_pkts"] += 1; self.gmti_totals["gmti_dwells"] += len(dw)
+                self.gmti_last_rx = time.time()
                 if sensor:
-                    gb["sensor"] = sensor
-                self.recent_plots.extend(plots); self.recent_dwells.extend(dw)
+                    self.gmti_sensor = sensor
+                if not self.catching_up:                           # live : batch pour les abonnés /ws/gmti
+                    gb = self.gmti_batch
+                    gb["plots"].extend(plots); gb["pkts"] += 1; gb["dwells"].extend(dw)
+                    if sensor:
+                        gb["sensor"] = sensor
+                    self.recent_plots.extend(plots); self.recent_dwells.extend(dw)
             self._tl_checkpoint(seg_no, rec_off)
 
     def _track_rows(self, t_rel):
@@ -2710,7 +2721,11 @@ class FollowEngine:
                 "n_clustered": st.get("n_clustered", 0), "n_absorbed": st.get("n_absorbed", 0), "n_resets": st.get("n_resets", 0),
                 "tracks_alive": len(self.live.tk.tracks) if (self.live and self.live.tk) else 0,
                 "subscribers": len(self.gmti_bus.subs), "recording": self.state.get("pcap"), "errors": 0,
-                "mission_name": os.path.basename(self._seg_base or ""), "catching_up": self.catching_up}
+                "mission_name": os.path.basename(self._seg_base or ""), "catching_up": self.catching_up,
+                # Voie d'alimentation du GMTI live : « relais » = direct depuis la
+                # capture, « pcap » = par le fichier suivi (une seconde environ de plus).
+                "gmti_source": "relais" if self.gmti_relay_active() else "pcap",
+                "relay_age_s": round(now - self.gmti_relay_rx, 2) if self.gmti_relay_rx else None}
 
     def gmti_snapshot_event(self):
         try:
@@ -2720,6 +2735,55 @@ class FollowEngine:
         return {"type": "snapshot", "port": self.cr, "t": round(time.time(), 3), "plots": list(self.recent_plots), "sensor": self.gmti_sensor,
                 "dwells": list(self.recent_dwells), "total_plots": self.gmti_totals["gmti_plots"], "total_pkts": self.gmti_totals["gmti_pkts"],
                 "total_dwells": self.gmti_totals["gmti_dwells"], "live": snap, "status": self.gmti_status()}
+
+    def gmti_ingest_live(self, pl):
+        """
+        Datagramme 4607 reçu **en direct** par le relais de la capture, sans passer
+        par le pcap. Fait la moitié « live » du travail de `_on_frame` : décodage,
+        pistage, batch pour les abonnés `/ws/gmti`.
+
+        Le journal (`.tl.jsonl`, ligne de temps, points de reprise) reste écrit par
+        le chemin pcap, qui garde la vérité des offsets de segment. Le pistage, lui,
+        ne tourne QU'ICI quand le relais est actif — `_on_frame` s'en abstient pour
+        ne pas présenter deux fois les mêmes dwells au tracker.
+        """
+        self.gmti_relay_rx = time.time()
+        if self.catching_up:
+            # Rattrapage en cours : le chemin pcap doit rester seul maître du
+            # pistage tant qu'il rejoue le passé, sinon le tracker mélangerait
+            # des dwells d'hier et d'il y a une seconde. On note seulement que
+            # le relais est là ; il prendra la main au retour en direct.
+            return
+        g = decode_gmti(pl)
+        if g is None:
+            return
+        plots, sensor, dw = g
+        if self.live is not None and gmti_pcap_to_csv is not None:
+            try:
+                self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+            except Exception as e:
+                EVENTS.publish({"type": "log", "msg": "relais GMTI : pistage : %s" % e})
+        self.gmti_totals["gmti_plots"] += len(plots)
+        self.gmti_totals["gmti_pkts"] += 1
+        self.gmti_totals["gmti_dwells"] += len(dw)
+        self.gmti_last_rx = time.time()
+        if sensor:
+            self.gmti_sensor = sensor
+        gb = self.gmti_batch
+        gb["plots"].extend(plots); gb["pkts"] += 1; gb["dwells"].extend(dw)
+        if sensor:
+            gb["sensor"] = sensor
+        self.recent_plots.extend(plots); self.recent_dwells.extend(dw)
+
+    def gmti_relay_active(self):
+        """
+        Le relais alimente-t-il ce moteur ? Faux pendant un rattrapage : le chemin
+        pcap y reste seul maître du pistage. Marge large sur la fraîcheur — un radar
+        peut se taire un moment sans que le relais soit pour autant absent.
+        """
+        if self.catching_up or not self.gmti_relay_rx:
+            return False
+        return (time.time() - self.gmti_relay_rx) < GMTI_RELAY_TTL_S
 
     def gmti_flush(self):
         """Batch 4607 → abonnés (appelé par gmti_ticker à ~4 Hz)."""
@@ -3401,12 +3465,70 @@ def gmti_status_idle(cr):
             "profile": os.getenv("GMTI_PROFILE_%s" % (cr or "").upper()) or os.getenv("GMTI_PROFILE") or "defaut", "overrides": {},
             "receiving": False, "last_rx_age_s": None, "totals": {"gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0},
             "n_dwells": 0, "n_ghosts": 0, "n_clustered": 0, "n_absorbed": 0, "n_resets": 0, "tracks_alive": 0,
-            "subscribers": 0, "recording": None, "errors": 0, "mission_name": None, "catching_up": False}
+            "subscribers": 0, "recording": None, "errors": 0, "mission_name": None, "catching_up": False,
+            "gmti_source": None, "relay_age_s": None}
 
 
 def cr_engine(cr):
     fid = CR_FOLLOW.get((cr or "").upper())
     return FOLLOWS.get(fid) if fid else None
+
+
+GMTI_RELAY = (os.getenv("GMTI_RELAY", "1").strip().lower() not in ("0", "false", "no", "off", ""))
+GMTI_RELAY_BASE = int(os.getenv("GMTI_RELAY_BASE", "20100") or 20100)
+# Au-delà de ce silence, on considère le relais absent et le chemin pcap reprend la
+# main : un radar muet ne doit pas priver le suivi de son pistage au retour du flux.
+GMTI_RELAY_TTL_S = float(os.getenv("GMTI_RELAY_TTL_S", "10") or 10)
+
+
+def gmti_relay_loop(cr, port):
+    """
+    Écoute les datagrammes 4607 relayés par stratus2-capture et les pousse dans le
+    moteur de suivi du CR — sans attendre l'écriture ni la relecture du pcap.
+
+    Le relais court-circuite le disque pour le seul affichage direct : l'écriture du
+    pcap, la ligne de temps et le DVR ne changent pas. Si aucun suivi n'existe encore
+    pour ce CR (mission pas démarrée), les datagrammes sont simplement ignorés.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    except OSError:
+        pass
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as e:
+        print("[gmti-relay] %s : bind udp/%d impossible (%s)" % (cr, port, e), flush=True)
+        return
+    print("[gmti-relay] %s : écoute udp/127.0.0.1:%d" % (cr, port), flush=True)
+    while True:
+        try:
+            data, _ = sock.recvfrom(65535)
+        except OSError:
+            time.sleep(0.5); continue
+        if not data:
+            continue
+        eng = cr_engine(cr)
+        if eng is None:
+            continue
+        try:
+            eng.gmti_ingest_live(data)
+        except Exception as e:
+            print("[gmti-relay] %s : %s" % (cr, e), flush=True)
+
+
+def start_gmti_relays():
+    """Un écouteur par CR déclaré dans CAPTURE_SETS ayant un port secondaire (4607)."""
+    if not GMTI_RELAY:
+        return
+    for cr, ports in _capture_sets_by_cr().items():
+        if len(ports) < 2:
+            continue
+        m = re.search(r"(\d+)$", cr)
+        n = int(m.group(1)) if m else (list(_capture_sets_by_cr()).index(cr) + 1)
+        threading.Thread(target=gmti_relay_loop, args=(cr, GMTI_RELAY_BASE + n),
+                         name="gmti-relay-%s" % cr, daemon=True).start()
 
 
 def auto_follow_loop():
@@ -4313,6 +4435,10 @@ def main():
     if CAPTURES_DIR and os.getenv("AUTO_FOLLOW", "1").strip().lower() not in ("0", "false", "no", "off"):
         threading.Thread(target=auto_follow_loop, name="auto_follow", daemon=True).start()
         print("[follow] suivi automatique des missions en cours (%s, GMTI live sur /ws/gmti/{CR})" % CAPTURE_STATUS_URL, flush=True)
+        # Relais 4607 : le GMTI live cesse de dépendre de l'écriture puis de la
+        # relecture du pcap. Les moteurs de suivi restent alimentés par le fichier
+        # pour le journal et le DVR.
+        start_gmti_relays()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     url = "http://%s:%d%s/" % ("127.0.0.1" if a.host in ("0.0.0.0", "") else a.host, a.port, BASE_PATH)
