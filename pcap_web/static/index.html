@@ -142,6 +142,7 @@
         <button data-tab="fmv" class="on">FMV 4609 <span class="tsum" id="inv-sum"></span></button>
         <button data-tab="gmti">GMTI 4607 <span class="tsum" id="gmti-sum"></span></button>
         <button data-tab="cot">CoT <span class="tsum" id="cot-sum"></span></button>
+        <button data-tab="aesd">AESD <span class="tsum" id="aesd-sum"></span></button>
       </div>
       <div class="tabpage on" id="inv">
         <div class="body">
@@ -196,6 +197,13 @@
         <pre id="gmti-inv" hidden></pre>
       </div>
       </div>
+      <div class="tabpage" id="aesd">
+        <div class="body">
+        <div class="hint">Métadonnées ASCII <b>AESD</b> (REAPER) : position plateforme, point visé, visée (azimut vrai / site / portée), attitude et champ de vision, à 20 Hz. Le flux ne porte ni altitude plateforme, ni champ vertical, ni coins d'empreinte, et n'est daté qu'à la seconde (cf. aesd.py).</div>
+        <div class="row"><button id="aesd-scan">Analyser AESD</button><select id="aesd-port" hidden></select><button id="aesd-csv" hidden title="tous les enregistrements décodés, sans décimation">⤓ CSV complet</button><span id="aesd-status" class="muted mono"></span></div>
+        <table class="cot"><thead><tr><th>t (s)</th><th>UTC</th><th>plateforme</th><th>point visé</th><th>portée</th><th>azimut</th><th>site</th><th>cap</th></tr></thead><tbody id="aesd-body"></tbody></table>
+        </div>
+      </div>
       <div class="tabpage" id="cot">
         <div class="body">
         <div class="row"><button id="cot-scan">Analyser CoT</button><input id="cot-filter" type="text" placeholder="filtre type (ex. a-h)" style="width:120px"><span id="cot-status" class="muted mono"></span></div>
@@ -226,6 +234,7 @@
         <span data-ly="contacts"><i style="background:#e58cff;border-radius:0;height:5px;width:12px;opacity:.7"></i>contacts (fusion)</span>
         <span data-ly="ab"><i style="background:transparent;border-top:2px dashed #ff5cf0;border-radius:0;height:0;width:12px"></i>A/B</span>
         <span data-ly="cot"><i style="background:#ff5252;border-radius:2px;width:8px;height:8px"></i><i style="background:#00c8ff;border-radius:2px;width:8px;height:8px;margin-left:-3px"></i>CoT (aff.)</span>
+        <span data-ly="aesd"><i style="background:#ff9f43;border-radius:0;height:5px;width:12px"></i>AESD (visée)</span>
         <span data-ly="labels"><i style="background:transparent;border:1px solid #8a8f98;border-radius:2px;width:12px;height:8px"></i>étiquettes</span>
       </div>
     </div>

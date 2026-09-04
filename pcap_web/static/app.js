@@ -146,7 +146,7 @@
   // panneaux repliables (Rejeu) + onglets par source
   document.querySelectorAll("#left .panel h2").forEach(h => h.addEventListener("click", e => {
     if (e.target.closest("button,select,input")) return; h.parentElement.classList.toggle("collapsed"); }));
-  const TAB_ID = { fmv: "inv", gmti: "gmti", cot: "cot" };
+  const TAB_ID = { fmv: "inv", gmti: "gmti", cot: "cot", aesd: "aesd" };
   function showTab(name) {
     document.querySelectorAll(".tabbar button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
     Object.entries(TAB_ID).forEach(([k, id]) => $(id).classList.toggle("on", k === name));
@@ -158,7 +158,7 @@
   // ── Carte (EPSG:3857 : tuiles ArcGIS Online ; export MapServer demandé en 3857) ─
   const map = L.map("map", { attributionControl: true, zoomSnap: 0.25, preferCanvas: true }).setView([46, 2], 5);
   const LY = {};                                       // clé légende → groupe de couches
-  ["trace", "foot", "center", "plots", "dwell", "tracks", "live", "contacts", "ab", "cot"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
+  ["trace", "foot", "center", "plots", "dwell", "tracks", "live", "contacts", "ab", "cot", "aesd"].forEach(k => { LY[k] = L.layerGroup().addTo(map); });
   const lyInspect = L.layerGroup().addTo(map);          // surbrillance de la piste inspectée
   const lyTrace = LY.trace, lyFoot = LY.foot, lyCenter = LY.center, lyPlots = LY.plots, lyDwell = LY.dwell, lyCot = LY.cot;
   const canvasR = L.canvas({ padding: 0.3 });
@@ -1125,6 +1125,66 @@
     }
   }
   $("follow").addEventListener("change", () => { if (state.applied >= 0) follow(state.sets[state.applied].num); });
+
+  // ── AESD : métadonnées ASCII REAPER d'une capture (onglet dédié) ────────────
+  // Le flux n'a ni empreinte ni altitude : on trace la plateforme, la trace du point visé et la ligne de
+  // visée de l'enregistrement sélectionné — c'est ce qui se lit sur une carte.
+  const ae = { data: null, sel: -1 };
+  const ll = (a, b) => (a == null || b == null) ? "—" : `${a.toFixed(5)} ${b.toFixed(5)}`;
+  function aesdDraw() {
+    const L_ = LY.aesd; L_.clearLayers();
+    const d = ae.data; if (!d || !d.records.length) return;
+    const pts = d.records.filter(r => r.tgt_lat != null).map(r => [r.tgt_lat, r.tgt_lon]);
+    if (pts.length) L.polyline(pts, { color: "#ff9f43", weight: 1.5, opacity: .8 }).addTo(L_);
+    const r = d.records[ae.sel >= 0 ? ae.sel : 0];
+    if (r && r.lat != null) {
+      L.circleMarker([r.lat, r.lon], { radius: 6, color: "#ff9f43", fillColor: "#ff9f43", fillOpacity: .9, weight: 2 })
+        .bindTooltip(`plateforme · cap ${fmt(r.hdg, 1)}°`, { direction: "right", offset: [6, 0] }).addTo(L_);
+      if (r.tgt_lat != null) {
+        L.polyline([[r.lat, r.lon], [r.tgt_lat, r.tgt_lon]], { color: "#ff9f43", weight: 1.5, dashArray: "4 3" }).addTo(L_);
+        L.circleMarker([r.tgt_lat, r.tgt_lon], { radius: 4, color: "#ffd54f", fillColor: "#ffd54f", fillOpacity: .9, weight: 1.5 })
+          .bindTooltip(`visée · ${fmt(r.slant_m, 0)} m · az ${fmt(r.los_az, 2)}° · site ${fmt(r.los_el, 2)}°`, { direction: "right", offset: [6, 0] }).addTo(L_);
+      }
+    }
+  }
+  function aesdSelect(i) {
+    ae.sel = i;
+    document.querySelectorAll("#aesd-body tr").forEach((tr, k) => tr.classList.toggle("sel", k === i));
+    aesdDraw();
+  }
+  function aesdRender() {
+    const d = ae.data; const t0 = d.records.length ? d.records[0].t : 0;
+    $("aesd-body").innerHTML = d.records.map((r, i) => `<tr data-i="${i}">
+      <td class="mono">${(r.t - t0).toFixed(2)}</td><td class="mono">${r.utc || "—"}</td>
+      <td class="mono">${ll(r.lat, r.lon)}</td><td class="mono">${ll(r.tgt_lat, r.tgt_lon)}</td>
+      <td class="mono">${fmt(r.slant_m, 0)} m</td><td class="mono">${fmt(r.los_az, 2)}°</td>
+      <td class="mono">${fmt(r.los_el, 2)}°</td><td class="mono">${fmt(r.hdg, 2)}°</td></tr>`).join("");
+    aesdSelect(0);
+  }
+  $("aesd-body").addEventListener("click", ev => { const tr = ev.target.closest("tr[data-i]"); if (tr) aesdSelect(+tr.dataset.i); });
+  $("aesd-port").addEventListener("change", () => aesdScan($("aesd-port").value));
+  async function aesdScan(dport) {
+    if (!state.pcap) return status("choisir un pcap d'abord", true);
+    let d;
+    try { d = await withBusy("décodage AESD de la capture…", () => api(`/api/aesd?pcap=${encodeURIComponent(state.pcap)}${dport ? "&dport=" + dport : ""}`), ["aesd-scan"]); }
+    catch (e) { return $("aesd-status").textContent = "erreur : " + e.message; }
+    if (!d.n) { ae.data = null; LY.aesd.clearLayers(); $("aesd-body").innerHTML = ""; $("aesd-sum").textContent = "—";
+      return $("aesd-status").textContent = "aucun flux AESD dans cette capture"; }
+    ae.data = d;
+    const ports = Object.keys(d.ports || {});
+    const sel = $("aesd-port"); sel.hidden = ports.length < 2;
+    sel.innerHTML = ports.map(p => `<option value="${p}"${+p === d.port ? " selected" : ""}>port ${p} · ${d.ports[p].pkts} dg</option>`).join("");
+    $("aesd-csv").hidden = false;
+    $("aesd-status").textContent = `port ${d.port} · ${d.src} → ${d.dst} · ${d.n} enregistrements · ${d.hz || "?"} Hz · ${d.duration_s} s`
+      + (d.utc_first ? ` · ${d.utc_first} → ${d.utc_last}` : " · non daté")
+      + (d.step > 1 ? ` · tableau décimé ×${d.step}` : "");
+    $("aesd-sum").textContent = `${d.n} · ${d.hz || "?"} Hz`;
+    aesdRender();
+    const pts = d.records.filter(r => r.tgt_lat != null).map(r => [r.tgt_lat, r.tgt_lon]);
+    if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.5));
+  }
+  $("aesd-scan").addEventListener("click", () => aesdScan($("aesd-port").hidden ? null : $("aesd-port").value));
+  $("aesd-csv").addEventListener("click", () => { if (ae.data) window.open(U(`/api/aesd/export.csv?pcap=${encodeURIComponent(state.pcap)}&dport=${ae.data.port}`), "_blank"); });
 
   const HL = new Set([2, 5, 13, 14, 15, 16, 17, 21, 23, 24, 25]);
   const esc = x => String(x == null ? "" : x).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));

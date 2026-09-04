@@ -40,6 +40,8 @@ API :
   GET /api/browse?dir=          explorateur de fichiers côté serveur (dossiers + captures)
   GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export dynamique)
   GET /api/gmti/decode?pcap=    décodage GMTI (extracteur complet | streaming) + inventaire 4607
+  GET /api/aesd?pcap=&dport=    métadonnées ASCII AESD (REAPER) décodées (cf. aesd.py) ; export.csv pour tout
+                                le détail sans décimation
   GET /api/gmti/track?pcap=&profile=&overrides={json}  tracker (profil + surcharges, noms Java) → pistes,
                                 plots bruts, zone job, porteur, contacts (fusion), métriques, config effective
   GET/POST /api/gmti/profiles   profils du tracker (source unique gmti_profiles.json, partagée avec le Java)
@@ -88,6 +90,7 @@ try:
 except Exception:                                                 # pragma: no cover
     net_capture = None
 import video4609 as v9                                            # noqa: E402
+import aesd                                                       # noqa: E402  (métadonnées ASCII REAPER)
 import xml.etree.ElementTree as ET                                # noqa: E402
 try:
     import gmti_pcap_to_csv                                       # noqa: E402
@@ -3713,6 +3716,29 @@ def follow_reaper():
 threading.Thread(target=follow_reaper, name="follow_reaper", daemon=True).start()
 
 
+def aesd_decode(path, dport=None, limit=0, max_records=4000):
+    """Métadonnées AESD d'une capture, pour l'onglet AESD de la console.
+
+    Les enregistrements sont **décimés** au-delà de `max_records` : à 20 Hz, une heure de capture en produit
+    72 000, dont la console n'affiche qu'une trace et un tableau. La décimation garde le premier et le
+    dernier, et `n` reste le compte réel."""
+    d = aesd.records_from_pcap(path, dport, limit)
+    recs = d.pop("records")
+    step = max(1, (len(recs) + max_records - 1) // max_records) if max_records else 1
+    kept = recs[::step]
+    if recs and kept[-1] is not recs[-1]:
+        kept.append(recs[-1])
+    d["step"] = step
+    d["records"] = [{k: v for k, v in r.items() if k != "raw"} for r in kept]
+    return d
+
+
+def aesd_csv(path, dport=None, limit=0):
+    """Export CSV de TOUS les enregistrements décodés (sans décimation)."""
+    d = aesd.records_from_pcap(path, dport, limit)
+    return aesd.to_csv(d["records"])
+
+
 def flows_summary(path, limit=0):
     """Flux applicatifs (pcap_analyze.scan) → lignes pour le routage."""
     if is_csv_source(path):
@@ -3911,6 +3937,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(browse(q.get("dir", [None])[0]))
             if u.path == "/api/basemap":
                 return self._json(basemap_load())
+            if u.path == "/api/aesd":
+                path = self._pcap(q)
+                dp = q.get("dport", [None])[0]
+                return self._json(aesd_decode(path, int(dp) if dp else None, int(q.get("limit", ["0"])[0] or 0)))
+            if u.path == "/api/aesd/export.csv":
+                path = self._pcap(q)
+                dp = q.get("dport", [None])[0]
+                body = aesd_csv(path, int(dp) if dp else None, int(q.get("limit", ["0"])[0] or 0)).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", 'attachment; filename="aesd.csv"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
             if u.path == "/api/flows":
                 path = self._pcap(q)
                 return self._json(flows_summary(path, int(q.get("limit", ["0"])[0] or 0)))

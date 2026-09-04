@@ -163,6 +163,18 @@ def looks_like_4607(pl: bytes) -> bool:
         return False
 
 
+def _aesd_signature(pl: bytes) -> bool:
+    """Métadonnées ASCII AESD (REAPER) : texte imprimable entièrement fait de couples <tag><valeur>.
+    Le détail du format et des champs est dans aesd.py — import paresseux pour garder ce module autonome."""
+    if len(pl) < 24 or not (65 <= pl[0] <= 90 or 48 <= pl[0] <= 122):
+        return False
+    try:
+        from aesd import looks_like_aesd
+    except ImportError:
+        return False
+    return looks_like_aesd(pl)
+
+
 def classify(pl: bytes) -> str:
     if not pl:
         return "vide"
@@ -176,6 +188,8 @@ def classify(pl: bytes) -> str:
         return "KLV/4609(meta)"
     if looks_like_4607(pl):
         return "GMTI/4607"
+    if _aesd_signature(pl):
+        return "AESD(meta)"
     s = pl.lstrip()
     if s[:6] == b"<event" or s[:5] == b"<?xml":
         return "CoT-XML"
@@ -191,7 +205,7 @@ _PROTO_ALIASES = {
     "gmti": "GMTI/4607", "4607": "GMTI/4607",
     "cot": "CoT-XML", "sitac": "SITAC-bus", "link16": "Link16/JREAP(I6)",
     "video": "MPEG-TS/4609(video)", "klv": "KLV/4609(meta)",
-    "json": "JSON", "gzip": "gzip",
+    "json": "JSON", "gzip": "gzip", "aesd": "AESD(meta)",
 }
 
 
@@ -199,7 +213,7 @@ _PROTO_ALIASES = {
 # Analyse
 # --------------------------------------------------------------------------
 
-APP = ("GMTI", "CoT", "SITAC", "Link16", "MPEG", "KLV", "JSON")
+APP = ("GMTI", "CoT", "SITAC", "Link16", "MPEG", "KLV", "JSON", "AESD")
 
 
 def scan(path, limit=0):
