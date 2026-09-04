@@ -76,6 +76,7 @@
         <label class="chk" title="cadrage automatique de la carte">suivre <select id="follow" style="padding:1px 4px"><option value="none" selected>Désactivé</option><option value="sensor">le capteur</option><option value="center">le centre image</option><option value="both">capteur + empreinte</option></select></label>
         <div style="display:flex;gap:4px"><button id="btn-fit" style="padding:2px 8px;flex:1">Ajuster la vue</button></div>
         <div style="display:flex;gap:4px"><button id="btn-measure" style="padding:2px 8px;flex:1" title="mesurer : cliquer les points, double-clic ou Échap pour terminer">📏 Mesurer</button><button id="btn-measure-clear" style="padding:2px 8px" title="effacer les mesures">✕</button></div>
+        <div style="display:flex;gap:4px"><button id="btn-settings" style="padding:2px 8px;flex:1" title="source du fond de carte (réglage partagé avec la console, enregistré dans basemap.json)">🗺 Fond de carte</button></div>
       </div>
       <div class="coords" id="coords" title="position du pointeur — cliquer pour copier le MGRS"><b id="c-mgrs">—</b><span id="c-ll"></span></div>
       <div class="legend" title="cliquer une entrée pour masquer / afficher la couche">
@@ -112,6 +113,31 @@
       <span id="status" class="muted"></span>
     </div>
   </footer>
+</div>
+
+<div class="settings" id="settings" hidden>
+  <div class="st-head"><b>🗺 Fond de carte</b><button id="st-close">✕</button></div>
+  <div class="st-body">
+    <section>
+      <div class="row"><label class="chk"><input type="checkbox" id="basemap" checked> afficher le fond de carte</label></div>
+      <label>Source <select id="bm-provider">
+        <option value="arcgis_online">ArcGIS Online (internet)</option>
+        <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
+        <option value="none">Aucun</option></select></label>
+      <label id="bm-layer-row">Couche <select id="bm-layer">
+        <option value="World_Imagery">Imagerie</option>
+        <option value="World_Topo_Map">Topographique</option>
+        <option value="World_Street_Map">Rues</option>
+        <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
+      <div id="bm-ms-rows">
+        <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
+        <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
+        <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
+      </div>
+      <div class="row"><button id="bm-save" class="accent">Appliquer &amp; enregistrer</button><span id="bm-msg" class="muted"></span></div>
+      <div class="row"><span class="muted">Réglage commun à la console pcap (fichier basemap.json du serveur).</span></div>
+    </section>
+  </div>
 </div>
 
 <!-- Contrat DOM minimal du moteur (valeurs pilotées par l'URL, jamais affichées) -->
