@@ -255,8 +255,11 @@ def records_from_pcap(path, dport=None, limit=0):
     dec = Decoder()
     recs = []
     n = 0
+    cap_t0 = None
     for ts, linktype, frame in pcap_analyze.iter_frames(path):
         n += 1
+        if cap_t0 is None:
+            cap_t0 = ts                          # origine de la barre de temps de la console
         if limit and n > limit:
             break
         r = pcap_analyze.parse(linktype, frame)
@@ -264,9 +267,12 @@ def records_from_pcap(path, dport=None, limit=0):
             continue
         recs.extend(dec.feed(r[5], ts))
     _stamp(recs)
+    for r in recs:
+        r["dt"] = round(r["t"] - cap_t0, 3) if (cap_t0 is not None and r.get("t") is not None) else None
     info = ports[dport]
     dur = (recs[-1]["t"] - recs[0]["t"]) if len(recs) > 1 else 0.0
     return {"port": dport, "src": info["src"], "dst": info["dst"], "pkts": info["pkts"], "bytes": info["bytes"],
+            "capture_t0": cap_t0,
             "duration_s": round(dur, 3), "hz": round(len(recs) / dur, 2) if dur > 0 else None,
             "n": len(recs), "utc_first": next((r["utc"] for r in recs if r.get("utc")), None),
             "utc_last": next((r["utc"] for r in reversed(recs) if r.get("utc")), None),
@@ -275,7 +281,7 @@ def records_from_pcap(path, dport=None, limit=0):
             "records": recs}
 
 
-CSV_COLS = ["t", "utc", "utc_epoch", "lat", "lon", "tgt_lat", "tgt_lon", "tgt_elev", "tgt_width",
+CSV_COLS = ["t", "dt", "utc", "utc_epoch", "lat", "lon", "tgt_lat", "tgt_lon", "tgt_elev", "tgt_width",
             "slant_nm", "slant_m", "los_az", "los_el", "hfov", "hdg", "pitch", "roll", "sensor", "sl", "ic"]
 
 

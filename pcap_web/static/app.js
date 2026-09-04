@@ -150,6 +150,8 @@
   function showTab(name) {
     document.querySelectorAll(".tabbar button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
     Object.entries(TAB_ID).forEach(([k, id]) => $(id).classList.toggle("on", k === name));
+    // Le panneau AESD occupe la place du panneau KLV : les deux décrivent l'instant courant, jamais ensemble.
+    $("aesd-panel").hidden = name !== "aesd"; $("klv").hidden = name === "aesd";
     localStorage.setItem("tab", name);
   }
   document.querySelectorAll(".tabbar button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -1111,7 +1113,7 @@
       : `capteur ${fmt(n.lat)} ${fmt(n.lon)}  alt ${fmt(n.alt, 0)} m\ncap ${fmt(n.hdg, 1)}°  tang ${fmt(n.pitch, 1)}°  roul ${fmt(n.roll, 1)}°\nFOV ${fmt(n.hfov, 2)}°×${fmt(n.vfov, 2)}°  portée ${fmt(n.slant, 0)} m\ncentre ${fmt(n.fc_lat)} ${fmt(n.fc_lon)}`) + (vidgap.last != null ? `\npiste ${vidgap.id} à ${vidgap.last.toFixed(0)} m du centre image` : "");
     $("tl-utc").textContent = utc(n.ts_us);
     $("tl-lag").textContent = (tms - s.pts).toFixed(0);
-    if (performance.now() - state.tableAt > 120) { renderTable(s.fields, true); state.tableAt = performance.now(); }
+    if (performance.now() - state.tableAt > 120) { renderTable(s.fields, true); aesdFollowPlayback(pb.t); state.tableAt = performance.now(); }
     state.applied = idx;
   }
   function follow(n) {
@@ -1147,11 +1149,62 @@
       }
     }
   }
-  function aesdSelect(i) {
-    ae.sel = i;
-    document.querySelectorAll("#aesd-body tr").forEach((tr, k) => tr.classList.toggle("sel", k === i));
+  function aesdPanel(r) {
+    if (!r) { $("aesd-pbody").innerHTML = ""; return; }
+    // Même présentation que le tableau KLV. Le survol donne le jeton BRUT du flux (« Sa+4539486 ») :
+    // c'est l'équivalent AESD du nom normalisé MISB — ce que l'on recoupe avec une trace réseau.
+    const F = (ae.data && ae.data.fields) || [];
+    const HLK = ["lat", "lon", "tgt_lat", "tgt_lon", "slant_m"];
+    $("aesd-pbody").innerHTML = F.map(f => {
+      const v = r[f.key];
+      if (v == null) return "";
+      const val = typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(Math.abs(v) < 10 ? 4 : 3)) : esc(v);
+      const raw = (r.raw && r.raw[f.tag]) ? f.tag + r.raw[f.tag] : f.tag;
+      const tip = esc(f.name + (f.unit ? " (" + f.unit + ")" : "") + "\nAESD - champ brut " + raw);
+      return `<tr class="${HLK.includes(f.key) ? "hl" : ""}" title="${tip}"><td class="tag">${f.tag}</td>`
+        + `<td class="name">${esc(f.name)}</td><td class="val">${val}</td><td class="unit">${f.unit || ""}</td></tr>`;
+    }).join("");
+    $("aesd-psum").textContent = (r.utc || "—") + (r.dt != null ? " · t=" + r.dt.toFixed(2) + " s" : "");
+  }
+  function aesdSelect(i, scroll) {
+    const d = ae.data; if (!d || !d.records.length) return;
+    ae.sel = Math.max(0, Math.min(i, d.records.length - 1));
+    const rows = document.querySelectorAll("#aesd-body tr");
+    rows.forEach((tr, k) => tr.classList.toggle("sel", k === ae.sel));
+    if (scroll && rows[ae.sel]) rows[ae.sel].scrollIntoView({ block: "nearest" });
+    aesdPanel(d.records[ae.sel]);
     aesdDraw();
   }
+  /** Place la lecture AESD sur l'instant `tRel` (secondes depuis le début de la capture). */
+  function aesdSeek(tRel, scroll) {
+    const d = ae.data; if (!d || !d.records.length) return;
+    let lo = 0, hi = d.records.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if ((d.records[mid].dt || 0) < tRel) lo = mid + 1; else hi = mid; }
+    if (lo !== ae.sel) aesdSelect(lo, scroll);
+  }
+  // Lecture autonome : ces captures n'ont pas forcément de vidéo, il n'y a donc pas d'horloge à suivre.
+  // Si la capture en contient une, `apply()` appelle aesdFollowPlayback et le panneau suit le flux lu.
+  const aePlay = { timer: null, t0: 0, wall: 0 };
+  function aesdPlayStop() {
+    if (aePlay.timer) { clearInterval(aePlay.timer); aePlay.timer = null; }
+    $("aesd-play").textContent = "▶";
+  }
+  function aesdPlayToggle() {
+    const d = ae.data; if (!d || !d.records.length) return;
+    if (aePlay.timer) { aesdPlayStop(); return; }
+    const last = d.records[d.records.length - 1].dt || 0;
+    const cur = d.records[ae.sel];
+    aePlay.t0 = (cur && ae.sel < d.records.length - 1) ? (cur.dt || 0) : (d.records[0].dt || 0);
+    aePlay.wall = performance.now();
+    $("aesd-play").textContent = "⏸";
+    aePlay.timer = setInterval(() => {
+      const sp = parseFloat($("aesd-speed").value) || 1;
+      const t = aePlay.t0 + (performance.now() - aePlay.wall) / 1000 * sp;
+      aesdSeek(t, true);
+      if (t >= last) aesdPlayStop();
+    }, 100);
+  }
+  $("aesd-play").addEventListener("click", aesdPlayToggle);
   function aesdRender() {
     const d = ae.data; const t0 = d.records.length ? d.records[0].t : 0;
     $("aesd-body").innerHTML = d.records.map((r, i) => `<tr data-i="${i}">
@@ -1161,7 +1214,9 @@
       <td class="mono">${fmt(r.los_el, 2)}°</td><td class="mono">${fmt(r.hdg, 2)}°</td></tr>`).join("");
     aesdSelect(0);
   }
-  $("aesd-body").addEventListener("click", ev => { const tr = ev.target.closest("tr[data-i]"); if (tr) aesdSelect(+tr.dataset.i); });
+  // Capture contenant AUSSI de la vidéo : sa lecture entraîne le panneau AESD.
+  function aesdFollowPlayback(tRel) { if (ae.data && !aePlay.timer && !$("aesd-panel").hidden) aesdSeek(tRel, true); }
+  $("aesd-body").addEventListener("click", ev => { const tr = ev.target.closest("tr[data-i]"); if (tr) { aesdPlayStop(); aesdSelect(+tr.dataset.i); } });
   $("aesd-port").addEventListener("change", () => aesdScan($("aesd-port").value));
   async function aesdScan(dport) {
     if (!state.pcap) return status("choisir un pcap d'abord", true);
@@ -1174,11 +1229,12 @@
     const ports = Object.keys(d.ports || {});
     const sel = $("aesd-port"); sel.hidden = ports.length < 2;
     sel.innerHTML = ports.map(p => `<option value="${p}"${+p === d.port ? " selected" : ""}>port ${p} · ${d.ports[p].pkts} dg</option>`).join("");
-    $("aesd-csv").hidden = false;
+    $("aesd-csv").hidden = $("aesd-play").hidden = $("aesd-speed").hidden = false;
     $("aesd-status").textContent = `port ${d.port} · ${d.src} → ${d.dst} · ${d.n} enregistrements · ${d.hz || "?"} Hz · ${d.duration_s} s`
       + (d.utc_first ? ` · ${d.utc_first} → ${d.utc_last}` : " · non daté")
       + (d.step > 1 ? ` · tableau décimé ×${d.step}` : "");
     $("aesd-sum").textContent = `${d.n} · ${d.hz || "?"} Hz`;
+    aesdPlayStop();
     aesdRender();
     const pts = d.records.filter(r => r.tgt_lat != null).map(r => [r.tgt_lat, r.tgt_lon]);
     if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.5));

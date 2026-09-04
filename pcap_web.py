@@ -3716,12 +3716,12 @@ def follow_reaper():
 threading.Thread(target=follow_reaper, name="follow_reaper", daemon=True).start()
 
 
-def aesd_decode(path, dport=None, limit=0, max_records=4000):
+def aesd_decode(path, dport=None, limit=0, max_records=2000):
     """Métadonnées AESD d'une capture, pour l'onglet AESD de la console.
 
     Les enregistrements sont **décimés** au-delà de `max_records` : à 20 Hz, une heure de capture en produit
     72 000, dont la console n'affiche qu'une trace et un tableau. La décimation garde le premier et le
-    dernier, et `n` reste le compte réel."""
+    dernier, et `n` reste le compte réel. L'export CSV, lui, n'est jamais décimé."""
     d = aesd.records_from_pcap(path, dport, limit)
     recs = d.pop("records")
     step = max(1, (len(recs) + max_records - 1) // max_records) if max_records else 1
@@ -3729,7 +3729,7 @@ def aesd_decode(path, dport=None, limit=0, max_records=4000):
     if recs and kept[-1] is not recs[-1]:
         kept.append(recs[-1])
     d["step"] = step
-    d["records"] = [{k: v for k, v in r.items() if k != "raw"} for r in kept]
+    d["records"] = kept          # `raw` conservé : le panneau affiche le jeton d'origine au survol
     return d
 
 

@@ -293,9 +293,11 @@ Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniqu
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/aesd?pcap=[&amp;dport=][&amp;limit=]</span><span class="ep-who">console — onglet AESD</span></div>
       <div class="ep-body"><p>Décode les métadonnées ASCII <b>AESD</b> (REAPER) d'une capture : position plateforme et point visé (degrés-minutes-secondes du flux convertis en degrés décimaux), visée (azimut vrai, site, portée oblique), attitude, champ de vision horizontal, n° de capteur. Sans <code>dport</code>, le flux AESD le plus bavard de la capture. Chaque enregistrement est daté : le flux ne porte l'heure qu'à 1 Hz, l'horloge de capture est calée dessus (écart médian 0,02 s, biais absolu ≤ 1 s). Le tableau est décimé au-delà de 4 000 enregistrements (<code>step</code> le dit) ; <code>ports</code> liste tous les flux AESD détectés.</p>
       <pre class="pg">{"port": 8001, "src": "…", "dst": "…", "n": 3603, "hz": 20.01, "duration_s": 180.1, "step": 1,
- "records": [{"t": …, "utc": "2026-09-04T09:14:37.45Z", "lat": 45.6635, "lon": -0.3203611,
+ "records": [{"t": …, "dt": 0.1, "utc": "2026-09-04T09:14:37.45Z", "lat": 45.6635, "lon": -0.3203611,
               "tgt_lat": …, "tgt_lon": …, "slant_nm": 0.9, "slant_m": 1666.8,
-              "los_az": 6.33, "los_el": -1.23, "hfov": 44.13, "hdg": 218.15, "pitch": …, "roll": …}]}</pre></div></div>
+              "los_az": 6.33, "los_el": -1.23, "hfov": 44.13, "hdg": 218.15, "pitch": …, "roll": …,
+              "raw": {"Sa": "+4539486", …}}]}</pre>
+      <p><code>dt</code> = secondes depuis le début de la capture (horloge de la barre de temps de la console), <code>capture_t0</code> son origine ; <code>raw</code> garde le jeton d'origine de chaque champ, affiché au survol du panneau.</p></div></div>
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/aesd/export.csv?pcap=[&amp;dport=]</span><span class="ep-who">console — onglet AESD</span></div>
       <div class="ep-body"><p>Mêmes données en CSV (séparateur <code>;</code>), <b>tous</b> les enregistrements, sans décimation.</p></div></div>
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/api/config</span><span class="ep-who">pages (chip API)</span></div>

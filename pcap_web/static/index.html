@@ -200,7 +200,7 @@
       <div class="tabpage" id="aesd">
         <div class="body">
         <div class="hint">Métadonnées ASCII <b>AESD</b> (REAPER) : position plateforme, point visé, visée (azimut vrai / site / portée), attitude et champ de vision, à 20 Hz. Le flux ne porte ni altitude plateforme, ni champ vertical, ni coins d'empreinte, et n'est daté qu'à la seconde (cf. aesd.py).</div>
-        <div class="row"><button id="aesd-scan">Analyser AESD</button><select id="aesd-port" hidden></select><button id="aesd-csv" hidden title="tous les enregistrements décodés, sans décimation">⤓ CSV complet</button><span id="aesd-status" class="muted mono"></span></div>
+        <div class="row"><button id="aesd-scan">Analyser AESD</button><select id="aesd-port" hidden></select><button id="aesd-play" hidden title="dérouler les enregistrements en temps réel">▶</button><select id="aesd-speed" hidden title="vitesse de lecture"><option value="1">×1</option><option value="2">×2</option><option value="5">×5</option><option value="10">×10</option></select><button id="aesd-csv" hidden title="tous les enregistrements décodés, sans décimation">⤓ CSV complet</button><span id="aesd-status" class="muted mono"></span></div>
         <table class="cot"><thead><tr><th>t (s)</th><th>UTC</th><th>plateforme</th><th>point visé</th><th>portée</th><th>azimut</th><th>site</th><th>cap</th></tr></thead><tbody id="aesd-body"></tbody></table>
         </div>
       </div>
@@ -247,6 +247,10 @@
       <section class="panel" id="klv">
         <h2>KLV MISB 0601 <span class="right" id="klv-sum">—</span></h2>
         <div class="body"><table class="klv"><tbody id="klv-body"></tbody></table></div>
+      </section>
+      <section class="panel" id="aesd-panel" hidden>
+        <h2>AESD <span class="right" id="aesd-psum">—</span></h2>
+        <div class="body"><table class="klv"><tbody id="aesd-pbody"></tbody></table></div>
       </section>
     </div>
   </div>
