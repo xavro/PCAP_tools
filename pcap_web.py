@@ -3460,6 +3460,51 @@ CR_FOLLOW = {}                                        # CR → id du suivi « sy
 CAPTURE_STATUS_URL = os.getenv("CAPTURE_STATUS_URL", "http://127.0.0.1:8768").strip().rstrip("/")
 
 
+def capture_status():
+    """État du démon de capture (sessions par CR)."""
+    with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=4) as r:
+        return json.load(r)
+
+
+def capture_control(set_name, action, payload=None):
+    """Commande le démon de capture : `start`, `stop` (avec `{"hold": true}` = arrêt forcé), `resume`."""
+    body = json.dumps(payload or {}).encode("utf-8")
+    req = urllib.request.Request("%s/api/capture/%s/%s" % (CAPTURE_STATUS_URL, urllib.parse.quote(set_name), action),
+                                 data=body, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:                             # message du démon (CR inconnu, action inconnue…)
+        try:
+            msg = (json.load(e) or {}).get("error")
+        except Exception:
+            msg = None
+        raise ValueError(msg or "erreur %d du démon de capture" % e.code)
+    except urllib.error.URLError as e:
+        raise RuntimeError("démon de capture injoignable : %s" % e)
+
+
+def mission_stop_recording(name):
+    """Arrête l'enregistrement EN COURS de cette mission (bouton « forcer l'arrêt » de la page missions).
+
+    Le CR est mis EN ATTENTE : en mode trafic, le démon rouvrirait sinon une mission au paquet suivant et
+    l'arrêt paraîtrait sans effet. L'attente se lève d'elle-même après SILENCE_S sans trafic, ou par
+    `POST /api/capture/{CR}/resume`."""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise ValueError("nom de mission invalide")
+    try:
+        st = capture_status()
+    except Exception as e:
+        raise RuntimeError("démon de capture injoignable : %s" % e)
+    sets = st.get("sets") or {}
+    cr = next((n for n, d in sets.items() if (d or {}).get("mission") == name), None)
+    if not cr:
+        raise ValueError("aucun enregistrement en cours pour %s" % name)
+    out = capture_control(cr, "stop", {"hold": True})
+    out["mission"] = name
+    return out
+
+
 def _capture_sets_by_cr():
     out = {}
     for item in (os.getenv("CAPTURE_SETS", "") or "").split(","):
@@ -4137,6 +4182,14 @@ class Handler(BaseHTTPRequestHandler):
             m_ = re.match(r"^/api/missions/([^/]+)/delete$", u.path)
             if m_:
                 return self._json(mission_delete(urllib.parse.unquote(m_.group(1))))
+            m_ = re.match(r"^/api/missions/([^/]+)/stop-recording$", u.path)
+            if m_:
+                return self._json(mission_stop_recording(urllib.parse.unquote(m_.group(1))))
+            m_ = re.match(r"^/api/capture/([^/]+)/(stop|resume)$", u.path)      # proxy des commandes du démon
+            if m_:
+                act = m_.group(2)
+                return self._json(capture_control(urllib.parse.unquote(m_.group(1)), act,
+                                                  {"hold": bool(body.get("hold"))} if act == "stop" else None))
             if u.path == "/api/captures/snap":
                 return self._json(snap_capture(body.get("mission"), body.get("t_utc"), body.get("description"), body.get("dport"), body.get("snaps_label")))
             m_ = re.match(r"^/api/captures/([^/]+)/([^/]+)/delete$", u.path)

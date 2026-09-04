@@ -25,6 +25,7 @@
     <select id="f-state"><option value="">tous états</option><option value="live">en cours</option><option value="done">terminées</option></select>
     <span class="muted" id="hint">captures réseau (pcap maître) du dossier des enregistrements — mise à jour toutes les 10 s</span>
   </div>
+  <div class="pg-tools" id="hold-bar" hidden><span id="hold-txt" class="mono"></span><button class="btn accent" id="hold-resume">⏵ Reprendre l'enregistrement</button></div>
   <table class="pg">
     <thead><tr><th>Mission</th><th>CR</th><th>Indicatif · capteur</th><th>Début (UTC)</th><th>Fin</th><th>Durée</th><th>Flux</th><th>Taille</th><th>État</th><th>Actions</th></tr></thead>
     <tbody id="rows"><tr><td colspan="10" class="mono" style="color:var(--muted)">chargement…</td></tr></tbody>
@@ -34,6 +35,7 @@
   <div class="t" id="rm-title"></div>
   <button id="rm-replay">▶ Ouvrir dans la page opérateur</button>
   <button id="rm-details">⋯ Détails (JSON)</button>
+  <button id="rm-stop">⏹ Forcer l'arrêt de l'enregistrement</button>
   <button id="rm-del" class="danger">✕ Supprimer l'enregistrement</button>
 </div>
 <div class="pg-foot">StratusServer v2 — capture pcap maître · relecture / DVR · live WebRTC · GMTI</div>
@@ -67,16 +69,46 @@
   }
   ["f-search", "f-cr", "f-state"].forEach(id => $(id).addEventListener("input", render));
   // menu ⋯ d'une mission : détails JSON, suppression (deux clics, refusée si la mission est en cours)
-  const menu = $("row-menu"); let cur = null, armed = false;
-  const hide = () => { menu.hidden = true; cur = null; armed = false; $("rm-del").textContent = "✕ Supprimer l'enregistrement"; };
+  const menu = $("row-menu"); let cur = null, armed = false, stopArmed = false;
+  const hide = () => { menu.hidden = true; cur = null; armed = false; stopArmed = false;
+    $("rm-del").textContent = "✕ Supprimer l'enregistrement"; $("rm-stop").textContent = "⏹ Forcer l'arrêt de l'enregistrement"; };
   document.addEventListener("click", ev => {
     const b = ev.target.closest("button[data-menu]");
-    if (b) { cur = b.dataset.menu; armed = false; $("rm-title").textContent = cur; $("rm-del").disabled = b.dataset.live === "1"; $("rm-del").title = b.dataset.live === "1" ? "mission en cours : arrêter la capture d'abord" : ""; menu.hidden = false; const r = b.getBoundingClientRect(); const mr = menu.getBoundingClientRect(); menu.style.left = Math.min(r.left, window.innerWidth - mr.width - 8) + "px"; menu.style.top = (r.bottom + 4) + "px"; ev.stopPropagation(); return; }
+    if (b) { cur = b.dataset.menu; armed = false; stopArmed = false; $("rm-title").textContent = cur; $("rm-del").disabled = b.dataset.live === "1"; $("rm-del").title = b.dataset.live === "1" ? "mission en cours : arrêter la capture d'abord" : "";
+      $("rm-stop").disabled = b.dataset.live !== "1"; $("rm-stop").title = b.dataset.live === "1" ? "ferme la session tout de suite ; le CR reste en attente tant que son flux coule" : "aucun enregistrement en cours pour cette mission"; menu.hidden = false; const r = b.getBoundingClientRect(); const mr = menu.getBoundingClientRect(); menu.style.left = Math.min(r.left, window.innerWidth - mr.width - 8) + "px"; menu.style.top = (r.bottom + 4) + "px"; ev.stopPropagation(); return; }
     if (!menu.hidden && !menu.contains(ev.target)) hide();
   });
   document.addEventListener("keydown", ev => { if (ev.key === "Escape") hide(); });
   $("rm-details").addEventListener("click", () => { if (cur) window.open(U("api/missions/" + encodeURIComponent(cur) + "/details"), "_blank"); hide(); });
   $("rm-replay").addEventListener("click", () => { if (cur) window.open(U("replay?mission=" + encodeURIComponent(cur)), "_blank"); hide(); });
+  const say = (txt, bad) => { $("hint").textContent = txt; $("hint").style.color = bad ? "var(--danger)" : ""; if (bad) setTimeout(() => { $("hint").style.color = ""; }, 6000); };
+  // Arrêt FORCÉ : la session se ferme immédiatement et le CR reste EN ATTENTE tant que son flux coule —
+  // sans cela, le mode trafic rouvrirait une mission au paquet suivant et l'arrêt paraîtrait sans effet.
+  $("rm-stop").addEventListener("click", async () => {
+    if (!cur) return;
+    if (!stopArmed) { stopArmed = true; $("rm-stop").textContent = "⏹ Confirmer l'arrêt de l'enregistrement"; return; }
+    const name = cur; hide();
+    try { const r = await api("/api/missions/" + encodeURIComponent(name) + "/stop-recording", { method: "POST" });
+      say(`enregistrement de ${name} arrêté (${r.set || "?"}) — le CR reste en attente jusqu'à l'arrêt du flux`); }
+    catch (e) { say(`arrêt refusé : ${e.message}`, true); }
+    load(); loadHold();
+  });
+  // CR mis en attente par un arrêt forcé : bandeau + reprise explicite (sinon l'attente se lève au silence).
+  let held = [];
+  async function loadHold() {
+    try {
+      const st = await api("/api/capture/status");
+      held = Object.entries(st.sets || {}).filter(([, d]) => d && d.hold).map(([n]) => n);
+    } catch (e) { held = []; }
+    $("hold-bar").hidden = !held.length;
+    if (held.length) $("hold-txt").textContent = `${held.join(", ")} : enregistrement suspendu (arrêt forcé) — reprise automatique dès que le flux se sera tu`;
+  }
+  $("hold-resume").addEventListener("click", async () => {
+    const crs = held.slice();
+    try { for (const cr of crs) await api("/api/capture/" + encodeURIComponent(cr) + "/resume", { method: "POST" }); say(`${crs.join(", ")} : enregistrement automatique repris`); }
+    catch (e) { say(`reprise refusée : ${e.message}`, true); }
+    loadHold(); load();
+  });
   $("rm-del").addEventListener("click", async () => {
     if (!cur) return;
     if (!armed) { armed = true; $("rm-del").textContent = "✕ Confirmer la suppression définitive"; return; }
@@ -85,7 +117,7 @@
     catch (e) { $("hint").textContent = `suppression refusée : ${e.message}`; $("hint").style.color = "var(--danger)"; setTimeout(() => { $("hint").style.color = ""; }, 6000); }
     load();
   });
-  load(); setInterval(load, 10000);
+  load(); loadHold(); setInterval(() => { load(); loadHold(); }, 10000);
 })();
 </script>
 </body>

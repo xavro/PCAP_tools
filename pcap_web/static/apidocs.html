@@ -170,6 +170,11 @@ Pas de HLS, pas de base SQL : tout est rejoué depuis le pcap (ffmpeg sert uniqu
 
     <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/missions/{m}/delete</span><span class="ep-who">page Missions</span></div>
       <div class="ep-body"><p>Supprime définitivement le dossier de la mission (pcap maître, index, journal, clips, captures, vignettes). Refusé (400) si la mission est en cours d'enregistrement ou suivie en direct ; les suivis de relecture ouverts sont arrêtés.</p></div></div>
+    <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/missions/{m}/stop-recording</span><span class="ep-who">page Missions</span></div>
+      <div class="ep-body"><p>Arrêt <b>forcé</b> de l'enregistrement en cours de cette mission : le CR qui l'écrit est retrouvé via l'état du démon, sa session est fermée, et le CR est mis <b>en attente</b> — sans quoi, en mode trafic, le paquet suivant rouvrirait aussitôt une mission. L'attente se lève seule après <code>SILENCE_S</code> sans trafic, ou par <code>/api/capture/{CR}/resume</code>. Refusé (400) si aucune mission de ce nom n'est en cours d'enregistrement.</p>
+      <pre class="pg">{"set": "CR1", "mission": "20260904_1400Z_CR1", "stopped": "20260904_1400Z_CR1", "hold": true}</pre></div></div>
+    <div class="ep"><div class="ep-head"><span class="m post">POST</span><span class="ep-path">/api/capture/{CR}/stop · /api/capture/{CR}/resume</span><span class="ep-who">page Missions</span></div>
+      <div class="ep-body"><p>Relais des commandes du démon de capture. <code>stop</code> ferme la session du CR ; avec <code>{"hold": true}</code> le CR reste en attente tant que son flux coule. <code>resume</code> lève l'attente et rend la main au pilotage automatique. L'état est visible dans <code>/api/capture/status</code> (<code>sets.{CR}.hold</code>).</p></div></div>
     <div class="ep"><div class="ep-head"><span class="m get">GET</span><span class="ep-path">/replay?mission=NOM[&amp;live=1][&amp;profile=]</span><span class="ep-who">page opérateur</span></div>
       <div class="ep-body"><p>Carte | vidéo | barre de temps. <code>live=1</code> : suit le bord du direct (DVR) ; sans : ouverture en pause au début. <code>?pcap=/chemin</code> accepté aussi.</p></div></div>
   </section>
