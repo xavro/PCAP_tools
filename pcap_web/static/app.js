@@ -150,8 +150,8 @@
   function showTab(name) {
     document.querySelectorAll(".tabbar button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
     Object.entries(TAB_ID).forEach(([k, id]) => $(id).classList.toggle("on", k === name));
-    // Le panneau AESD occupe la place du panneau KLV : les deux décrivent l'instant courant, jamais ensemble.
-    $("aesd-panel").hidden = name !== "aesd"; $("klv").hidden = name === "aesd";
+    state.tab = name;
+    aesdLayout();
     localStorage.setItem("tab", name);
   }
   document.querySelectorAll(".tabbar button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -703,6 +703,10 @@
     $("inv-sum").textContent = `${r.streams.length} flux TS`;
     $("replay-sum").textContent = `${f.flows.length} flux · ${f.duration_s.toFixed(1)} s`;
     $("video-wrap").hidden = !r.streams.length; $("right").style.gridTemplateRows = r.streams.length ? "" : "1fr"; setTimeout(() => map.invalidateSize(), 50);
+    ae.data = null; aesdPlayStop(); $("aesd-body").innerHTML = ""; $("aesd-sum").textContent = "—"; LY.aesd.clearLayers(); aesdLayout();
+    // Flux AESD repéré par signature à l'analyse : on le décode dans la foulée, comme la trace KLV d'un flux
+    // vidéo — sinon le panneau resterait vide jusqu'à ce que l'opérateur trouve le bouton de l'onglet.
+    if (state.flows.some(fl => fl.dominant === "AESD(meta)")) aesdScan().catch(() => {});
     if (r.streams.length) selectStream(r.streams[0].dport); else { state.cur = null; status("aucun flux MPEG-TS (rejeu possible, pas de vidéo)", true); }
   }
 
@@ -1149,6 +1153,24 @@
       }
     }
   }
+  /**
+   * Place le panneau AESD. Il partage l'emplacement du panneau KLV — les deux décrivent l'instant courant.
+   * Une capture de métadonnées SEULES (cas de figure normal ici) n'a aucun flux TS : la zone du lecteur est
+   * alors masquée par `load()`, et le panneau avec elle. On la rouvre pour le panneau, qui prend toute la
+   * largeur, et le tableau des métadonnées remplace la vidéo absente.
+   */
+  function aesdLayout() {
+    const has = !!(ae.data && ae.data.records && ae.data.records.length);
+    const vid = !!(state.streams && state.streams.length);
+    const show = has && (state.tab === "aesd" || !vid);
+    $("aesd-panel").hidden = !show;
+    $("klv").hidden = show;
+    $("video-col").hidden = show && !vid;
+    $("video-wrap").classList.toggle("aesd-only", show && !vid);
+    $("video-wrap").hidden = !vid && !show;
+    $("right").style.gridTemplateRows = (vid || show) ? "" : "1fr";
+    setTimeout(() => map.invalidateSize(), 50);
+  }
   function aesdPanel(r) {
     if (!r) { $("aesd-pbody").innerHTML = ""; return; }
     // Même présentation que le tableau KLV. Le survol donne le jeton BRUT du flux (« Sa+4539486 ») :
@@ -1223,7 +1245,7 @@
     let d;
     try { d = await withBusy("décodage AESD de la capture…", () => api(`/api/aesd?pcap=${encodeURIComponent(state.pcap)}${dport ? "&dport=" + dport : ""}`), ["aesd-scan"]); }
     catch (e) { return $("aesd-status").textContent = "erreur : " + e.message; }
-    if (!d.n) { ae.data = null; LY.aesd.clearLayers(); $("aesd-body").innerHTML = ""; $("aesd-sum").textContent = "—";
+    if (!d.n) { ae.data = null; LY.aesd.clearLayers(); $("aesd-body").innerHTML = ""; $("aesd-sum").textContent = "—"; aesdLayout();
       return $("aesd-status").textContent = "aucun flux AESD dans cette capture"; }
     ae.data = d;
     const ports = Object.keys(d.ports || {});
@@ -1236,6 +1258,7 @@
     $("aesd-sum").textContent = `${d.n} · ${d.hz || "?"} Hz`;
     aesdPlayStop();
     aesdRender();
+    aesdLayout();
     const pts = d.records.filter(r => r.tgt_lat != null).map(r => [r.tgt_lat, r.tgt_lon]);
     if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.5));
   }
@@ -1270,6 +1293,7 @@ MISB ST 0601 · tag ${f.tag}${std ? " — " + std : ""}`;
     else if (ev.type === "replay" && ev.live) { state.replay = ev; if (ev.running) { lv.on = true; liveFlows(ev.flows_live); setState("playing", `● écoute réseau · ${ev.mode || ""} · ${ev.captured || 0} trames · t=${(ev.t || 0).toFixed(0)} s` + (ev.recording ? " · ⏺" : "")); if (ev.error) status("écoute : " + ev.error, true); } else { lv.on = false; } }
     else if (ev.type === "replay") { state.replay = ev; renderReplay(); if (state.seeking && ev.t > 0) { state.seeking = false; if (state.seekEnd) { state.seekEnd(); state.seekEnd = null; } }
       $("btn-pause").textContent = ev.paused ? "▶" : "⏸"; $("btn-pause").disabled = !ev.running;
+      if (ev.running) aesdFollowPlayback(ev.t || 0);          // rejeu « IHM seule » : aucune vidéo à suivre, le moteur donne l'instant
       if (ev.running && !pb.on) setState(ev.paused ? "paused" : (state.emitting ? "emitting" : "playing"), (ev.paused ? "⏸ rejeu en pause" : (state.emitting ? "● rejeu + émission UDP/TCP" : "● rejeu IHM")) + ` ×${ev.speed || "max"} · t=${(ev.t || 0).toFixed(1)} s` + (ev.sent ? ` · ${ev.sent} émis` : "")); }
     else if (ev.type === "log") { state.log.push(ev.msg); if (state.log.length > 200) state.log.shift();
       const el = $("replay-log"); el.textContent = state.log.slice(-40).join("\n"); el.scrollTop = el.scrollHeight; }

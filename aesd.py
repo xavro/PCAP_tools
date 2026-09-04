@@ -217,8 +217,13 @@ def _stamp(recs):
             r["utc_epoch"] = round(r["t"] + off, 3)
 
 
-def aesd_ports(path, limit=0):
-    """Ports UDP portant de l'AESD dans un pcap : {dport: {pkts, bytes, src, dst}}."""
+def aesd_ports(path, limit=0, scan_max=20000):
+    """Ports UDP portant de l'AESD dans un pcap : {dport: {pkts, bytes, src, dst}}.
+
+    La détection s'arrête après `scan_max` paquets (0 = tout lire) : le flux est continu à 20 Hz, les
+    premières secondes suffisent à le repérer, et le décodage qui suit relit de toute façon le fichier
+    entier. Sur une capture de plusieurs centaines de Mo, cela évite une passe complète pour rien — les
+    compteurs renvoyés ici ne valent alors que pour la portion lue."""
     import pcap_analyze
     seen = {}
     n = 0
@@ -226,6 +231,8 @@ def aesd_ports(path, limit=0):
         n += 1
         if limit and n > limit:
             break
+        if scan_max and n > scan_max:
+            break                                # flux continu à 20 Hz : absent des premiers paquets = absent
         r = pcap_analyze.parse(linktype, frame)
         if not r or r[0] != "UDP":
             continue
@@ -255,6 +262,7 @@ def records_from_pcap(path, dport=None, limit=0):
     dec = Decoder()
     recs = []
     n = 0
+    pkts = nbytes = 0                            # compteurs EXACTS du port retenu (l'inventaire est borné)
     cap_t0 = None
     for ts, linktype, frame in pcap_analyze.iter_frames(path):
         n += 1
@@ -265,13 +273,15 @@ def records_from_pcap(path, dport=None, limit=0):
         r = pcap_analyze.parse(linktype, frame)
         if not r or r[0] != "UDP" or r[4] != dport:
             continue
+        pkts += 1
+        nbytes += len(r[5])
         recs.extend(dec.feed(r[5], ts))
     _stamp(recs)
     for r in recs:
         r["dt"] = round(r["t"] - cap_t0, 3) if (cap_t0 is not None and r.get("t") is not None) else None
     info = ports[dport]
     dur = (recs[-1]["t"] - recs[0]["t"]) if len(recs) > 1 else 0.0
-    return {"port": dport, "src": info["src"], "dst": info["dst"], "pkts": info["pkts"], "bytes": info["bytes"],
+    return {"port": dport, "src": info["src"], "dst": info["dst"], "pkts": pkts, "bytes": nbytes,
             "capture_t0": cap_t0,
             "duration_s": round(dur, 3), "hz": round(len(recs) / dur, 2) if dur > 0 else None,
             "n": len(recs), "utc_first": next((r["utc"] for r in recs if r.get("utc")), None),
