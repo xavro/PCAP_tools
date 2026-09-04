@@ -174,6 +174,49 @@ def _lin_u(raw, bits, rng, off=0.0):
     return raw * (rng / (2 ** bits - 1)) + off
 
 
+# Nom NORMALISÉ du tag dans MISB ST 0601 (UAS Datalink Local Set). Les libellés de KLV_TAGS sont traduits
+# et abrégés pour la colonne de la console ; le nom du standard sert au survol et à étiqueter les tags que
+# l'on ne décode pas encore (« tag 82 » devient « Corner Latitude Point 1 (Full) »).
+KLV_STD = {
+    1: "Checksum", 2: "Precision Time Stamp", 3: "Mission ID", 4: "Platform Tail Number",
+    5: "Platform Heading Angle", 6: "Platform Pitch Angle", 7: "Platform Roll Angle",
+    8: "Platform True Airspeed", 9: "Platform Indicated Airspeed", 10: "Platform Designation",
+    11: "Image Source Sensor", 12: "Image Coordinate System", 13: "Sensor Latitude", 14: "Sensor Longitude",
+    15: "Sensor True Altitude", 16: "Sensor Horizontal Field of View", 17: "Sensor Vertical Field of View",
+    18: "Sensor Relative Azimuth Angle", 19: "Sensor Relative Elevation Angle", 20: "Sensor Relative Roll Angle",
+    21: "Slant Range", 22: "Target Width", 23: "Frame Center Latitude", 24: "Frame Center Longitude",
+    25: "Frame Center Elevation",
+    26: "Offset Corner Latitude Point 1", 27: "Offset Corner Longitude Point 1",
+    28: "Offset Corner Latitude Point 2", 29: "Offset Corner Longitude Point 2",
+    30: "Offset Corner Latitude Point 3", 31: "Offset Corner Longitude Point 3",
+    32: "Offset Corner Latitude Point 4", 33: "Offset Corner Longitude Point 4",
+    34: "Icing Detected", 35: "Wind Direction", 36: "Wind Speed", 37: "Static Pressure",
+    38: "Density Altitude", 39: "Outside Air Temperature",
+    40: "Target Location Latitude", 41: "Target Location Longitude", 42: "Target Location Elevation",
+    43: "Target Track Gate Width", 44: "Target Track Gate Height",
+    45: "Target Error Estimate CE90", 46: "Target Error Estimate LE90",
+    47: "Generic Flag Data", 48: "Security Local Set", 49: "Differential Pressure",
+    50: "Platform Angle of Attack", 51: "Platform Vertical Speed", 52: "Platform Sideslip Angle",
+    53: "Airfield Barometric Pressure", 54: "Airfield Elevation", 55: "Relative Humidity",
+    56: "Platform Ground Speed", 57: "Ground Range", 58: "Platform Fuel Remaining", 59: "Platform Call Sign",
+    60: "Weapon Load", 61: "Weapon Fired", 62: "Laser PRF Code", 63: "Sensor Field of View Name",
+    64: "Platform Magnetic Heading", 65: "UAS Datalink LS Version Number",
+    67: "Alternate Platform Latitude", 68: "Alternate Platform Longitude", 69: "Alternate Platform Altitude",
+    70: "Alternate Platform Name", 71: "Alternate Platform Heading", 72: "Event Start Time UTC",
+    73: "RVT Local Set", 74: "VMTI Local Set", 75: "Sensor Ellipsoid Height",
+    76: "Alternate Platform Ellipsoid Height", 77: "Operational Mode",
+    78: "Frame Center Height Above Ellipsoid", 79: "Sensor North Velocity", 80: "Sensor East Velocity",
+    81: "Image Horizon Pixel Pack",
+    82: "Corner Latitude Point 1 (Full)", 83: "Corner Longitude Point 1 (Full)",
+    84: "Corner Latitude Point 2 (Full)", 85: "Corner Longitude Point 2 (Full)",
+    86: "Corner Latitude Point 3 (Full)", 87: "Corner Longitude Point 3 (Full)",
+    88: "Corner Latitude Point 4 (Full)", 89: "Corner Longitude Point 4 (Full)",
+    90: "Platform Pitch Angle (Full)", 91: "Platform Roll Angle (Full)",
+    92: "Platform Angle of Attack (Full)", 93: "Platform Sideslip Angle (Full)",
+    94: "MIIS Core Identifier",
+}
+
+
 # tag -> (nom, fonction(bytes)->valeur formatée)
 KLV_TAGS = {
     2:  ("Horodatage (UTC)", lambda b: "%d µs" % _u(b)),
@@ -238,7 +281,7 @@ def decode_klv_0601(buf):
             except Exception:
                 out.append((tag, name, val.hex()))
         else:
-            out.append((tag, "tag %d" % tag, val.hex()[:32]))
+            out.append((tag, KLV_STD.get(tag) or "tag %d" % tag, val.hex()[:32]))
     return out
 
 

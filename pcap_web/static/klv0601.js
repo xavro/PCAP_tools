@@ -13,6 +13,44 @@
   const ascii = b => Array.from(b, c => (c >= 32 && c < 127) ? String.fromCharCode(c) : "·").join("");
   const hex = b => Array.from(b, c => c.toString(16).padStart(2, "0")).join("");
 
+  // Tag 63 — Sensor Field of View Name : énumération ST 0601 (le brut est un simple index).
+  const FOV_NAME = { 0: "Ultranarrow", 1: "Narrow", 2: "Medium", 3: "Wide", 4: "Ultrawide", 5: "Narrow Medium",
+    6: "2x Ultranarrow", 7: "4x Ultranarrow", 8: "Continuous Zoom" };
+
+  /* Nom NORMALISÉ du tag dans MISB ST 0601 (UAS Datalink Local Set), affiché au survol de la table :
+     les libellés ci-dessous sont traduits et abrégés pour tenir dans la colonne, alors que l'opérateur
+     a besoin du nom du standard pour recouper avec la documentation, GeoEvent ou un autre décodeur. */
+  const STD = {
+    1: "Checksum", 2: "Precision Time Stamp", 3: "Mission ID", 4: "Platform Tail Number",
+    5: "Platform Heading Angle", 6: "Platform Pitch Angle", 7: "Platform Roll Angle",
+    8: "Platform True Airspeed", 9: "Platform Indicated Airspeed", 10: "Platform Designation",
+    11: "Image Source Sensor", 12: "Image Coordinate System", 13: "Sensor Latitude", 14: "Sensor Longitude",
+    15: "Sensor True Altitude", 16: "Sensor Horizontal Field of View", 17: "Sensor Vertical Field of View",
+    18: "Sensor Relative Azimuth Angle", 19: "Sensor Relative Elevation Angle", 20: "Sensor Relative Roll Angle",
+    21: "Slant Range", 22: "Target Width", 23: "Frame Center Latitude", 24: "Frame Center Longitude",
+    25: "Frame Center Elevation",
+    26: "Offset Corner Latitude Point 1", 27: "Offset Corner Longitude Point 1",
+    28: "Offset Corner Latitude Point 2", 29: "Offset Corner Longitude Point 2",
+    30: "Offset Corner Latitude Point 3", 31: "Offset Corner Longitude Point 3",
+    32: "Offset Corner Latitude Point 4", 33: "Offset Corner Longitude Point 4",
+    34: "Icing Detected", 35: "Wind Direction", 36: "Wind Speed", 37: "Static Pressure",
+    38: "Density Altitude", 39: "Outside Air Temperature",
+    40: "Target Location Latitude", 41: "Target Location Longitude", 42: "Target Location Elevation",
+    43: "Target Track Gate Width", 44: "Target Track Gate Height",
+    45: "Target Error Estimate CE90", 46: "Target Error Estimate LE90",
+    47: "Generic Flag Data", 48: "Security Local Set",
+    56: "Platform Ground Speed", 57: "Ground Range", 58: "Platform Fuel Remaining", 59: "Platform Call Sign",
+    62: "Laser PRF Code", 63: "Sensor Field of View Name", 64: "Platform Magnetic Heading",
+    65: "UAS Datalink LS Version Number", 72: "Event Start Time UTC", 73: "RVT Local Set", 74: "VMTI Local Set",
+    75: "Sensor Ellipsoid Height", 76: "Alternate Platform Ellipsoid Height", 77: "Operational Mode",
+    78: "Frame Center Height Above Ellipsoid", 79: "Sensor North Velocity", 80: "Sensor East Velocity",
+    82: "Corner Latitude Point 1 (Full)", 83: "Corner Longitude Point 1 (Full)",
+    84: "Corner Latitude Point 2 (Full)", 85: "Corner Longitude Point 2 (Full)",
+    86: "Corner Latitude Point 3 (Full)", 87: "Corner Longitude Point 3 (Full)",
+    88: "Corner Latitude Point 4 (Full)", 89: "Corner Longitude Point 4 (Full)",
+    94: "MIIS Core Identifier"
+  };
+
   // tag -> [nom, unité, fn(bytes) -> valeur (number|string)]
   const TAGS = {
     1:  ["Checksum", "", b => hex(b)],
@@ -67,15 +105,19 @@
     57: ["Distance sol", "m", b => linU(u(b), 32, 5000000)],
     58: ["Carburant restant", "kg", b => linU(u(b), 16, 10000)],
     59: ["Indicatif plateforme", "", ascii],
-    62: ["Point de visée laser dsg", "", b => hex(b)],
-    63: ["Mode opérationnel", "", b => u(b)],
+    62: ["Code PRF laser", "", b => u(b)],
+    63: ["Nom du champ de vision", "", b => FOV_NAME[u(b)] || u(b)],
     64: ["Cap magnétique plateforme", "°", b => linU(u(b), 16, 360)],
     65: ["Version LS MISB 0601", "", b => u(b)],
     72: ["Événement", "µs", b => u(b)],
     73: ["Local set RVT", "", b => hex(b).slice(0, 32)],
     74: ["Local set VMTI", "", b => "(" + b.length + " o)"],
     75: ["Altitude capteur (HAE)", "m", b => linU(u(b), 16, 19900, -900)],
-    76: ["Altitude centre image (HAE)", "m", b => linU(u(b), 16, 19900, -900)],
+    76: ["Altitude plateforme alt. (HAE)", "m", b => linU(u(b), 16, 19900, -900)],
+    77: ["Mode opérationnel", "", b => u(b)],
+    78: ["Altitude centre image (HAE)", "m", b => linU(u(b), 16, 19900, -900)],
+    79: ["Vitesse capteur nord", "m/s", b => linS(s(b), 16, 327)],
+    80: ["Vitesse capteur est", "m/s", b => linS(s(b), 16, 327)],
     82: ["Latitude coin 1", "°", b => linS(s(b), 32, 90)],
     83: ["Longitude coin 1", "°", b => linS(s(b), 32, 180)],
     84: ["Latitude coin 2", "°", b => linS(s(b), 32, 90)],
@@ -137,5 +179,5 @@
     return { fields, num };
   }
 
-  global.KLV0601 = { decode, TAGS };
+  global.KLV0601 = { decode, TAGS, STD };
 })(window);

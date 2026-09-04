@@ -780,7 +780,7 @@
     renderInventory(); markTapRow(); showTab("fmv"); playbackStop();
     document.querySelectorAll("#flows-body tr.tap .fl-on").forEach(cb => { cb.checked = true; });   // flux vidéo choisi → coché (IHM seule si cible vide)
     stopPlayer();
-    if (state.cur.first_klv) renderTable(state.cur.first_klv.map(f => ({ tag: f.tag, name: f.name, value: f.value, unit: "" })), false);
+    if (state.cur.first_klv) renderTable(state.cur.first_klv.map(f => ({ tag: f.tag, name: f.name, value: f.value, unit: "", std: f.std })), false);
     status("trace KLV…");
     try { state.track = await withBusy("trace KLV du flux vidéo…", () => api(`/api/klv?pcap=${encodeURIComponent(state.pcap)}&dport=${state.cur.dport}`)); }
     catch (e) { state.track = null; return status("erreur KLV : " + e.message, true); }
@@ -1127,10 +1127,17 @@
   $("follow").addEventListener("change", () => { if (state.applied >= 0) follow(state.sets[state.applied].num); });
 
   const HL = new Set([2, 5, 13, 14, 15, 16, 17, 21, 23, 24, 25]);
+  const esc = x => String(x == null ? "" : x).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   function renderTable(fields, live) {
+    const STD = (window.KLV0601 && window.KLV0601.STD) || {};
     $("klv-body").innerHTML = fields.map(f => {
       let v = f.value; if (typeof v === "number") v = Number.isInteger(v) ? String(v) : v.toFixed(Math.abs(v) < 10 ? 4 : 3);
-      return `<tr class="${HL.has(f.tag) ? "hl" : ""}"><td class="tag">${f.tag}</td><td class="name" title="${f.name}">${f.name}</td><td class="val">${v}</td><td class="unit">${f.unit || ""}</td></tr>`;
+      // Survol : nom NORMALISÉ du standard — les libellés de la colonne sont traduits et abrégés pour tenir,
+      // alors que le recoupement avec la doc MISB, GeoEvent ou un autre décodeur se fait sur le nom d'origine.
+      const std = f.std || STD[f.tag];                     // nom du standard : fourni par le serveur (1er set) ou par le décodeur local
+      const t = `${f.name}${f.unit ? " (" + f.unit + ")" : ""}
+MISB ST 0601 · tag ${f.tag}${std ? " — " + std : ""}`;
+      return `<tr class="${HL.has(f.tag) ? "hl" : ""}" title="${esc(t)}"><td class="tag">${f.tag}</td><td class="name">${f.name}</td><td class="val">${v}</td><td class="unit">${f.unit || ""}</td></tr>`;
     }).join("");
     if (!live) $("klv-sum").textContent = "1er set (statique)";
   }

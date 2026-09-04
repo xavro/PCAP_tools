@@ -360,7 +360,7 @@ def stream_summary(st):
     if info["klv_pid"] is not None:
         rec = v9.klv_from_stream(st.buf, info["klv_pid"])
         if rec:
-            first_klv = [{"tag": t, "name": n, "value": str(v)} for t, n, v in rec]
+            first_klv = [{"tag": t, "name": n, "value": str(v), "std": v9.KLV_STD.get(t)} for t, n, v in rec]
     return {"dst": st.dst, "dport": st.dport, "bytes": len(st.buf), "datagrams": len(st.pkts),
             "duration_s": round((st.t1 or 0) - (st.t0 or 0), 3), "cc_errors": info["cc_errors"],
             "pids": {str(k): v for k, v in sorted(info["pids"].items())},
