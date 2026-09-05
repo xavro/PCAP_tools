@@ -82,13 +82,42 @@ vitesse commune à tous les plots laisse 5,12 m/s de résidu. Conséquences mesu
 | `merge_enabled` | **False** | la fusion de pistes AJOUTE une piste (absorber libère les mesures, qui refont naître) |
 | `contact_dist_m` / `contact_memory_sec` | 450 m / 30 s | étage d'affichage : un contact couvre 98 % de la fenêtre |
 
+### Pourquoi une fusion purement géométrique ne suffit pas
+
+Essai serveur : deux pistes sur le cargo (5 m/s et 2 m/s), plus une piste indépendante à 2 km. Mesuré sur
+les deux estimations du cargo : distance médiane **103 m** (10e centile 48 m, 90e 365 m), |Δv| médian
+3,8 m/s. Elles se croisent — c'est la signature d'une cible étendue.
+
+Mais la seconde piste **naît à 650 m** de la première : aucun rayon d'interdiction de naissance ne peut la
+bloquer sans bloquer aussi un second navire légitime, et le scénario synthétique du brief contient
+précisément deux navires parallèles à 600 m qu'il ne faut PAS fusionner. Vérifié aussi : le nuage de plots
+du cargo est unimodal autour de la trajectoire (157 plots sur 185 entre −279 et +171 m en travers, médianes
+par index de dwell à ±77 m) — il n'y a donc pas de biais de géoréférencement entre faisceaux, piste
+pourtant suggérée par le §8 du brief.
+
+Un critère de **croisement** a été ajouté (`merge_cross_m` : deux pistes co-mobiles qui se rapprochent à
+moins de N mètres sont la même cible ; deux navires parallèles gardent leur écart) — il déclenche bien,
+mais ne réduit pas le compte final : la piste absorbée renaît au dwell suivant sur des échos que la piste
+survivante ne peut pas atteindre (porte 200 m, nuage ±300 m). Il est donc livré **désactivé**, documenté.
+
+### La réponse opérationnelle : un contact = un navire
+
+Le regroupement se fait à l'affichage, et il est juste : les deux pistes du cargo appartiennent au
+**contact 1**, la piste indépendante au contact 2. La console n'affiche désormais qu'un symbole par contact
+multi-pistes — celui de la piste qui le représente — étiqueté `C1 (2 pistes) S60 4m/s` ; les membres
+masqués restent listés dans l'infobulle et accessibles en cochant « tentatives ». L'opérateur voit un
+navire, le filtre garde ses deux estimations.
+
 ### Ce qui reste ouvert
 
-Deux identifiants et deux contacts subsistent sur un navire unique. Le contact principal couvre 98 % de la
-fenêtre — l'opérateur voit donc une piste continue — mais un second contact apparaît par intermittence
-(38 % du temps). Aller jusqu'à un seul demanderait de modéliser l'étendue DANS l'état (filtre à matrice
-aléatoire, cible étendue elliptique), ce qui dépasse le cadre du brief et devrait se décider au vu de ce
-que donne la version actuelle en console.
+Deux estimations subsistent dans le filtre pour un navire unique. C'est acceptable à l'écran depuis que le
+contact fait foi, mais pas satisfaisant dans l'état interne — les deux pistes portent des vitesses
+différentes (4,5 et 2,0 m/s), et c'est celle du représentant qui est affichée.
+
+Aller jusqu'à UNE piste demande de modéliser l'étendue DANS l'état (filtre à matrice aléatoire / cible
+étendue elliptique) : la taille et l'orientation de la coque deviennent des paramètres estimés, et toutes
+les mesures d'un dwell tombant dans l'ellipse alimentent la même piste. C'est ce que fait le CLAW du radar,
+qui travaille en plus sur le signal brut. Chantier d'un autre ordre que le brief, à décider.
 
 ## 3. Capture routière — `volCAE2-MTI.pcap` (48 min, 11 219 plots)
 

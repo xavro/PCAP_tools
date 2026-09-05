@@ -111,6 +111,12 @@ class Profile:
     merge_max_dist_m: float = 0.0         # 0 = critère de co-mobilité désactivé
     merge_hdg_deg: float = 30.0
     merge_slow_mps: float = 3.0           # sous cette vitesse le cap n'est pas significatif
+    # CROISEMENT. Deux estimations posées sur la MÊME coque se rapprochent et se croisent : leur écart
+    # varie d'un facteur sept (48 m au plus près, 365 m au 90e centile sur la capture cargo). Deux navires
+    # distincts, eux, gardent leur écart — les deux navires parallèles du scénario synthétique restent à
+    # 600 m. On fusionne donc sur le RAPPROCHEMENT observé, pas sur la distance courante : c'est le seul
+    # critère géométrique qui sépare « une cible étendue » de « deux cibles qui vont du même côté ».
+    merge_cross_m: float = 0.0            # 0 = désactivé ; sinon distance de rapprochement déclenchante
     # --- étage « contact » (affichage) : regroupement des pistes d'une même cible ---
     contact_dist_m: float = 0.0           # 0 = étage désactivé
     contact_dv_mps: float = 2.0
@@ -564,6 +570,7 @@ class Tracker:
         self.n_merged = 0
         self.n_absorbed_meas = 0    # mesures agrégées à une piste étendue (échos de la même coque)
         self.n_births_blocked = 0   # naissances refusées dans l'étendue d'une piste
+        self.min_dist = {}          # (id, id) -> distance minimale jamais observée entre deux pistes
 
     # ---------------------------------------------------------------- dwell
     def step(self, dwell: Dwell):
@@ -696,6 +703,11 @@ class Tracker:
                     dv = float(np.linalg.norm(ta.x[2:] - tb.x[2:]))
                     older, younger = (ta, tb) if ta.id < tb.id else (tb, ta)
                     dist = float(math.hypot(dp[0], dp[1]))
+                    key = (min(ta.id, tb.id), max(ta.id, tb.id))
+                    prev_min = self.min_dist.get(key)
+                    self.min_dist[key] = dist if prev_min is None else min(prev_min, dist)
+                    crossed = (prof.merge_cross_m > 0 and self.min_dist[key] <= prof.merge_cross_m
+                               and dv <= prof.merge_dv_mps)
                     co_mobile = False
                     if prof.merge_max_dist_m > 0 and dist <= prof.merge_max_dist_m and dv <= prof.merge_dv_mps:
                         sa, sb = ta.speed(), tb.speed()
@@ -704,7 +716,7 @@ class Tracker:
                             co_mobile = dh <= prof.merge_hdg_deg
                         else:
                             co_mobile = True                 # trop lentes pour que le cap ait un sens
-                    if (d2 <= prof.merge_chi2 and dv <= prof.merge_dv_mps) or co_mobile:
+                    if (d2 <= prof.merge_chi2 and dv <= prof.merge_dv_mps) or co_mobile or crossed:
                         k = older.merge_counter.get(younger.id, 0) + 1
                         older.merge_counter[younger.id] = k
                         if k >= prof.merge_k:            # deux dwells de confirmation : pas sur un hasard

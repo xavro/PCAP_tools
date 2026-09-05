@@ -307,7 +307,14 @@
     const showTent = $("gmti-live-tent").checked, seen = new Set(); live.last = lv.tracks || [];
     projLayers.forEach(l => LY.live.removeLayer(l)); projLayers.length = 0;
     updateVidgap(lv.tracks || []);
+    // Cible étendue (navire) : le filtre peut tenir deux estimations sur la même coque, réunies en un
+    // CONTACT. On n'affiche que la piste qui le représente — sinon l'opérateur voit deux navires là où il
+    // y en a un. Les membres masqués restent listés dans l'infobulle du contact.
+    const hidden = new Map();                       // id de piste masquée → contact
+    (lv.contacts || []).forEach(c => (c.members || []).forEach(id => { if (id !== c.rep) hidden.set(id, c); }));
+    const byContact = new Map((lv.contacts || []).map(c => [c.rep, c]));
     (lv.tracks || []).forEach(t => {
+      if (hidden.has(t.id) && !showTent) return;
       if (t.state === "TENTATIVE" && !showTent) return;
       if (!t.ever && !showTent) return;                 // pas encore confirmée une fois → tentative
       const col = t.is_air ? "#ff9f43" : t.is_rotator ? "#e58cff" : (t.ever ? LIVE_COL[t.state] : LIVE_COL.TENTATIVE);
@@ -324,7 +331,11 @@
       }
       e.mk.setLatLng([t.lat, t.lon]); e.mk.setStyle({ color: col, fillColor: col, fillOpacity: t.state === "COASTING" ? .35 : .9 });
       e.tail.setLatLngs(t.tail); e.tail.setStyle({ color: col });
-      e.mk.setTooltipContent(`${t.contact != null ? "C" + t.contact + "·" : ""}${t.id} ${t.state[0]}${t.hits}` + (t.speed >= 1 ? ` ${t.speed.toFixed(0)}m/s` : ""));
+      const ct = byContact.get(t.id);
+      e.mk.setTooltipContent(ct
+        ? `C${ct.id} (${ct.n} pistes) ${ct.state[0]}${ct.hits}` + (ct.speed >= 1 ? ` ${ct.speed.toFixed(0)}m/s` : "")
+        : `${t.contact != null ? "C" + t.contact + "·" : ""}${t.id} ${t.state[0]}${t.hits}` + (t.speed >= 1 ? ` ${t.speed.toFixed(0)}m/s` : ""));
+      if (ct) e.mk.setStyle({ radius: 7, weight: 2.5 });   // un contact multi-pistes se voit
       if (t.ever && t.state !== "TENTATIVE") { const pr = drawProjection(LY.live, t.lat, t.lon, t.speed, t.heading, col); if (pr) { projLayers.push(pr[0], pr[1]); } }
       seen.add(t.id);
     });

@@ -224,8 +224,13 @@ class LiveTracker:
                         by_track[m] = c["id"]
                 for o in out:
                     o["contact"] = by_track.get(o["id"])
+                # `rep` = piste qui REPRÉSENTE le contact à l'écran (la plus fournie). Sur une cible étendue,
+                # le filtre tient légitimement plusieurs estimations ; l'opérateur, lui, doit voir un objet.
                 contacts = [{"id": c["id"], "n": c["n"], "lat": round(self.frame.to_ll(c["x"], c["y"])[0], 6),
-                             "lon": round(self.frame.to_ll(c["x"], c["y"])[1], 6), "members": c["members"]} for c in cs if c["n"] > 1]
+                             "lon": round(self.frame.to_ll(c["x"], c["y"])[1], 6), "members": c["members"],
+                             "rep": c["track_id"], "speed": round(float(c["speed"]), 1),
+                             "heading": round(float(c["heading"]), 1), "state": c["state"], "hits": c["hits"]}
+                            for c in cs if c["n"] > 1]
             st_ = self._stats(counts["TENTATIVE"], counts["CONFIRMED"], counts["SOLID"], counts["COASTING"]); st_["displayable"] = counts["EVER"]
             alive = {tr.id for tr in self.tk.tracks}
             for k in [k for k in self._tail_cache if k not in alive]:
