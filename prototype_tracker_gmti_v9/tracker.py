@@ -49,6 +49,9 @@ except ImportError:                                   # repli glouton dans assig
 # États de piste — identiques au v8 (symbologie Arcade côté carte)
 # ----------------------------------------------------------------------
 TENTATIVE, CONFIRMED, SOLID, COASTING = "Faible", "Confirmee", "Solide", "Coasting"
+# Le v9 archive une piste supprimée au lieu de la marquer ; la constante existe pour les consommateurs
+# partagés avec le v8 (console : codes d'état de la barre de temps et du journal de pistage).
+DEAD = "Supprimee"
 
 
 @dataclass

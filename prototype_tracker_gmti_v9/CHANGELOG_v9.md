@@ -131,5 +131,11 @@ en écoute réseau comme du service GMTI — était écrit pour l'API v8 (`Track
 - l'extracteur 4607 et l'oracle de parité sont désormais cherchés dans le dossier le plus récent QUI LES
   FOURNIT, et non dans celui du tracker retenu (ce sont des outils, pas des versions de tracker) ;
 - le v9 expose ce qu'attend la console : `PROFILES_JSON`, `java_config`, `load_profiles` au format du
-  fichier partagé, `rts_tail` pour la traîne lissée, et un `track_detail` de même forme que le v8
-  (historique, plots associés avec leur d², ellipses de porte) — l'inspecteur de piste fonctionne.
+  fichier partagé, `rts_tail` pour la traîne lissée, la constante d'état `DEAD` (codes de la barre de temps
+  et du journal de pistage), `misses`, et un `track_detail` de même forme que le v8 (historique, plots
+  associés avec leur d², ellipses de porte) — l'inspecteur de piste fonctionne.
+
+`test_console_api.py` parcourt ce contrat de bout en bout sur une vraie capture — sélection de version,
+attributs du module, analyse de pcap, inspection d'une piste, barre de temps, pistage direct. **41 contrôles,
+0 échec, avec le v9 comme avec le v8** (`GMTI_TRACKER_VERSION=8.1`). Trois essais serveur avaient échoué
+faute de ce test : une constante manquante suffisait à ne plus produire aucune piste, sans autre signal.
