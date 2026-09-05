@@ -378,7 +378,16 @@ MAX_DISPLAY_PLOTS = 50000
 
 
 def _tracker_dir():
-    """Version `prototype_tracker_gmti_v<N[.M]>` la plus élevée contenant track_run.py."""
+    """Version `prototype_tracker_gmti_v<N[.M]>` la plus élevée contenant track_run.py.
+
+    `GMTI_TRACKER_VERSION` épingle une version précise (ex. « 8.1 ») : livrer un nouveau tracker ne doit
+    pas basculer la console d'un serveur en production sans décision explicite."""
+    pin = (os.getenv("GMTI_TRACKER_VERSION") or "").strip()
+    if pin:
+        d = os.path.join(HERE, TRACKER_PREFIX + pin)
+        if os.path.isfile(os.path.join(d, "track_run.py")):
+            return d
+        print("[gmti] GMTI_TRACKER_VERSION=%s introuvable — auto-détection" % pin, flush=True)
     best, best_ver = None, ()
     for name in os.listdir(HERE):
         if not name.startswith(TRACKER_PREFIX):

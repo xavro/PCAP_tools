@@ -396,10 +396,17 @@ def rapport(s):
     return "\n".join(L)
 
 # ---------------------------------------------------------------- CSV plots
+# Colonnes du CSV de plots. Les sept dernières décrivent le DWELL, pas le plot : empreinte (centre,
+# demi-étendue distance, demi-angle), MDV, altitude capteur et job. Elles ne servent pas au tracker v8
+# (qui les ignore) mais sont indispensables au v9 : sans elles, impossible de savoir si une piste était
+# observable au moment d'un dwell — c'est ce qui fait la différence entre un vrai miss et un trou de
+# couverture. Ajout en fin de ligne : les CSV existants restent lisibles.
 CSV_COLS = ["dwell_time_ms", "revisit_idx", "dwell_idx", "lat", "lon",
             "vel_los_cms", "snr_db", "classification", "sig_range_cm",
             "sig_xrange_dm", "sig_rvel_cms", "sensor_lat", "sensor_lon",
-            "target_height_m", "sig_height_m"]
+            "target_height_m", "sig_height_m",
+            "sensor_alt_m", "dwell_center_lat", "dwell_center_lon",
+            "dwell_range_he_km", "dwell_angle_he_deg", "mdv_mps", "job_id"]
 
 def write_csv(s, path):
     with open(path, "w", newline="") as f:
@@ -413,7 +420,14 @@ def write_csv(s, path):
                         t.get("sig_xrange_dm", ""), t.get("sig_rvel_cms", ""),
                         f"{d['sensor_lat']:.7f}" if "sensor_lat" in d else "",
                         f"{lon180(d['sensor_lon']):.7f}" if "sensor_lon" in d else "",
-                        t.get("height_m", ""), t.get("sig_height_m", "")])
+                        t.get("height_m", ""), t.get("sig_height_m", ""),
+                        # Dwell : unités converties ici (le CSV est l'interface, il porte des unités SI).
+                        round(d["sensor_alt_cm"] / 100.0, 1) if "sensor_alt_cm" in d else "",
+                        f"{d['dwell_center_lat']:.7f}" if "dwell_center_lat" in d else "",
+                        f"{lon180(d['dwell_center_lon']):.7f}" if "dwell_center_lon" in d else "",
+                        d.get("dwell_range_he_km", ""), d.get("dwell_angle_he_deg", ""),
+                        round(d["mdv_dms"] / 10.0, 2) if "mdv_dms" in d else "",
+                        d.get("job_id", "")])
 
 # ---------------------------------------------------------------- pcap
 # Conservée pour compat (l'API extract() catch ValueError) ; plus levée depuis

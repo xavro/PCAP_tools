@@ -177,7 +177,9 @@ def decode_packet_rows(b):
                 if seg_size < 5 or idx + seg_size > limit:
                     break
                 if seg_type == SEG_DWELL:
-                    rows.extend(_decode_dwell(b, idx))
+                    # Job ID : en-tête du PAQUET (octets 28-32), pas du segment. Des jobs entrelacés
+                    # expliquent des « trous » d'observation qu'il ne faut pas compter comme des miss.
+                    rows.extend(_decode_dwell(b, idx, _u32(b, off + 28) if off + 32 <= n else None))
                 idx += seg_size
         except Exception:
             break
@@ -185,8 +187,8 @@ def decode_packet_rows(b):
     return rows
 
 
-def _decode_dwell(b, seg):
-    return _decode_dwell_full(b, seg)[1]
+def _decode_dwell(b, seg, job_id=None):
+    return _decode_dwell_full(b, seg, job_id)[1]
 
 
 def decode_packet_dwells(b):
@@ -227,12 +229,12 @@ def decode_packet_dwells(b):
     return out
 
 
-def _decode_dwell_full(b, seg):
+def _decode_dwell_full(b, seg, job_id=None):
     mask = b[seg + 5:seg + 13]
     p = seg + 13
     d = {"revisit": None, "dwell": None, "trc": 0, "time": None,
          "slat": None, "slon": None, "salt": None, "clat": None, "clon": None,
-         "scale_lat": None, "scale_lon": None, "range_he": None, "angle_he": None}
+         "scale_lat": None, "scale_lon": None, "range_he": None, "angle_he": None, "mdv": None}
     for bit in range(0, 30):
         if not _mask_bit(mask, bit):
             continue
@@ -255,6 +257,7 @@ def _decode_dwell_full(b, seg):
         # cellule que le radar vient d'éclairer : ce taux de contenance est la référence.
         elif bit == 24: d["range_he"] = _u16(b, p) / 128.0
         elif bit == 25: d["angle_he"] = _u16(b, p) * (360.0 / 65536.0)  # BA16 : degrés
+        elif bit == 29: d["mdv"] = _u8(b, p) / 10.0                    # D24.29 MDV : dm/s -> m/s
         p += FIELD_SIZE[bit]
 
     rows = []
@@ -306,6 +309,13 @@ def _decode_dwell_full(b, seg):
             "sig_rvel_cms": tr["sig_rv"],
             "sensor_lat": d["slat"],
             "sensor_lon": _norm_lon(d["slon"]),
+            "sensor_alt_m": d["salt"],
+            "dwell_center_lat": d["clat"],
+            "dwell_center_lon": _norm_lon(d["clon"]) if d["clon"] is not None else None,
+            "dwell_range_he_km": d["range_he"],
+            "dwell_angle_he_deg": d["angle_he"],
+            "mdv_mps": d["mdv"],
+            "job_id": job_id,
         })
     return d, rows
 
@@ -340,9 +350,13 @@ def detect_gmti_port(path, sample=200000):
 
 # --------------------------------------------------------------------------
 
+# Les sept dernières colonnes décrivent le DWELL (empreinte, MDV, altitude capteur, job) : le tracker v9
+# en a besoin pour distinguer un vrai miss d'un trou de couverture. Le v8 les ignore.
 CSV_COLS = ["dwell_time_ms", "revisit_idx", "dwell_idx", "lat", "lon",
             "vel_los_cms", "snr_db", "classification", "sig_range_cm",
-            "sig_xrange_dm", "sig_rvel_cms", "sensor_lat", "sensor_lon"]
+            "sig_xrange_dm", "sig_rvel_cms", "sensor_lat", "sensor_lon",
+            "sensor_alt_m", "dwell_center_lat", "dwell_center_lon",
+            "dwell_range_he_km", "dwell_angle_he_deg", "mdv_mps", "job_id"]
 
 
 def _fmt(v):
