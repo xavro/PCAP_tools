@@ -109,10 +109,10 @@ profil ne garde que 41 pistes : les pistes meurent sur des miss fictifs.
 
 | étape | état |
 |---|---|
-| 1. clustering seul | fait, mesuré (11 → 5 pistes sur la maritime) |
-| 2. EKF Doppler + R anisotrope | fait, mesuré ; **désactivé par défaut en maritime** au vu de la donnée |
-| 3. observabilité (empreinte + zone aveugle) | fait, mesuré (couverture 79 → 97 % ; 333 704 miss évités en routier) |
+| 1. clustering seul | fait, mesuré (12 → 3 pistes sur la maritime) |
+| 2. EKF Doppler + R anisotrope | fait, mesuré ; **actif** avec un plancher σ_v_LOS de 2 m/s — sans plancher, ou avec une porte large, il fausse la vitesse |
+| 3. observabilité (empreinte + zone aveugle) | fait, mesuré (333 704 miss évités en routier, couverture 100 % en maritime) |
 | 4. suppression sur miss observables + fusion | fait ; fusion de pistes mesurée nuisible → remplacée par l'étage contact (port du TrackMerger v8) |
 | 4 bis. étendue de cible (naissances bloquées, échos absorbés) | ajouté hors brief : c'est ce qui fait tomber 12 pistes à 3 |
 | 5. portage des flags v8 | fait (`is_air`, `is_rotator`, états Faible/Confirmee/Solide/Coasting, RTS) |
-| 6. intégration console | automatique (auto-détection), **non testée en console** |
+| 6. intégration console | automatique (auto-détection) ; `GMTI_TRACKER_VERSION` épingle une version. **Reste à regarder à l'écran** |
