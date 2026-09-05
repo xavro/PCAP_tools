@@ -231,11 +231,39 @@ class LiveTracker:
                              "rep": c["track_id"], "speed": round(float(c["speed"]), 1),
                              "heading": round(float(c["heading"]), 1), "state": c["state"], "hits": c["hits"]}
                             for c in cs if c["n"] > 1]
+            # Deux symboles voisins NON groupés : on dit lequel, à quelle distance, et quel critère a
+            # bloqué. Sans cela, l'opérateur voit deux pistes sur une cible unique sans savoir pourquoi —
+            # et le diagnostic à distance devient impossible.
+            if self.merger and self.merger.enabled():
+                shown = {o["track_id"] for o in outs}          # ce que la carte dessine réellement
+                vis = [o for o in out if o["id"] in shown]
+                for i in range(len(vis)):
+                    for j in range(i + 1, len(vis)):
+                        a, b = vis[i], vis[j]
+                        if a.get("contact") is not None and a["contact"] == b.get("contact"):
+                            continue
+                        dd = self._dist_m(a, b)
+                        if dd >= self.merger.max_d:
+                            continue
+                        dv = abs(a["speed"] - b["speed"])
+                        dh = self.merger._hd(a["heading"], b["heading"])
+                        why = ("|Δv| %.1f ≥ %.1f m/s" % (dv, self.merger.max_dv) if dv >= self.merger.max_dv
+                               else "cap %.0f° ≥ %.0f°" % (dh, self.merger.max_hd)
+                               if min(a["speed"], b["speed"]) >= self.merger.slow and dh >= self.merger.max_hd
+                               else "non affichable dans l'étage contact")
+                        for x, y in ((a, b), (b, a)):
+                            if x.get("ungrouped") is None or dd < x["ungrouped"]["dist_m"]:
+                                x["ungrouped"] = {"id": y["id"], "dist_m": round(dd), "why": why}
             st_ = self._stats(counts["TENTATIVE"], counts["CONFIRMED"], counts["SOLID"], counts["COASTING"]); st_["displayable"] = counts["EVER"]
             alive = {tr.id for tr in self.tk.tracks}
             for k in [k for k in self._tail_cache if k not in alive]:
                 del self._tail_cache[k]
             return {"tracks": out, "contacts": contacts, "stats": st_}
+
+    @staticmethod
+    def _dist_m(a, b):
+        return 111320.0 * math.hypot(a["lat"] - b["lat"],
+                                     (a["lon"] - b["lon"]) * math.cos(math.radians(a["lat"])))
 
     def _stats(self, tent, conf, solid, coast):
         return {"profile": self.profile, "overrides": self.overrides,

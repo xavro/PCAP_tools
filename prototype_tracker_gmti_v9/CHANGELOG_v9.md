@@ -116,6 +116,21 @@ multi-pistes — celui de la piste qui le représente — étiqueté `C1 (2 pist
 masqués restent listés dans l'infobulle et accessibles en cochant « tentatives ». L'opérateur voit un
 navire, le filtre garde ses deux estimations.
 
+### La « deuxième piste » à 122 m était la projection
+
+Après le contact adhérent, l'opérateur voyait toujours deux points verts à ~125 m l'un de l'autre, mesurés
+à la règle. Ce n'était pas une piste : la carte dessine la **projection à +30 s** de chaque piste sous
+forme de point PLEIN de la couleur de la piste, au bout d'un trait pointillé. À 4 m/s, cette pointe tombe
+à 120 m du symbole — mesuré sur le rejeu complet : **médiane 126 m** (10e centile 99 m, 90e 348 m) sur
+810 dessins. Au zoom 100 m, indiscernable d'une seconde piste, d'où la lecture « deux navires qui se
+croisent puis vont en parallèle ».
+
+La pointe de projection est désormais un **anneau creux pointillé**. Et le serveur explique les cas
+douteux : quand deux symboles affichés sont à moins de `contact_dist_m` sans partager de contact,
+l'infobulle porte `⚠<id>@<distance> (motif)` — |Δv| trop grand, cap trop écarté, ou piste non affichable.
+Sur le rejeu complet de la capture cargo, ce cas ne se produit **jamais** : aucun symbole affiché n'a de
+voisin non groupé.
+
 ### Vérifier ce qui tourne vraiment
 
 Le module porte une signature (`track_run.VERSION`), remontée dans les statistiques du pistage direct et

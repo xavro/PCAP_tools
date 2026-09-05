@@ -288,7 +288,9 @@
     const sec = projectSec(); if (!sec || speed == null || heading == null || speed < 0.5) return null;
     const end = destPoint(lat, lon, heading, speed * sec), mid = destPoint(lat, lon, heading, speed * sec / 2);
     const pl = L.polyline([[lat, lon], end], { color: col, weight: 1.5, dashArray: "6 5", opacity: .8, renderer: canvasR, interactive: false }).addTo(group);
-    const tip = L.circleMarker(end, { radius: 3, color: col, weight: 1, fillColor: col, fillOpacity: .6, renderer: canvasR, interactive: false }).addTo(group);
+    // Anneau CREUX : au zoom serré, un point plein de la couleur de la piste se lit comme une seconde
+    // piste — c'est ce qui a fait croire à un croisement de deux navires là où il n'y en a qu'un.
+    const tip = L.circleMarker(end, { radius: 3, color: col, weight: 1, fill: false, dashArray: "2 2", renderer: canvasR, interactive: false }).addTo(group);
     return [pl, tip, mid];
   }
   // ── Écart piste ↔ centre image vidéo (vérité KLV quand le capteur fixe la cible) ─
@@ -332,9 +334,12 @@
       e.mk.setLatLng([t.lat, t.lon]); e.mk.setStyle({ color: col, fillColor: col, fillOpacity: t.state === "COASTING" ? .35 : .9 });
       e.tail.setLatLngs(t.tail); e.tail.setStyle({ color: col });
       const ct = byContact.get(t.id);
-      e.mk.setTooltipContent(ct
+      // Piste voisine non groupée : le motif s'affiche, sinon deux symboles sur une même cible restent
+      // inexplicables pour l'opérateur.
+      const ug = t.ungrouped ? ` ⚠${t.ungrouped.id}@${t.ungrouped.dist_m}m (${t.ungrouped.why})` : "";
+      e.mk.setTooltipContent((ct
         ? `C${ct.id} (${ct.n} pistes) ${ct.state[0]}${ct.hits}` + (ct.speed >= 1 ? ` ${ct.speed.toFixed(0)}m/s` : "")
-        : `${t.contact != null ? "C" + t.contact + "·" : ""}${t.id} ${t.state[0]}${t.hits}` + (t.speed >= 1 ? ` ${t.speed.toFixed(0)}m/s` : ""));
+        : `${t.contact != null ? "C" + t.contact + "·" : ""}${t.id} ${t.state[0]}${t.hits}` + (t.speed >= 1 ? ` ${t.speed.toFixed(0)}m/s` : "")) + ug);
       if (ct) e.mk.setStyle({ radius: 7, weight: 2.5 });   // un contact multi-pistes se voit
       if (t.ever && t.state !== "TENTATIVE") { const pr = drawProjection(LY.live, t.lat, t.lon, t.speed, t.heading, col); if (pr) { projLayers.push(pr[0], pr[1]); } }
       seen.add(t.id);
