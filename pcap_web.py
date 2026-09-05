@@ -452,9 +452,23 @@ def load_extract():
     return _EXTRACT[0]
 
 
-def tracker_version():
+def tracker_version(detail=False):
+    """Version du dossier de tracker retenu ; avec `detail`, y ajoute la signature du module.
+
+    Sans cette signature, rien à l'écran ne distingue deux images construites à des jours d'écart : la
+    version du DOSSIER (« v9 ») ne bouge pas quand le contenu change."""
     d = _tracker_dir()
-    return os.path.basename(d)[len("prototype_tracker_gmti_"):] if d else None
+    if not d:
+        return None
+    name = os.path.basename(d)[len("prototype_tracker_gmti_"):]
+    if detail:
+        try:
+            v = getattr(load_track_run(), "VERSION", None)
+            if v:
+                return "%s · %s" % (name, v)
+        except Exception:
+            pass
+    return name
 
 
 _GMTI = {}          # pcap → {"csv", "sink", "mode", "n_plots", "dwells", "rapport", "zone", "porteur", "tracks":{profile: res}}
@@ -515,7 +529,7 @@ def gmti_decode(path, limit=0):
 
 def gmti_summary(entry):
     return {k: entry[k] for k in ("mode", "n_plots", "dwells", "rapport", "zone", "porteur", "error")} | \
-        {"decoded": entry["csv"] is not None, "tracker": tracker_version(),
+        {"decoded": entry["csv"] is not None, "tracker": tracker_version(detail=True),
          "profiles": list(load_track_run().PROFILES.keys()) if _tracker_dir() else []}
 
 
