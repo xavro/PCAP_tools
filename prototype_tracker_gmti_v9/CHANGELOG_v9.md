@@ -102,6 +102,14 @@ survivante ne peut pas atteindre (porte 200 m, nuage ±300 m). Il est donc livr�
 
 ### La réponse opérationnelle : un contact = un navire
 
+Premier essai serveur de cette version : toujours deux étiquettes. Mesuré en rejouant la capture dwell par
+dwell, les deux pistes ne partageaient un contact que **68 %** des dwells, et **la totalité** des séparations
+venaient du seul critère de CAP — une estimation posée sur une coque, à 2 à 4 m/s, a un cap qui part au
+gré du bruit. Deux corrections, mesurées : seuil « trop lent pour que le cap compte » porté de 3 à 5 m/s
+(18 km/h), et **adhérence** — deux pistes déjà réunies le restent tant qu'elles sont proches, pendant
+`contact_memory_sec`. Résultat : **95 %** des dwells, contact unique de bout en bout, un seul symbole.
+
+
 Le regroupement se fait à l'affichage, et il est juste : les deux pistes du cargo appartiennent au
 **contact 1**, la piste indépendante au contact 2. La console n'affiche désormais qu'un symbole par contact
 multi-pistes — celui de la piste qui le représente — étiqueté `C1 (2 pistes) S60 4m/s` ; les membres

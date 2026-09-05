@@ -66,7 +66,10 @@ def _profiles():
         merge_max_dist_m=450.0, merge_hdg_deg=40.0,               # co-mobilité (absorption v8 : 450 m)
         # Étage d'affichage : une coque de 250 m, vue par bribes, peut légitimement porter deux pistes ;
         # l'opérateur doit voir UN navire. Distance alignée sur `mergeMaxDistM` du profil maritime v8.
+        # `contact_slow_mps` à 5 m/s : sous 18 km/h, le cap d'une estimation posée sur une coque n'est pas
+        # significatif — c'était la cause de 32 % des dwells où le navire se scindait en deux à l'écran.
         contact_dist_m=450.0, contact_dv_mps=4.0, contact_hdg_deg=45.0, contact_memory_sec=30.0,
+        contact_slow_mps=5.0,
         mdv_floor_mps=0.5,                                        # la capture cargo annonce MDV = 0
     )
     routier_zone = T.Profile(
@@ -239,6 +242,7 @@ class ContactMerger:
         self.slow = float(prof.contact_slow_mps)
         self.memory = float(prof.contact_memory_sec)
         self.prev = {}                    # cid -> (x, y, vx, vy, t) du dernier dwell où le contact existait
+        self.pairs = {}                   # {piste, piste} -> t du dernier regroupement (adhérence)
         self.next_id = 1
 
     def enabled(self):
@@ -249,13 +253,19 @@ class ContactMerger:
         d = abs(h1 - h2) % 360.0
         return 360.0 - d if d > 180.0 else d
 
-    def _same(self, a, b):
+    def _same(self, a, b, t=0.0):
         if math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= self.max_d:
             return False
+        # ADHÉRENCE : deux pistes déjà réunies le restent tant qu'elles sont proches. Mesuré sur la capture
+        # cargo, le seul critère de cap séparait le navire en deux 32 % des dwells — l'étiquette passait de
+        # « C1 (2 pistes) » à deux pistes distinctes au gré du bruit sur une estimation à 2 m/s.
+        key = frozenset((a["track_id"], b["track_id"]))
+        if t - self.pairs.get(key, -1e9) <= max(self.memory, 0.0):
+            return True
         if abs(a["speed"] - b["speed"]) >= self.max_dv:
             return False
-        # Sous `slow`, le cap n'est pas significatif : deux échos quasi immobiles de la même coque ne
-        # doivent pas être séparés parce que leurs vecteurs pointent n'importe où.
+        # Sous `slow`, le cap n'est pas significatif : deux échos lents de la même coque ne doivent pas
+        # être séparés parce que leurs vecteurs pointent n'importe où.
         return min(a["speed"], b["speed"]) < self.slow or self._hd(a["heading"], b["heading"]) < self.max_hd
 
     def merge(self, outs, t=0.0):
@@ -272,13 +282,19 @@ class ContactMerger:
 
         for i in range(n):
             for j in range(i + 1, n):
-                if self._same(outs[i], outs[j]):
+                if self._same(outs[i], outs[j], t):
                     ra, rb = find(i), find(j)
                     if ra != rb:
                         parent[max(ra, rb)] = min(ra, rb)
         groups = defaultdict(list)
         for i in range(n):
             groups[find(i)].append(outs[i])
+        for g in set(find(i) for i in range(n)):        # mémoire d'adhérence des paires regroupées
+            mem = [outs[i]["track_id"] for i in range(n) if find(i) == g]
+            for x in range(len(mem)):
+                for y in range(x + 1, len(mem)):
+                    self.pairs[frozenset((mem[x], mem[y]))] = t
+        self.pairs = {k: v for k, v in self.pairs.items() if t - v <= max(self.memory, 0.0) * 2}
         rank = {T.SOLID: 3, T.CONFIRMED: 2, T.COASTING: 1}
         fused = []
         for g in groups.values():
