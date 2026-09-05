@@ -29,6 +29,9 @@ import tracker as T
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SENTINEL_U16 = 65535
+# Fichier de profils partagé avec le v8 et le processor Java : la console l'édite via ce chemin. Le v9 y
+# lit sa propre section « v9 » (cf. load_profiles) et laisse le reste intact.
+PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(HERE), "gmti_profiles.json")
 
 
 # ----------------------------------------------------------------------
@@ -104,20 +107,25 @@ JAVA2V9 = {
 
 
 def load_profiles(path=None):
-    """Surcharge éventuelle des profils v9 par un fichier JSON (section « v9 » de gmti_profiles.json,
-    ou fichier dédié via GMTI_PROFILES_V9). Absent = valeurs du module."""
-    path = path or os.environ.get("GMTI_PROFILES_V9") or os.path.join(os.path.dirname(HERE), "gmti_profiles.json")
+    """Relit le fichier de profils partagé. La section « v9 » y surcharge les profils du module ; le
+    reste du fichier (profils v8, noms Java) est renvoyé tel quel, car c'est lui que la console édite."""
+    path = path or os.environ.get("GMTI_PROFILES_V9") or PROFILES_JSON
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return PROFILES
-    v9 = (data or {}).get("v9") or {}
-    for name, over in v9.items():
+        return {"profiles": {n: config_dict(p) for n, p in PROFILES.items()}, "defaults": {}}
+    for name, over in ((data or {}).get("v9") or {}).items():
         base = PROFILES.get(name) or PROFILES["defaut"]
         PROFILES[name] = T.profile_with(base, name=name, **{k: v for k, v in over.items()
                                                             if hasattr(base, k)})
-    return PROFILES
+    return data
+
+
+def java_config(name, overrides=None):
+    """Configuration effective d'un profil, telle que l'affiche la console. Le v9 n'a pas les mêmes
+    leviers que le v8 : on renvoie ses propres noms, ce qui vaut mieux qu'une traduction approximative."""
+    return config_dict(apply_profile(name, overrides))
 
 
 def apply_profile(name, overrides=None):
@@ -442,20 +450,53 @@ def metrics(res):
 
 
 def track_detail(res, track_id):
-    """Détail d'une piste du dernier run (inspection console) : historique et résumé."""
+    """Détail d'une piste du dernier run, dans la FORME attendue par la console (mêmes clés que le v8) :
+    historique, plots associés avec leur d² de Mahalanobis, et ellipses de porte."""
+    import numpy as np
     tr = (res.get("_objs") or {}).get(int(track_id))
     if tr is None:
-        raise ValueError("piste %s inconnue" % track_id)
+        return None
     fr = res["frame"]
-    hist = [{"t": t, "lat": round(la, 7), "lon": round(lo, 7), "etat": st, "hit": bool(hit)}
-            for (t, x, y, st, hit) in tr.trajectory()
-            for (la, lo) in [fr.to_ll(x, y)]]
-    return {"id": tr.id, "hits": tr.hits, "etat": tr.state, "speed_mps": tr.speed(),
-            "heading_deg": tr.heading_deg(), "heading_std_deg": tr.heading_std_deg(),
-            "pos_std_m": tr.pos_std_m(), "classification": tr.classification,
-            "is_air": tr.is_air, "is_rotator": tr.is_rotator,
-            "merged_from": list(tr.merged_from), "jobs": sorted(j for j in tr.job_ids if j is not None),
-            "history": hist}
+    hist = []
+    for i, (t, x, y, st, hit) in enumerate(tr.trajectory()):
+        la, lo = fr.to_ll(x, y)
+        sp = None
+        if i < len(tr.states):
+            xs = tr.states[i][1]
+            sp = float(math.hypot(xs[2], xs[3]))
+        hist.append([round(float(t), 3), round(la, 6), round(lo, 6), st, bool(hit),
+                     None if sp is None else round(sp, 1)])
+    assoc = []
+    for (t, x, y, d2, vlos, snr, cls) in tr.assoc:
+        la, lo = fr.to_ll(float(x), float(y))
+        assoc.append([round(float(t), 3), round(la, 6), round(lo, 6),
+                      None if d2 != d2 else round(float(d2), 2),
+                      None if vlos is None else round(float(vlos), 1), snr, cls])
+    chi2 = float(tr.prof.gate_chi2 if tr.prof.doppler_enabled else tr.prof.gate_chi2_pos)
+    gates = []
+    for (t, S, d2), a in zip(tr.gates, tr.assoc[1:]):
+        try:
+            w, v = np.linalg.eigh(S)
+            ax, bx = math.sqrt(max(w[1], 0) * chi2), math.sqrt(max(w[0], 0) * chi2)
+            ang = math.degrees(math.atan2(v[1, 1], v[0, 1]))
+        except Exception:
+            continue
+        la, lo = fr.to_ll(float(a[1]), float(a[2]))
+        gates.append([round(float(t), 3), round(la, 6), round(lo, 6), round(ax, 1), round(bx, 1),
+                      round(ang, 1), None if d2 != d2 else round(float(d2), 2)])
+    speeds = [h[5] for h in hist if h[5] is not None]
+    return {"id": tr.id, "hits": tr.hits, "misses": tr.misses, "confirmed_ever": bool(tr.confirmed_ever),
+            "is_air": bool(tr.is_air), "is_rotator": bool(tr.is_rotator),
+            "t0": hist[0][0] if hist else None, "t1": hist[-1][0] if hist else None,
+            "n_hist": len(hist), "n_miss": sum(1 for h in hist if not h[4]),
+            "speed_mean": (sum(speeds) / len(speeds)) if speeds else None,
+            "speed_max": max(speeds) if speeds else None,
+            "hist": hist, "assoc": assoc, "gates": gates,
+            "gate_chi2": chi2, "gate_max_m": float(tr.gate_max),
+            # propres au v9 : ce que les briques ont fait sur cette piste
+            "heading_std_deg": round(tr.heading_std_deg(), 2), "pos_std_m": round(tr.pos_std_m(), 1),
+            "extent_m": round(float(tr.extent), 1), "merged_from": list(tr.merged_from),
+            "n_plots_last": tr.n_plots_last, "jobs": sorted(j for j in tr.job_ids if j is not None)}
 
 
 load_profiles()

@@ -115,4 +115,21 @@ profil ne garde que 41 pistes : les pistes meurent sur des miss fictifs.
 | 4. suppression sur miss observables + fusion | fait ; fusion de pistes mesurée nuisible → remplacée par l'étage contact (port du TrackMerger v8) |
 | 4 bis. étendue de cible (naissances bloquées, échos absorbés) | ajouté hors brief : c'est ce qui fait tomber 12 pistes à 3 |
 | 5. portage des flags v8 | fait (`is_air`, `is_rotator`, états Faible/Confirmee/Solide/Coasting, RTS) |
-| 6. intégration console | automatique (auto-détection) ; `GMTI_TRACKER_VERSION` épingle une version. **Reste à regarder à l'écran** |
+| 6. intégration console | faite : pistage direct (`gmti_live`), analyse de pcap, détail de piste, profils, extracteur et parité vérifiés avec le v9 sélectionné ; `GMTI_TRACKER_VERSION` épingle une version |
+
+## 5. Interchangeabilité v8 / v9 (corrigé après essai serveur)
+
+Le premier essai sur serveur n'a produit **aucune piste** alors que les plots s'affichaient : le dossier du
+tracker ne porte pas que le tracker, et `gmti_live.LiveTracker` — le pistage TEMPS RÉEL, celui de la console
+en écoute réseau comme du service GMTI — était écrit pour l'API v8 (`Tracker()`, `step(t, plots)`,
+`prepare_plots`, `TrackMerger`). Corrections :
+
+- `gmti_live` détecte la génération et parle l'API native du v9 (`step(Dwell)`), en lui passant les champs
+  d'empreinte du dwell **et les dwells sans plot** — sans eux, l'observabilité ne sert à rien en direct.
+  Mesuré sur la capture cargo rejouée : 585 dwells traités contre 113 au v8, 3 pistes regroupées en
+  1 contact pour le navire ;
+- l'extracteur 4607 et l'oracle de parité sont désormais cherchés dans le dossier le plus récent QUI LES
+  FOURNIT, et non dans celui du tracker retenu (ce sont des outils, pas des versions de tracker) ;
+- le v9 expose ce qu'attend la console : `PROFILES_JSON`, `java_config`, `load_profiles` au format du
+  fichier partagé, `rts_tail` pour la traîne lissée, et un `track_detail` de même forme que le v8
+  (historique, plots associés avec leur d², ellipses de porte) — l'inspecteur de piste fonctionne.

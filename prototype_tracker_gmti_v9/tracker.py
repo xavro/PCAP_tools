@@ -373,6 +373,7 @@ class Track:
         self.t = t
         self.t_last_update = t
         self.hits = 1
+        self.misses = 0                  # miss observables cumulés (affiché en direct, comme en v8)
         self.n_plots_last = m.n_plots
         self.window = [1]
         self.consecutive_obs_misses = 0
@@ -392,6 +393,9 @@ class Track:
         self.is_rotator = False
         self.air_evidence = 0
         self.rot_evidence = 0
+        self.assoc = [(t, float(m.z[0]), float(m.z[1]), float("nan"),
+                       float(m.z[2]) if m.has_vr else None, m.snr_db, m.classification)]
+        self.gates = []                                        # (t, S position 2x2, d²) : ellipses de la console
         self.states = [(t, self.x.copy(), self.P.copy())]      # pour le lisseur RTS
         self.history = [(t, float(self.x[0]), float(self.x[1]), self.state, True)]
         self.last_hit_idx = 0
@@ -413,8 +417,12 @@ class Track:
         self.P = F @ self.P @ F.T + Q
         self.t = t
 
-    def update(self, m: Meas, sx, sy, sz):
+    def update(self, m: Meas, sx, sy, sz, d2=float("nan"), S_pos=None):
         prof = self.prof
+        self.assoc.append((self.t, float(m.z[0]), float(m.z[1]), float(d2),
+                           float(m.z[2]) if m.has_vr else None, m.snr_db, m.classification))
+        if S_pos is not None:
+            self.gates.append((self.t, S_pos, float(d2)))
         use_vr = m.has_vr and prof.doppler_enabled
         if use_vr:
             H = h_jac(self.x, sx, sy, sz, prof.sign_vlos)
@@ -435,6 +443,7 @@ class Track:
         self.n_plots_last = m.n_plots
         self.window = (self.window + [1])[-prof.confirm_n:]
         self.consecutive_obs_misses = 0
+        self.misses = 0
         if prof.extent_from_cluster and m.spread_m > 0:
             self.extent = min(max(self.extent, 2.0 * m.spread_m), prof.extent_max_m)
         if m.classification is not None:
@@ -461,6 +470,7 @@ class Track:
     def miss(self):
         self.window = (self.window + [0])[-self.prof.confirm_n:]
         self.consecutive_obs_misses += 1
+        self.misses += 1
 
     # ---------------------------------------------------------------- sortie
     def speed(self):
@@ -614,7 +624,8 @@ class Tracker:
                     m = merge_meas([m] + [meas[k] for k in extra])
                     assigned_m.update(extra)
                     self.n_absorbed_meas += len(extra)
-            tr.update(m, sx, sy, sz)
+            Hp = np.zeros((2, 4)); Hp[0, 0] = Hp[1, 1] = 1.0
+            tr.update(m, sx, sy, sz, cost[i, j], Hp @ tr.P @ Hp.T + m.R[:2, :2])
             if dwell.job_id is not None:
                 tr.job_ids.add(dwell.job_id)
 
@@ -738,6 +749,12 @@ class Tracker:
 def rts_smooth(track: Track):
     """Passe arrière Rauch-Tung-Striebel, tronquée à la dernière détection réelle."""
     return _rts_states(track.states[:track.last_hit_idx + 1], track.q_accel)
+
+
+def rts_tail(track: Track, n=30):
+    """Traîne LISSÉE d'une piste vivante (affichage temps réel) : passe RTS sur les `n` derniers états,
+    l'état courant restant celui du filtre. Sans elle, la trace zigzague au gré du bruit de mesure."""
+    return _rts_states(track.states[-max(2, int(n)):], track.q_accel)
 
 
 def _rts_states(st, q_accel):

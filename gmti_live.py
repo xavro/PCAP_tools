@@ -20,6 +20,11 @@ class LiveTracker:
 
     def __init__(self, tr, T, profile="defaut", overrides=None):
         self.tr, self.T = tr, T
+        # Le tracker est chargé depuis un dossier versionné : v8 présente `Tracker()` + `step(t, plots)`,
+        # v9 un pistage par DWELL (`step(Dwell)`), qui a besoin des champs d'empreinte pour savoir si une
+        # piste était observable. On détecte la génération plutôt que d'imposer une API à l'une des deux.
+        self.v9 = hasattr(T, "Dwell") and hasattr(T, "Profile")
+        self.prof = None
         self.profile, self.overrides = profile or "defaut", overrides or {}
         self.tk = None; self.frame = None; self.last_t = None; self.merger = None
         self.n_dwells = 0; self.n_plots = 0; self.n_resets = 0; self.n_filtered = 0; self.n_clustered = 0; self.n_ghosts = 0
@@ -29,12 +34,25 @@ class LiveTracker:
         self._tail_cache = {}           # id -> (n_states_calcules, [(t,x,y)...] lissés, n)
 
     def _apply(self):
-        self.cfg = self.tr.apply_profile(self.profile, self.overrides)
+        cfg = self.tr.apply_profile(self.profile, self.overrides)
+        if self.v9:
+            self.prof = cfg                                  # dataclass Profile
+            self.cfg = self.tr.config_dict(cfg)              # vue dict, pour l'affichage et les lectures
+        else:
+            self.cfg = cfg
         return self.cfg
 
     def _reset(self):
-        self.tk = self.T.Tracker(); self.T.Track._ids = itertools.count(1)
-        self.merger = self.tr.TrackMerger(self.cfg or self._apply()); self.last_t = None
+        self._apply()
+        self.T.Track._ids = itertools.count(1)
+        if self.v9:
+            # Le v9 tient son repère : le tracker n'est construit qu'au premier dwell géolocalisé.
+            self.tk = self.T.Tracker(self.prof, self.frame) if self.frame is not None else None
+            self.merger = self.tr.ContactMerger(self.prof)
+        else:
+            self.tk = self.T.Tracker()
+            self.merger = self.tr.TrackMerger(self.cfg)
+        self.last_t = None
 
     def set_profile(self, profile=None, overrides=None, reset=False):
         """Changement de profil / surcharges à chaud (pris en compte au prochain dwell) ;
@@ -50,7 +68,8 @@ class LiveTracker:
             else:
                 self._apply()
                 if self.tk is not None:
-                    self.merger = self.tr.TrackMerger(self.cfg)
+                    self.merger = (self.tr.ContactMerger(self.prof) if self.v9
+                                   else self.tr.TrackMerger(self.cfg))
 
     def step_dwells(self, dwells):
         """dwells : sortie de decode_packet_dwells (rows déjà validés)."""
@@ -64,6 +83,13 @@ class LiveTracker:
                     continue
                 t = d["time"] / 1000.0
                 rows = d["rows"]
+                if not rows and self.v9 and self.tk is not None:
+                    # v9 : un dwell VIDE est une information — il dit que le radar regardait là et n'a
+                    # rien vu. C'est ce qui distingue un vrai miss d'un faisceau pointé ailleurs.
+                    self.tk.step(self._v9_dwell(d, t, []))
+                    self.last_t = t
+                    self.n_dwells += 1
+                    continue
                 if not rows:
                     # Dwell sans target report (le faisceau balaie ailleurs) : ignoré, comme le processor
                     # GeoEvent (qui ne reçoit que des GMTI_Target) et le banc hors ligne (CSV de plots)
@@ -76,6 +102,16 @@ class LiveTracker:
                         self.n_resets += 1; self._reset()
                     elif t < self.last_t:                            # léger désordre : on ne recule pas le temps
                         t = self.last_t
+                if self.v9 and self.tk is None:            # repère connu : le tracker v9 peut naître
+                    if self.prof is None:
+                        self._apply()
+                    self.tk = T.Tracker(self.prof, self.frame)
+                if self.v9:
+                    self.tk.step(self._v9_dwell(d, t, rows))
+                    self.last_t = t
+                    self.n_dwells += 1
+                    self.n_plots += len(rows)
+                    continue
                 sl = d["sensor"]
                 sxy = self.frame.to_xy(sl[0], sl[1]) if sl and sl[0] is not None and sl[1] is not None else None
                 plots = []
@@ -90,6 +126,31 @@ class LiveTracker:
                 self.n_filtered += pst["filtered"]; self.n_ghosts += pst["ghosts"]; self.n_clustered += pst["clustered"]
                 self.tk.step(t, plots)
                 self.last_t = t; self.n_dwells += 1; self.n_plots += len(plots)
+
+    def _v9_dwell(self, d, t, rows):
+        """Dwell décodé (`decode_packet_dwells`) → `tracker.Dwell` du v9, unités SI et sentinelles à None."""
+        T = self.T
+        sl = d.get("sensor") or (None, None, None)
+
+        def sig(v, scale):
+            return None if not v or v >= 65535 else v / scale
+
+        plots = []
+        for r in rows:
+            x, y = self.frame.to_xy(r["lat"], r["lon"])
+            plots.append(T.Plot(lat=r["lat"], lon=r["lon"], x=x, y=y,
+                                vr=(r["vel_los_cms"] / 100.0) if r.get("vel_los_cms") is not None else None,
+                                snr_db=r.get("snr_db"), classification=r.get("classification"),
+                                sigma_range_m=sig(r.get("sig_range_cm"), 100.0),
+                                sigma_cross_m=sig(r.get("sig_xrange_dm"), 10.0),
+                                sigma_vr_mps=sig(r.get("sig_rvel_cms"), 100.0)))
+        c = d.get("center") or (None, None)
+        rhe = d.get("range_he_km")
+        return T.Dwell(t=t, sensor_lat=sl[0], sensor_lon=sl[1], sensor_alt_m=(sl[2] or 0.0),
+                       center_lat=c[0], center_lon=c[1],
+                       half_range_m=(rhe * 1000.0) if rhe else None,
+                       half_angle_deg=d.get("angle_he_deg"), mdv_mps=d.get("mdv"),
+                       job_id=d.get("job_id"), plots=plots)
 
     def _tail(self, tr, n, smooth):
         """Traîne d'une piste : `n` derniers états (0 = tous, max 2000), lissée (RTS) avec cache —
@@ -130,10 +191,10 @@ class LiveTracker:
             names = {T.TENTATIVE: "TENTATIVE", T.CONFIRMED: "CONFIRMED", T.SOLID: "SOLID", T.COASTING: "COASTING"}
             out, outs = [], []
             counts = {"TENTATIVE": 0, "CONFIRMED": 0, "SOLID": 0, "COASTING": 0, "EVER": 0}
-            min_speed = float((self.cfg or {}).get("minTrackSpeedMps") or 0.0)
+            min_speed = float((self.cfg or {}).get("minTrackSpeedMps") or 0.0)   # v9 : absent → 0
             for tr in self.tk.tracks:
                 st = tr.state
-                if st == T.DEAD:
+                if st == getattr(T, "DEAD", "\x00"):        # le v9 n'a pas d'état « Supprimee » vivant
                     continue
                 name = names.get(st, str(st)); counts[name] = counts.get(name, 0) + 1
                 if tr.confirmed_ever:
@@ -143,10 +204,11 @@ class LiveTracker:
                 tail_ll = self._tail(tr, tail, smooth)
                 o = {"id": tr.id, "lat": round(la, 6), "lon": round(lo, 6), "speed": round(sp, 1),
                      "heading": round((math.degrees(math.atan2(tr.x[2], tr.x[3])) + 360.0) % 360.0, 1),
-                     "state": name, "hits": tr.hits, "misses": tr.misses, "ever": bool(tr.confirmed_ever),
+                     "state": name, "hits": tr.hits, "misses": getattr(tr, "misses", 0), "ever": bool(tr.confirmed_ever),
                      "is_air": bool(tr.is_air), "is_rotator": bool(tr.is_rotator),
                      "age_s": round(max(0.0, (self.last_t or 0) - tr.t_last_update), 1),
-                     "extent_m": round(float(getattr(tr, "extent", 0.0)), 1), "absorbed": list(getattr(tr, "absorbed", [])),
+                     "extent_m": round(float(getattr(tr, "extent", 0.0)), 1),
+                     "absorbed": list(getattr(tr, "absorbed", None) or getattr(tr, "merged_from", [])),
                      "cls": tr.dominant_class() if hasattr(tr, "dominant_class") else None,
                      "tail": tail_ll}
                 out.append(o)
@@ -156,7 +218,7 @@ class LiveTracker:
             contacts = None
             if self.merger and self.merger.enabled():
                 by_track = {}
-                cs = self.merger.merge(outs)
+                cs = self.merger.merge(outs, self.last_t or 0.0) if self.v9 else self.merger.merge(outs)
                 for c in cs:
                     for m in c["members"]:
                         by_track[m] = c["id"]
@@ -174,7 +236,7 @@ class LiveTracker:
         return {"profile": self.profile, "overrides": self.overrides, "n_dwells": self.n_dwells, "n_plots": self.n_plots,
                 "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t, "n_clustered": self.n_clustered, "n_ghosts": self.n_ghosts,
                 "n_absorbed": sum(1 for a in self.tk.archive if getattr(a, "dead_absorbed", False)) if self.tk else 0,
-                "n_swallowed": self.tk.n_swallowed if self.tk else 0,
+                "n_swallowed": getattr(self.tk, "n_swallowed", getattr(self.tk, "n_clustered", 0)) if self.tk else 0,
                 "tentative": tent, "confirmed": conf, "solid": solid, "coasting": coast,
                 "archived": len(self.tk.archive) if self.tk else 0}
 

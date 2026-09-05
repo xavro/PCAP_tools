@@ -425,9 +425,27 @@ def load_track_run():
     return _TRACK_RUN[0]
 
 
+def _tool_dir(filename):
+    """Dossier `prototype_tracker_gmti_v*` le plus récent contenant `filename`.
+
+    L'extracteur 4607 et l'oracle de parité sont des OUTILS, pas des versions du tracker : un nouveau
+    tracker n'a pas à les embarquer, et la console doit continuer à les trouver."""
+    best, best_ver = None, ()
+    for name in sorted(os.listdir(HERE)):
+        if not name.startswith(TRACKER_PREFIX):
+            continue
+        parts = name[len(TRACKER_PREFIX):].split(".")
+        if not all(x.isdigit() for x in parts):
+            continue
+        ver = tuple(int(x) for x in parts)
+        if os.path.isfile(os.path.join(HERE, name, filename)) and ver > best_ver:
+            best_ver, best = ver, name
+    return os.path.join(HERE, best) if best else None
+
+
 def load_extract():
     if _EXTRACT[0] is None:
-        d = _tracker_dir()
+        d = _tool_dir("stanag4607_extract.py")
         if not d:
             raise RuntimeError("extracteur 4607 introuvable")
         _EXTRACT[0] = _load_module_from(os.path.join(d, "stanag4607_extract.py"), "stanag4607_extract")
@@ -617,7 +635,7 @@ def gmti_parity_zip(entry, profile, overrides, name=None, seconds=300.0):
         raise ValueError(entry["error"] or "GMTI non décodé")
     tr = load_track_run()
     d = _tracker_dir()
-    pe = _load_module_from(os.path.join(d, "parity_export.py"), "parity_export")
+    pe = _load_module_from(os.path.join(_tool_dir("parity_export.py") or d, "parity_export.py"), "parity_export")
     name = "".join(c if (c.isalnum() or c in "_-") else "_" for c in (name or profile))
     if overrides:
         name = name if name != profile else name + "_custom"
