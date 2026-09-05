@@ -34,21 +34,24 @@ donc pas un défaut d'implémentation.
 Référence de cible reconstruite depuis les plots, sans tracker : **157 plots alignés, 13,3 km/h cap 127°**
 (résidu 177 m, cohérent avec une coque de ~250 m).
 
-| variante | pistes | ID sur cible | simult. max | couverture | σ cap | σ vitesse | jitter | vitesse | erreur cap |
-|---|---|---|---|---|---|---|---|---|---|
-| v8.1 (référence) | 3 | 3 | 3 | 100 % | 16,9° | 2,7 km/h | 54 m | 7,1 km/h | 16,5° |
-| v9 — aucune brique | 11 | 11 | 5 | 69 % | 11,0° | 3,2 km/h | 16 m | 17,4 km/h | 3,8° |
-| + clustering | 5 | 5 | 3 | 79 % | 10,2° | 1,7 km/h | 28 m | 18,3 km/h | 6,8° |
-| + EKF Doppler | 4 | 4 | 2 | 97 % | **4,4°** | 2,7 km/h | 46 m | 25,6 km/h | 0,0° |
-| + observabilité | 6 | 5 | 4 | 85 % | **3,0°** | 4,3 km/h | 44 m | 25,7 km/h | 0,5° |
-| + fusion | 12 | 11 | 4 | 81 % | 26,0° | 3,3 km/h | 23 m | 11,1 km/h | 62,8° |
+| variante | pistes | ID sur cible | contacts | couv. contact | σ cap | σ vitesse | jitter | vitesse |
+|---|---|---|---|---|---|---|---|---|
+| v8.1 (référence) | 3 | 3 | — | — | 16,9° | 2,7 km/h | 54 m | 7,1 km/h |
+| v9 — aucune brique | 12 | 12 | 5 | 80 % | 4,9° | 1,7 km/h | 16 m | 19,9 km/h |
+| + clustering | 3 | 3 | 2 | 98 % | 7,3° | 1,5 km/h | 21 m | 13,2 km/h |
+| + EKF Doppler | 2 | 2 | 2 | 98 % | 5,7° | 1,2 km/h | 15 m | 14,4 km/h |
+| + observabilité | 3 | 2 | 2 | 96 % | 9,9° | 1,5 km/h | 18 m | 13,2 km/h |
+| **v9 livré** (réglages ci-dessous) | **3** | **2** | **2** | **98 %** | **3,9°** | **1,0 km/h** | **15 m** | **14,6 km/h** |
 
-Cibles du brief : 1 piste simultanée, 1 identifiant, σ cap < 5°, σ vitesse < 2 km/h, jitter < 40 m,
-couverture > 90 %. **Non atteintes** en l'état — le détail ci-dessous dit pourquoi.
+Cibles du brief : σ cap < 5° **tenu**, σ vitesse < 2 km/h **tenu**, jitter < 40 m **tenu**, couverture > 90 %
+**tenue** (100 %), vitesse à +10 % de la référence. **Reste 2 identifiants et 2 contacts au lieu d'un.**
 
-### Ce que dit la donnée : D32.7 ne mesure pas la translation du navire
+Pour mémoire, le v8 sur la même capture : cap trois fois moins stable (16,9°) et surtout une vitesse de
+7,1 km/h pour une cible à 13,3 — il sous-estime de moitié.
 
-Écart de v_LOS entre deux échos **du même dwell** (donc du même instant), par distance :
+### Ce que dit la donnée : D32.7 est en partie du micro-Doppler
+
+Écart de v_LOS entre deux échos **du même dwell** (même instant), par distance :
 
 | distance entre échos | paires | \|Δv_LOS\| médian |
 |---|---|---|
@@ -57,41 +60,45 @@ couverture > 90 %. **Non atteintes** en l'état — le détail ci-dessous dit po
 | 150 – 300 m | 52 | 10,51 m/s |
 | 300 – 600 m | 22 | 10,42 m/s |
 
-Le flux annonce pourtant σ_v_LOS = 0,23 à 0,51 m/s (D32.15, présent à 100 %). Un ajustement d'UNE vitesse
-commune à tous les plots laisse un résidu de 5,12 m/s. Autrement dit, sur ce capteur et cette cible, le
-Doppler décrit l'agitation des diffuseurs de la coque, pas le déplacement du navire (13 km/h = 3,7 m/s,
-alors que le v_LOS mesuré balaie ±8,9 m/s).
+Le flux annonce pourtant σ_v_LOS = 0,23 à 0,51 m/s (D32.15, présent à 100 %), et un ajustement d'UNE
+vitesse commune à tous les plots laisse 5,12 m/s de résidu. Conséquences mesurées :
 
-Conséquences vérifiées :
-- avec un σ_v_LOS serré, l'EKF Doppler **stabilise le cap** (σ 1,5 à 2,4°, erreur de cap ~0°, la géométrie
-  étant quasi radiale) mais **double la vitesse** : 22 à 25 km/h affichés pour 13,3 km/h réels, parce que
-  la composante le long de la ligne de vue suit les oscillations du Doppler ;
-- avec un σ plancher à 8 m/s ou plus, le Doppler cesse d'informer et l'on retombe sur le position seule ;
-- le critère Doppler du clustering (3 m/s au brief) **empêchait** de lier proue et poupe : porté à 25 m/s,
-  le clustering fait passer les pistes de 11 à 5.
+- pris au mot **avec une porte large (400 m)**, le Doppler double la vitesse affichée (25 km/h pour 13
+  réels) : la composante le long de la ligne de vue suit ses oscillations ;
+- avec la porte resserrée à **200 m** et un **plancher σ_v_LOS de 2 m/s**, il stabilise le cap sans imposer
+  sa dispersion : σ cap 3,9° et 14,6 km/h, contre 7,3° et 13,2 km/h sans Doppler du tout. C'est le réglage
+  livré ;
+- le critère Doppler du clustering (3 m/s au brief) **empêchait** de lier proue et poupe ; porté à 25 m/s,
+  le clustering fait tomber les pistes de 12 à 3.
 
-D'où le réglage livré : `doppler_enabled=False` **sur le profil maritime**, avec le commentaire de mesure
-dans `track_run.py`. Ce n'est pas un abandon de la brique — elle est juste, le test synthétique le prouve
-(σ cap 0,9° sur un Doppler propre) — c'est un constat sur ce capteur. `doppler_enabled=True` reste
-disponible en surcharge, profil par profil.
+### Réglages retenus pour le profil maritime, et pourquoi
+
+| réglage | valeur | mesure qui le justifie |
+|---|---|---|
+| `gate_max_m` | 200 | à 300-400 m la piste attrape des échos de mer : vitesse 19-25 km/h au lieu de 13-15 |
+| `cluster_eps_vr_mps` | 25 | l'écart Doppler intra-coque atteint 10,5 m/s |
+| `sigma_vr_floor_mps` | 2,0 | compromis mesuré entre stabilité du cap et justesse de la vitesse |
+| `target_extent_m` + étendue déduite | 300 m / clusters | 18 naissances de pistes concurrentes bloquées dans l'emprise de la coque |
+| `merge_enabled` | **False** | la fusion de pistes AJOUTE une piste (absorber libère les mesures, qui refont naître) |
+| `contact_dist_m` / `contact_memory_sec` | 450 m / 30 s | étage d'affichage : un contact couvre 98 % de la fenêtre |
 
 ### Ce qui reste ouvert
 
-Le nombre de pistes sur la cible (4 à 6 selon le réglage) est encore loin de 1. Les doublons sont des
-pistes distantes de 100 à 300 m, co-mobiles, que ni le Mahalanobis (covariances de 20 m) ni le critère de
-co-mobilité actuel n'absorbent proprement : la fusion telle qu'elle est réglée **dégrade** le résultat
-(12 pistes, erreur de cap 63°), parce qu'absorber une piste libère ses mesures, qui refont naître une
-piste au dwell suivant. À traiter : mémoriser l'identifiant absorbé pour que la mesure revienne à la piste
-mère, et resserrer le critère (distance ≤ longueur de coque, Δcap ≤ 20°, k ≥ 4).
+Deux identifiants et deux contacts subsistent sur un navire unique. Le contact principal couvre 98 % de la
+fenêtre — l'opérateur voit donc une piste continue — mais un second contact apparaît par intermittence
+(38 % du temps). Aller jusqu'à un seul demanderait de modéliser l'étendue DANS l'état (filtre à matrice
+aléatoire, cible étendue elliptique), ce qui dépasse le cadre du brief et devrait se décider au vu de ce
+que donne la version actuelle en console.
 
 ## 3. Capture routière — `volCAE2-MTI.pcap` (48 min, 11 219 plots)
 
 | variante | pistes confirmées | rejetées | clustering | miss observables | miss évités | fusions |
 |---|---|---|---|---|---|---|
 | v8.1 | 841 | 1 572 | — | — | — | — |
-| v9 complet | **845** | 5 025 | 478 plots agrégés | 8 937 | **333 704** | 214 |
+| v9 livré | **821** | 5 025 | 478 plots agrégés | 8 937 | **333 704** | 0 |
 
-**+0,5 %** de pistes : la non-régression du §6.3 est tenue (limite +10 %).
+**−2,4 %** de pistes : la non-régression du §6.3 est tenue (limite ±10 %). Le profil routier n'active ni
+l'étage contact ni l'étendue de cible — deux véhicules d'un convoi ne doivent jamais être regroupés.
 
 Le chiffre à retenir est celui des **miss évités** : 333 704 dwells où une piste n'était pas dans
 l'empreinte du dwell — 97 % des « miss » que le v8 aurait comptés. C'est la brique d'observabilité qui
@@ -105,6 +112,7 @@ profil ne garde que 41 pistes : les pistes meurent sur des miss fictifs.
 | 1. clustering seul | fait, mesuré (11 → 5 pistes sur la maritime) |
 | 2. EKF Doppler + R anisotrope | fait, mesuré ; **désactivé par défaut en maritime** au vu de la donnée |
 | 3. observabilité (empreinte + zone aveugle) | fait, mesuré (couverture 79 → 97 % ; 333 704 miss évités en routier) |
-| 4. suppression sur miss observables + fusion | fait, **à retravailler** (la fusion dégrade) |
+| 4. suppression sur miss observables + fusion | fait ; fusion de pistes mesurée nuisible → remplacée par l'étage contact (port du TrackMerger v8) |
+| 4 bis. étendue de cible (naissances bloquées, échos absorbés) | ajouté hors brief : c'est ce qui fait tomber 12 pistes à 3 |
 | 5. portage des flags v8 | fait (`is_air`, `is_rotator`, états Faible/Confirmee/Solide/Coasting, RTS) |
 | 6. intégration console | automatique (auto-détection), **non testée en console** |

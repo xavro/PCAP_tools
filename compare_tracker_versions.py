@@ -218,6 +218,21 @@ def evaluate(res, ref, near_m=500.0, window_s=60.0):
 
     err = [math.hypot(x - ref_pos(ref, t)[0], y - ref_pos(ref, t)[1]) for (t, x, y, _vx, _vy) in pts]
     out["pos_err_mean_m"] = float(np.mean(err))
+
+    # Étage « contact » : c'est lui que voit l'opérateur. Un contact qui couvre toute la fenêtre avec un
+    # identifiant unique vaut mieux que trois pistes internes, tant que le filtre reste stable.
+    cts, cts_t = res.get("contacts"), res.get("contacts_t")
+    if cts and cts_t:
+        spans = []
+        for c in cts:
+            ts = cts_t.get(c["id"]) or []
+            hit = [tt for tt, (x, y) in zip(ts, c["pts"])
+                   if ref["t0"] - 1 <= tt <= ref["t1"] + 1
+                   and math.hypot(x - ref_pos(ref, tt)[0], y - ref_pos(ref, tt)[1]) <= near_m]
+            if hit:
+                spans.append((max(hit) - min(hit)) / max(ref["t1"] - ref["t0"], 1e-6))
+        out["contacts_on_target"] = len(spans)
+        out["contact_coverage"] = max(spans) if spans else 0.0
     return out
 
 
@@ -248,6 +263,7 @@ LADDER = [
 ]
 
 COLS = [("n_tracks", "pistes", "%d"), ("ids_on_target", "ID sur cible", "%d"),
+        ("contacts_on_target", "contacts", "%d"), ("contact_coverage", "couv. contact", "%.0f %%"),
         ("simultaneous_max", "simult. max", "%d"), ("coverage", "couverture", "%.0f %%"),
         ("heading_std_deg", "σ cap", "%.1f°"), ("speed_std_kmh", "σ vitesse", "%.1f km/h"),
         ("jitter_m", "jitter", "%.0f m"), ("pos_err_mean_m", "écart réf.", "%.0f m"),
@@ -260,7 +276,7 @@ def fmt_row(label, ev):
         v = ev.get(key)
         if v is None:
             cells.append("—")
-        elif key == "coverage":
+        elif key in ("coverage", "contact_coverage"):
             cells.append(f % (100.0 * v))
         else:
             cells.append(f % v)

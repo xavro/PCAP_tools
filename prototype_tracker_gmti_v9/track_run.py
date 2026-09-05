@@ -40,22 +40,30 @@ def _profiles():
         # Clustering spatial seul : le critère Doppler du brief (3 m/s) refuserait de lier la proue et la
         # poupe, qui diffèrent de 10 m/s sur cette capture (micro-Doppler des diffuseurs, mesuré).
         cluster_eps_xy_m=350.0, cluster_eps_vr_mps=25.0,
-        # EKF Doppler DÉSACTIVÉ par défaut sur ce profil — décision prise sur mesure, pas par principe.
-        # Sur la capture de référence (20260812_CaptureALL_CR2, port 5454), deux échos SIMULTANÉS de la
-        # même coque diffèrent de 2,9 m/s (à moins de 150 m) à 10,5 m/s (150-300 m) alors que le flux
-        # annonce σ = 0,23 à 0,51 m/s : D32.7 y décrit l'agitation des diffuseurs, pas la translation du
-        # navire. Injecté dans le filtre, il stabilise le cap mais DOUBLE la vitesse affichée (25 km/h
-        # mesurés pour 13 km/h réels). Sur un capteur dont le Doppler est propre — le scénario synthétique
-        # du brief, vérifié par test_synthetic.py — `doppler_enabled=True` est meilleur : σ cap 0,9°.
-        doppler_enabled=False,
         sigma_range_m=15.0, sigma_cross_m=120.0, sigma_vr_mps=1.5,
-        sigma_vr_floor_mps=4.0,                                   # dispersion réelle du v_LOS sur la coque
+        # PLANCHER sur σ_v_LOS. Sur la capture de référence (20260812_CaptureALL_CR2, port 5454), deux
+        # échos SIMULTANÉS de la même coque diffèrent de 2,9 m/s (à moins de 150 m) à 10,5 m/s (150-300 m)
+        # alors que le flux annonce σ = 0,23 à 0,51 m/s : D32.7 y décrit en partie l'agitation des
+        # diffuseurs, pas seulement la translation du navire. Pris au mot, il tire la vitesse vers le haut ;
+        # avec ce plancher, il stabilise le cap sans imposer sa dispersion (σ cap 3,9°, vitesse 14,6 km/h
+        # pour une référence à 13,3 — contre 7,3° et 13,2 km/h sans Doppler du tout).
+        sigma_vr_floor_mps=2.0,
         q_accel_mps2=0.05,                                        # cargo quasi inertiel
-        v_init_cross_std_mps=8.0, gate_max_m=400.0,
+        # Porte d'association resserrée à 200 m : au-delà, la piste attrape des échos de mer et sa
+        # vitesse part (25 km/h affichés pour 13 réels). Mesuré : 200 m donne σ vitesse 1,0 km/h et
+        # 14,3 km/h pour une référence à 13,3 ; 300 m donne 4,3 km/h et 18,9.
+        v_init_cross_std_mps=8.0, gate_max_m=200.0,
         confirm_m=3, confirm_n=5, miss_delete_n=6,
         coast_after_sec=10.0, delete_sec=240.0, tentative_delete_sec=20.0,
+        # Fusion de PISTES désactivée : mesurée, elle ajoute une piste au lieu d'en retirer (absorber une
+        # piste libère ses mesures, qui en refont naître une au dwell suivant). Le regroupement se fait à
+        # l'affichage, par l'étage « contact » ci-dessous, sans toucher à l'estimation.
+        merge_enabled=False,
         merge_chi2=9.21, merge_dv_mps=4.0, merge_k=2,
         merge_max_dist_m=450.0, merge_hdg_deg=40.0,               # co-mobilité (absorption v8 : 450 m)
+        # Étage d'affichage : une coque de 250 m, vue par bribes, peut légitimement porter deux pistes ;
+        # l'opérateur doit voir UN navire. Distance alignée sur `mergeMaxDistM` du profil maritime v8.
+        contact_dist_m=450.0, contact_dv_mps=4.0, contact_hdg_deg=45.0, contact_memory_sec=30.0,
         mdv_floor_mps=0.5,                                        # la capture cargo annonce MDV = 0
     )
     routier_zone = T.Profile(
@@ -211,6 +219,117 @@ def csv_dwells(path, prof: T.Profile):
     return dwells, frame, n_filtered
 
 
+class ContactMerger:
+    """Port du TrackMerger v8 : regroupe les pistes affichables d'un dwell qui sont proches ET
+    co-mobiles, et leur donne une identité de CONTACT stable (rattachée au contact le plus proche au
+    dwell précédent). Ne touche pas aux pistes : c'est une lecture, pas une décision de filtrage."""
+
+    def __init__(self, prof: T.Profile):
+        self.max_d = float(prof.contact_dist_m or 0.0)
+        self.max_dv = float(prof.contact_dv_mps)
+        self.max_hd = float(prof.contact_hdg_deg)
+        self.slow = float(prof.contact_slow_mps)
+        self.memory = float(prof.contact_memory_sec)
+        self.prev = {}                    # cid -> (x, y, vx, vy, t) du dernier dwell où le contact existait
+        self.next_id = 1
+
+    def enabled(self):
+        return self.max_d > 0.0
+
+    @staticmethod
+    def _hd(h1, h2):
+        d = abs(h1 - h2) % 360.0
+        return 360.0 - d if d > 180.0 else d
+
+    def _same(self, a, b):
+        if math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= self.max_d:
+            return False
+        if abs(a["speed"] - b["speed"]) >= self.max_dv:
+            return False
+        # Sous `slow`, le cap n'est pas significatif : deux échos quasi immobiles de la même coque ne
+        # doivent pas être séparés parce que leurs vecteurs pointent n'importe où.
+        return min(a["speed"], b["speed"]) < self.slow or self._hd(a["heading"], b["heading"]) < self.max_hd
+
+    def merge(self, outs, t=0.0):
+        if not self.enabled() or not outs:
+            return [dict(o, id=o["track_id"], n=1, members=[o["track_id"]]) for o in outs]
+        n = len(outs)
+        parent = list(range(n))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if self._same(outs[i], outs[j]):
+                    ra, rb = find(i), find(j)
+                    if ra != rb:
+                        parent[max(ra, rb)] = min(ra, rb)
+        groups = defaultdict(list)
+        for i in range(n):
+            groups[find(i)].append(outs[i])
+        rank = {T.SOLID: 3, T.CONFIRMED: 2, T.COASTING: 1}
+        fused = []
+        for g in groups.values():
+            rep = max(g, key=lambda o: o["hits"])
+            fused.append({"x": sum(o["x"] for o in g) / len(g), "y": sum(o["y"] for o in g) / len(g),
+                          "speed": rep["speed"], "heading": rep["heading"],
+                          "state": max((o["state"] for o in g), key=lambda st: rank.get(st, 0)),
+                          "hits": max(o["hits"] for o in g), "n": len(g),
+                          "members": [o["track_id"] for o in g],
+                          "is_air": any(o["is_air"] for o in g),
+                          "is_rotator": any(o["is_rotator"] for o in g),
+                          "track_id": rep["track_id"]})
+        fused.sort(key=lambda c: -c["hits"])
+        # Identité : on rattache chaque contact au plus proche des contacts CONNUS, position prédite avec
+        # leur dernière vitesse. La mémoire (`contact_memory_sec`) évite qu'un dwell sans piste affichable
+        # — cas courant quand le radar regarde ailleurs — ne fasse changer l'identifiant du navire.
+        claimed = set()
+        # 1) continuité par APPARTENANCE : un contact qui contient encore une des pistes du contact
+        # précédent est le même objet. Le critère géométrique seul faisait permuter les identifiants
+        # entre deux contacts voisins d'une même coque.
+        for c in fused:
+            best_n, cid = 0, -1
+            for pid, prev in self.prev.items():
+                if pid in claimed or t - prev[4] > max(self.memory, 0.0) + 1e-6:
+                    continue
+                shared = len(set(c["members"]) & prev[5])
+                if shared > best_n:
+                    best_n, cid = shared, pid
+            if cid >= 0:
+                claimed.add(cid)
+                c["id"] = cid
+        # 2) sinon, rattachement au contact connu le plus proche (position prédite par sa vitesse).
+        for c in fused:
+            if "id" in c:
+                continue
+            best, cid = self.max_d, -1
+            for pid, prev in self.prev.items():
+                if pid in claimed:
+                    continue
+                dt = t - prev[4]
+                if dt > max(self.memory, 0.0) + 1e-6:
+                    continue
+                d = math.hypot(c["x"] - (prev[0] + prev[2] * dt), c["y"] - (prev[1] + prev[3] * dt))
+                if d < best:
+                    best, cid = d, pid
+            if cid < 0:
+                cid = self.next_id
+                self.next_id += 1
+            claimed.add(cid)
+            c["id"] = cid
+        hd = {c["id"] for c in fused}
+        keep = {pid: v for pid, v in self.prev.items() if pid not in hd and t - v[4] <= self.memory}
+        for c in fused:
+            sp, hdg = c["speed"], math.radians(c["heading"])
+            keep[c["id"]] = (c["x"], c["y"], sp * math.sin(hdg), sp * math.cos(hdg), t, set(c["members"]))
+        self.prev = keep
+        return fused
+
+
 # ----------------------------------------------------------------------
 # Exécution
 # ----------------------------------------------------------------------
@@ -223,9 +342,22 @@ def run_tracking(path, profile="defaut", overrides=None):
     tk = T.Tracker(prof, frame)
 
     raw = []
+    merger = ContactMerger(prof)
+    contacts = defaultdict(lambda: {"pts": [], "n_max": 1, "hits": 0, "members": set()})
     for d in dwells:
         raw += [(p.x, p.y) for p in d.plots]
         tk.step(d)
+        if merger.enabled():                           # étage d'affichage : 1 contact = 1 cible
+            outs = [{"track_id": tr.id, "x": float(tr.x[0]), "y": float(tr.x[1]), "speed": tr.speed(),
+                     "heading": tr.heading_deg(), "state": tr.state, "hits": tr.hits,
+                     "is_air": tr.is_air, "is_rotator": tr.is_rotator}
+                    for tr in tk.tracks if tr.state != T.TENTATIVE]
+            for c in merger.merge(outs, d.t):
+                cc = contacts[c["id"]]
+                cc["pts"].append((d.t, c["x"], c["y"]))
+                cc["n_max"] = max(cc["n_max"], c["n"])
+                cc["hits"] = max(cc["hits"], c["hits"])
+                cc["members"].update(c["members"])
 
     all_tracks = tk.archive + tk.tracks
     kept = sorted((tr for tr in all_tracks if tr.confirmed_ever), key=lambda tr: -tr.hits)
@@ -243,7 +375,7 @@ def run_tracking(path, profile="defaut", overrides=None):
             "n_plots_last": tr.n_plots_last, "heading_deg": tr.heading_deg(),
             "heading_std_deg": tr.heading_std_deg(), "pos_std_m": tr.pos_std_m(),
             "merged_from": list(tr.merged_from), "absorbed_into": tr.absorbed_into,
-            "absorbed": list(tr.merged_from), "extent_m": 0.0,
+            "absorbed": list(tr.merged_from), "extent_m": round(float(tr.extent), 1),
             "jobs": sorted(j for j in tr.job_ids if j is not None),
             "t0": traj[0][0] if traj else 0.0, "t1": traj[-1][0] if traj else 0.0,
             "n_coast": sum(1 for (_t, _x, _y, _st, hit) in traj if not hit),
@@ -255,7 +387,13 @@ def run_tracking(path, profile="defaut", overrides=None):
         "config": config_dict(prof), "n_dwells": len(dwells), "n_filtered": n_filtered,
         "n_clustered": tk.n_clustered, "n_ghosts": 0, "n_swallowed": tk.n_clustered,
         "n_obs_miss": tk.n_obs_miss, "n_unobservable": tk.n_unobservable, "n_merged": tk.n_merged,
-        "contacts": None, "version": "v9",
+        "n_absorbed_meas": tk.n_absorbed_meas, "n_births_blocked": tk.n_births_blocked,
+        "contacts": ([{"id": cid, "pts": [(x, y) for (_t, x, y) in c["pts"]], "n_max": c["n_max"],
+                       "hits": c["hits"], "members": sorted(c["members"])}
+                      for cid, c in contacts.items()] if merger.enabled() else None),
+        "contacts_t": ({cid: [t for (t, _x, _y) in c["pts"]] for cid, c in contacts.items()}
+                       if merger.enabled() else None),
+        "version": "v9",
     }
     res["metrics"] = metrics(res)
     return res
@@ -271,7 +409,8 @@ def metrics(res):
             "n_absorbed": sum(1 for t in tr if t.get("absorbed_into")),
             "n_swallowed": res.get("n_swallowed", 0),
             "n_obs_miss": res.get("n_obs_miss", 0), "n_unobservable": res.get("n_unobservable", 0),
-            "n_merged": res.get("n_merged", 0)}
+            "n_merged": res.get("n_merged", 0), "n_absorbed_meas": res.get("n_absorbed_meas", 0),
+            "n_births_blocked": res.get("n_births_blocked", 0)}
     if not n:
         return base
 
@@ -296,6 +435,9 @@ def metrics(res):
         "heading_std_mean_deg": sum(t["heading_std_deg"] for t in tr) / n,
         "pos_std_mean_m": sum(t["pos_std_m"] for t in tr) / n,
     })
+    if res.get("contacts") is not None:
+        base["contacts"] = len(res["contacts"])
+        base["contacts_multi"] = sum(1 for c in res["contacts"] if c["n_max"] > 1)
     return base
 
 

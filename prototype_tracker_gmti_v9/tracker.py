@@ -63,6 +63,14 @@ class Profile:
     # --- clustering cible étendue ---
     cluster_eps_xy_m: float = 350.0       # liaison spatiale (≥ longueur du navire + bruit travers)
     cluster_eps_vr_mps: float = 3.0       # tolérance Doppler intra-cluster
+    # ÉTENDUE DE CIBLE. Une coque de 250 m n'est pas un point : ses échos apparaissent à 100-300 m les uns
+    # des autres, souvent dans des dwells différents. Sans étendue, chaque extrémité finit par porter sa
+    # propre piste et aucune fusion a posteriori ne rattrape proprement le désordre. Une piste confirmée
+    # absorbe donc les mesures orphelines tombant dans son étendue, et interdit une naissance à l'intérieur.
+    target_extent_m: float = 0.0          # 0 = désactivé (cible ponctuelle)
+    extent_from_cluster: bool = True      # l'étalement mesuré des clusters élargit l'étendue de la piste
+    extent_max_m: float = 1000.0          # garde-fou : une étendue déduite ne dépasse pas cette valeur
+    extent_blocks_tentative: bool = False # une piste encore tentative interdit-elle une naissance chez elle ?
     # --- bruit de mesure par défaut (si D32.12/13/15 absents ou sentinelles) ---
     sigma_range_m: float = 15.0
     sigma_cross_m: float = 120.0
@@ -100,6 +108,12 @@ class Profile:
     merge_max_dist_m: float = 0.0         # 0 = critère de co-mobilité désactivé
     merge_hdg_deg: float = 30.0
     merge_slow_mps: float = 3.0           # sous cette vitesse le cap n'est pas significatif
+    # --- étage « contact » (affichage) : regroupement des pistes d'une même cible ---
+    contact_dist_m: float = 0.0           # 0 = étage désactivé
+    contact_dv_mps: float = 2.0
+    contact_hdg_deg: float = 30.0
+    contact_slow_mps: float = 3.0
+    contact_memory_sec: float = 0.0       # un contact absent quelques dwells garde son identité
     # --- héritage v8 : flags niveau piste ---
     air_speed_mps: float = 42.0
     air_vlos_mps: float = 50.0
@@ -158,6 +172,7 @@ class Meas:
     snr_db: Optional[float]
     classification: Optional[int]
     has_vr: bool
+    spread_m: float = 0.0          # étalement du cluster : rayon max des membres autour du centroïde
 
 
 class LocalFrame:
@@ -306,8 +321,30 @@ def cluster_dwell(dwell: Dwell, prof: Profile, sx, sy, sz) -> list:
         snr = max((m.snr_db for m in members if m.snr_db is not None), default=None)
         classes = [m.classification for m in members if m.classification is not None]
         cls = max(set(classes), key=classes.count) if classes else None
-        out.append(Meas(np.array([cx, cy, cvr]), R, len(g), snr, cls, has_vr))
+        spread = float(max((math.hypot(m.x - cx, m.y - cy) for m in members), default=0.0))
+        out.append(Meas(np.array([cx, cy, cvr]), R, len(g), snr, cls, has_vr, spread))
     return out
+
+
+def merge_meas(ms):
+    """Agrège plusieurs mesures d'une même cible étendue en une seule (centroïde pondéré par le SNR).
+    L'écart entre les membres entre dans la covariance : une coque de 250 m est UNE mesure imprécise."""
+    if len(ms) == 1:
+        return ms[0]
+    w = np.array([10 ** (m.snr_db / 10.0) if m.snr_db is not None else 1.0 for m in ms])
+    w = np.clip(w, 1e-3, None)
+    w /= w.sum()
+    z = np.zeros(3)
+    z[:2] = sum(wi * m.z[:2] for wi, m in zip(w, ms))
+    vr_ok = [(wi, m) for wi, m in zip(w, ms) if m.has_vr]
+    z[2] = sum(wi * m.z[2] for wi, m in vr_ok) / sum(wi for wi, _ in vr_ok) if vr_ok else 0.0
+    R = sum(wi * m.R for wi, m in zip(w, ms))
+    d = np.array([m.z[:2] - z[:2] for m in ms])
+    R[:2, :2] += (w[:, None, None] * np.einsum("ni,nj->nij", d, d)).sum(axis=0)
+    spread = float(max(math.hypot(*(m.z[:2] - z[:2])) + m.spread_m for m in ms))
+    snr = max((m.snr_db for m in ms if m.snr_db is not None), default=None)
+    cls = next((m.classification for m in ms if m.classification is not None), None)
+    return Meas(z, R, sum(m.n_plots for m in ms), snr, cls, bool(vr_ok), spread)
 
 
 # ----------------------------------------------------------------------
@@ -345,6 +382,9 @@ class Track:
         self.job_ids = {job_id} if job_id is not None else set()
         self.merge_counter = {}
         self.merged_from = []
+        self.extent = float(prof.target_extent_m)
+        if prof.extent_from_cluster and m.spread_m > 0:
+            self.extent = min(max(self.extent, 2.0 * m.spread_m), prof.extent_max_m)
         self.absorbed_into = None
         self.q_accel = prof.q_accel_mps2
         self.gate_max = prof.gate_max_m
@@ -395,6 +435,8 @@ class Track:
         self.n_plots_last = m.n_plots
         self.window = (self.window + [1])[-prof.confirm_n:]
         self.consecutive_obs_misses = 0
+        if prof.extent_from_cluster and m.spread_m > 0:
+            self.extent = min(max(self.extent, 2.0 * m.spread_m), prof.extent_max_m)
         if m.classification is not None:
             self.classification = m.classification
         self._update_flags(m)
@@ -507,6 +549,8 @@ class Tracker:
         self.n_obs_miss = 0
         self.n_unobservable = 0     # dwells sans plot où la piste n'était PAS observable (miss évités)
         self.n_merged = 0
+        self.n_absorbed_meas = 0    # mesures agrégées à une piste étendue (échos de la même coque)
+        self.n_births_blocked = 0   # naissances refusées dans l'étendue d'une piste
 
     # ---------------------------------------------------------------- dwell
     def step(self, dwell: Dwell):
@@ -558,9 +602,21 @@ class Tracker:
         assigned_t = {i for i, _ in pairs}
         assigned_m = {j for _, j in pairs}
         for i, j in pairs:
-            self.tracks[i].update(meas[j], sx, sy, sz)
+            tr, m = self.tracks[i], meas[j]
+            # Cible étendue : les mesures orphelines tombant dans l'étendue de la piste sont des échos
+            # de la MÊME cible (autre partie de la coque). On les agrège au centroïde plutôt que de les
+            # laisser fonder une piste concurrente — c'est la mécanique de l'« étendue » du v8.
+            if tr.extent > 0:
+                rad = tr.extent / 2.0
+                extra = [k for k, mm in enumerate(meas)
+                         if k not in assigned_m and math.hypot(mm.z[0] - tr.x[0], mm.z[1] - tr.x[1]) < rad]
+                if extra:
+                    m = merge_meas([m] + [meas[k] for k in extra])
+                    assigned_m.update(extra)
+                    self.n_absorbed_meas += len(extra)
+            tr.update(m, sx, sy, sz)
             if dwell.job_id is not None:
-                self.tracks[i].job_ids.add(dwell.job_id)
+                tr.job_ids.add(dwell.job_id)
 
         # --- miss : seulement si la piste était OBSERVABLE dans ce dwell ---
         for i, tr in enumerate(self.tracks):
@@ -576,9 +632,16 @@ class Tracker:
             else:
                 self.n_unobservable += 1
 
-        # --- naissances ---
+        # --- naissances (jamais dans l'étendue d'une piste vivante) ---
         for j, m in enumerate(meas):
             if j in assigned_m:
+                continue
+            inside = any(tr.extent > 0
+                         and (prof.extent_blocks_tentative or tr.state != TENTATIVE)
+                         and math.hypot(m.z[0] - tr.x[0], m.z[1] - tr.x[1]) < tr.extent / 2.0
+                         for tr in self.tracks)
+            if inside:
+                self.n_births_blocked += 1
                 continue
             self.tracks.append(Track(m, dwell.t, prof, sx, sy, sz, dwell.job_id))
 
@@ -635,6 +698,9 @@ class Tracker:
                             older.merged_from.append(younger.id)
                             older.job_ids |= younger.job_ids
                             younger.absorbed_into = older.id
+                            # La mère hérite d'une étendue couvrant les deux : sans cela, les mesures de
+                            # la piste absorbée referaient naître une piste au dwell suivant.
+                            older.extent = max(older.extent, younger.extent, 2.0 * dist)
                             to_drop.add(younger.id)
                             self.n_merged += 1
                     else:
