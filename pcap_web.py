@@ -2162,6 +2162,7 @@ class FollowEngine:
         self.gmti_idle_done = False; self.gmti_idle_resets = 0   # purge des pistes sur silence 4607 prolongé
         self.gmti_profile = "defaut"; self.gmti_overrides = {}
         self.tracks = {}; self.track_rows = []          # rows : (id, row) dans l'ordre d'ajout (delta)
+        self._cmerger = None; self._cmerger_prof = None  # étage contact du journal (cf. contact_merger)
         self.streams = {}; self.watch = None; self.taps = set(); self.live = None
         self.segments = []; self.cur_seg = None; self.catching_up = True; self.bytes_read = 0
         self.edge_wall = 0.0
@@ -2429,6 +2430,7 @@ class FollowEngine:
         except Exception as e:
             EVENTS.publish({"type": "log", "msg": "suivi : journal inutilisable (%s) — redécodage" % e})
             self.cot = []; self.dwells = []; self.tracks = {}; self.track_rows = []; self._idx_last_a = None; self.t0 = None; self._id_offset = 0
+            self._cmerger = None; self._cmerger_prof = None
         if self.idx_path and os.path.isfile(self.idx_path):
             try:
                 resume = self._load_index()
@@ -2585,9 +2587,34 @@ class FollowEngine:
                     self.recent_plots.extend(plots); self.recent_dwells.extend(dw)
             self._tl_checkpoint(seg_no, rec_off)
 
+    def contact_merger(self, lv):
+        """Étage contact du JOURNAL — instance distincte de celle du direct.
+
+        Le regroupement garde une mémoire d'adhérence entre dwells : partager l'instance du direct la
+        ferait avancer deux fois par dwell (une fois par `snapshot()`, une fois ici), et le rejeu ne
+        montrerait plus le même regroupement que le direct. Renvoie None si le tracker chargé n'a pas
+        d'étage contact.
+        """
+        prof = getattr(lv, "prof", None) if getattr(lv, "v9", False) else lv.cfg
+        if self._cmerger is None or self._cmerger_prof is not prof:
+            self._cmerger_prof = prof
+            try:
+                self._cmerger = (lv.tr.ContactMerger(prof) if getattr(lv, "v9", False)
+                                 else lv.tr.TrackMerger(prof))
+            except Exception:
+                self._cmerger = False
+        return self._cmerger or None
+
     def _track_rows(self, t_rel):
         """Historique des pistes (même forme que timeline_tracks) : une ligne par piste vivante et par
-        dwell traité, datée en temps de capture (pas de dwell_offset : le paquet fait foi)."""
+        dwell traité, datée en temps de capture (pas de dwell_offset : le paquet fait foi).
+
+        Ligne : [t_rel, lat, lon, état, hit, ever, vitesse, cap, classe, contact, représentant]. Les trois
+        derniers champs sont ceux qui manquaient au rejeu : la CLASSE D32.11 dominante (symbologie), l'id
+        du CONTACT qui réunit les estimations d'une même cible étendue, et le drapeau disant laquelle des
+        pistes du contact le représente à l'écran. Les nuls de queue sont retirés : un journal ancien
+        s'arrête à huit champs, et le client lit les suivants comme absents.
+        """
         lv = self.live
         T = lv.T
         if lv.tk is None or lv.frame is None:
@@ -2595,6 +2622,7 @@ class FollowEngine:
         names = {T.TENTATIVE: "T", T.CONFIRMED: "C", T.SOLID: "S", T.COASTING: "K", T.DEAD: "D"}
         with TRACK_LOCK:
             last_t = lv.last_t
+            drawn, pending = [], []
             for tr in lv.tk.tracks:
                 st = tr.state
                 if st == T.DEAD:
@@ -2610,7 +2638,33 @@ class FollowEngine:
                     rec = self.tracks[tid] = {"id": tid, "air": bool(tr.is_air), "rot": bool(tr.is_rotator), "hits": 0, "hist": []}
                     self._tl_write("m", {"id": tid, "air": rec["air"], "rot": rec["rot"]})
                 rec["hits"] = tr.hits; rec["air"] = bool(tr.is_air); rec["rot"] = bool(tr.is_rotator)
-                row = [t_rel, round(la, 6), round(lo, 6), nm, hit, 1 if tr.confirmed_ever else 0, sp, hd]
+                cls = tr.dominant_class() if hasattr(tr, "dominant_class") else None
+                row = [t_rel, round(la, 6), round(lo, 6), nm, hit, 1 if tr.confirmed_ever else 0, sp, hd, cls]
+                pending.append((tid, rec, row, tr.id))
+                # Mêmes pistes affichables que `snapshot()` : le rejeu doit regrouper ce que le direct
+                # regroupe, ni plus (une tentative n'est pas une cible) ni moins.
+                if tr.confirmed_ever and nm != "T":
+                    drawn.append({"track_id": tr.id, "x": float(tr.x[0]), "y": float(tr.x[1]), "speed": float(tr.speed()),
+                                  "heading": hd, "state": nm, "hits": tr.hits,
+                                  "is_air": bool(tr.is_air), "is_rotator": bool(tr.is_rotator)})
+            by_track, reps = {}, set()
+            cm = self.contact_merger(lv) if len(drawn) <= 400 else None   # scène routière : on renonce plutôt que de ramer
+            if cm is not None and cm.enabled():
+                try:
+                    cs = cm.merge(drawn, last_t or 0.0) if getattr(lv, "v9", False) else cm.merge(drawn)
+                    for c in cs:
+                        if c["n"] < 2:
+                            continue
+                        for m in c["members"]:
+                            by_track[m] = c["id"] + self._id_offset   # contacts d'avant reprise : pas de collision
+                        reps.add(c["track_id"])
+                except Exception as e:
+                    EVENTS.publish({"type": "log", "msg": "suivi : contacts : %s" % e})
+            for tid, rec, row, raw_id in pending:
+                cid = by_track.get(raw_id)
+                row.extend([cid, 1 if (cid is not None and raw_id in reps) else 0])
+                while len(row) > 8 and not row[-1]:                # journal compact : nuls de queue retirés
+                    row.pop()
                 rec["hist"].append(row); self.track_rows.append((tid, row)); self._tl_write("t", tid, row)
 
     def _flow(self, proto, dport, dst, n, cls=None, pl=None):
