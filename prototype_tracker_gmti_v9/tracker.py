@@ -389,6 +389,9 @@ class Track:
         self.state = TENTATIVE
         self.confirmed_ever = False
         self.classification = m.classification
+        self.cls_counts = {}                # classification -> nombre de mesures (classe dominante)
+        if m.classification is not None:
+            self.cls_counts[m.classification] = 1
         self.job_ids = {job_id} if job_id is not None else set()
         self.merge_counter = {}
         self.merged_from = []
@@ -457,6 +460,7 @@ class Track:
             self.extent = min(max(self.extent, 2.0 * m.spread_m), prof.extent_max_m)
         if m.classification is not None:
             self.classification = m.classification
+            self.cls_counts[m.classification] = self.cls_counts.get(m.classification, 0) + 1
         self._update_flags(m)
 
     def _update_flags(self, m: Meas):
@@ -501,6 +505,16 @@ class Track:
 
     def pos_std_m(self):
         return float(math.sqrt(max(np.linalg.eigvalsh(self.P[:2, :2]).max(), 0.0)))
+
+    def dominant_class(self):
+        """Classe 4607 (D32.11) majoritaire sur la vie de la piste, None si aucune.
+
+        Départage identique au v8 et au Track.java : la plus fréquente, puis le code le plus bas. C'est
+        cette classe que la couche temps réel publie (colonne « classe » du widget, pictogramme 2525) —
+        la dernière vue seule ferait osciller l'étiquette au gré d'un écho mal classé."""
+        if not self.cls_counts:
+            return None
+        return min(self.cls_counts, key=lambda c: (-self.cls_counts[c], c))
 
     def trajectory(self):
         return list(self.history)
