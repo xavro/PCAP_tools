@@ -29,6 +29,9 @@
     $("stx-close").addEventListener("click", () => open(false)); backdrop.addEventListener("click", () => open(false));
     document.addEventListener("keydown", e => { if (e.key === "Escape") open(false); });
   }
+  // Déclaré ICI, avec l'état général : `showTab` est appelé dès l'initialisation et passe par `aesdLayout`,
+  // qui lit cet objet — le déclarer plus bas, près du reste du code AESD, le laissait dans sa zone morte.
+  const ae = { data: null, sel: -1 };            // AESD : décodage courant + enregistrement sélectionné
   const state = { cfg: null, pcap: "", streams: [], cur: null, track: null, player: null,
     mode: "file", sets: [], applied: -1, tableAt: 0, flows: [], flowsDur: 0, replay: null,
     bmLayer: null, bmOverlay: null, bmCfg: null, evws: null, log: [], retries: 0, seeking: false, videoOn: false, emitting: false };
@@ -1135,7 +1138,6 @@
   // ── AESD : métadonnées ASCII REAPER d'une capture (onglet dédié) ────────────
   // Le flux n'a ni empreinte ni altitude : on trace la plateforme, la trace du point visé et la ligne de
   // visée de l'enregistrement sélectionné — c'est ce qui se lit sur une carte.
-  const ae = { data: null, sel: -1 };
   const ll = (a, b) => (a == null || b == null) ? "—" : `${a.toFixed(5)} ${b.toFixed(5)}`;
   function aesdDraw() {
     const L_ = LY.aesd; L_.clearLayers();
@@ -1180,7 +1182,10 @@
     $("aesd-pbody").innerHTML = F.map(f => {
       const v = r[f.key];
       if (v == null) return "";
-      const val = typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(Math.abs(v) < 10 ? 4 : 3)) : esc(v);
+      // Les coordonnées gardent 6 décimales : le flux les donne au dixième de seconde d'arc (~3 m), que la
+      // règle d'affichage du tableau KLV (3 décimales au-delà de 10) réduirait à une centaine de mètres.
+      const COORD = ["lat", "lon", "tgt_lat", "tgt_lon"].includes(f.key);
+      const val = typeof v === "number" ? (Number.isInteger(v) && !COORD ? String(v) : v.toFixed(COORD ? 6 : (Math.abs(v) < 10 ? 4 : 3))) : esc(v);
       const raw = (r.raw && r.raw[f.tag]) ? f.tag + r.raw[f.tag] : f.tag;
       const tip = esc(f.name + (f.unit ? " (" + f.unit + ")" : "") + "\nAESD - champ brut " + raw);
       return `<tr class="${HLK.includes(f.key) ? "hl" : ""}" title="${tip}"><td class="tag">${f.tag}</td>`
