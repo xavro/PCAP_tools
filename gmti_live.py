@@ -238,7 +238,8 @@ class LiveTracker:
             return {"tracks": out, "contacts": contacts, "stats": st_}
 
     def _stats(self, tent, conf, solid, coast):
-        return {"profile": self.profile, "overrides": self.overrides, "n_dwells": self.n_dwells, "n_plots": self.n_plots,
+        return {"profile": self.profile, "overrides": self.overrides,
+                "tracker": getattr(self.tr, "VERSION", None), "n_dwells": self.n_dwells, "n_plots": self.n_plots,
                 "n_filtered": self.n_filtered, "n_resets": self.n_resets, "t": self.last_t, "n_clustered": self.n_clustered, "n_ghosts": self.n_ghosts,
                 "n_absorbed": sum(1 for a in self.tk.archive if getattr(a, "dead_absorbed", False)) if self.tk else 0,
                 "n_swallowed": getattr(self.tk, "n_swallowed", getattr(self.tk, "n_clustered", 0)) if self.tk else 0,

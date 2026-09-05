@@ -29,6 +29,9 @@ import tracker as T
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SENTINEL_U16 = 65535
+# Signature affichée par la console : sans elle, impossible de savoir en regardant l'écran si le serveur
+# tourne bien la version qu'on croit — trois essais ont été perdus à cette question.
+VERSION = "v9.3 — contact adhérent, étendue de cible, EKF Doppler plafonné"
 # Fichier de profils partagé avec le v8 et le processor Java : la console l'édite via ce chemin. Le v9 y
 # lit sa propre section « v9 » (cf. load_profiles) et laisse le reste intact.
 PROFILES_JSON = os.environ.get("GMTI_PROFILES") or os.path.join(os.path.dirname(HERE), "gmti_profiles.json")

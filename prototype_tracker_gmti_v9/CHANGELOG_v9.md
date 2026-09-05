@@ -116,6 +116,17 @@ multi-pistes — celui de la piste qui le représente — étiqueté `C1 (2 pist
 masqués restent listés dans l'infobulle et accessibles en cochant « tentatives ». L'opérateur voit un
 navire, le filtre garde ses deux estimations.
 
+### Vérifier ce qui tourne vraiment
+
+Le module porte une signature (`track_run.VERSION`), remontée dans les statistiques du pistage direct et
+affichée par la console à côté du profil : *« pistage temps réel · profil maritime · v9.3 — contact
+adhérent, étendue de cible, EKF Doppler plafonné »*. Plusieurs essais ont été perdus à ne pas savoir si le
+serveur exécutait la version discutée.
+
+Contrôle de non-régression associé, rejeu complet de la capture cargo : sur 609 dwells, **223** affichent
+au moins deux symboles, et le rapprochement le plus serré entre deux d'entre eux est de **1 956 m** — le
+cargo et la piste indépendante. Deux symboles à 129 m l'un de l'autre ne peuvent plus se produire.
+
 ### Ce qui reste ouvert
 
 Deux estimations subsistent dans le filtre pour un navire unique. C'est acceptable à l'écran depuis que le
