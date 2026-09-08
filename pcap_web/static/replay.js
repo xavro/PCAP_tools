@@ -201,6 +201,11 @@
     const c = op() && op().snapAt(ev); if (!c) return;
     ev.preventDefault(); ev.stopImmediatePropagation(); sCur = c; sDel = false;
     $("sm-title").textContent = `📸 ${hms(c.t_utc)}Z${c.description ? " · " + c.description : ""}${c.mgrs_fmt ? " · " + c.mgrs_fmt : ""}`;
+    // Image purgée (au-delà de SNAP_PNG_KEEP_DAYS) : l'agent n'a plus de quoi bâtir
+    // la diapositive. On retire l'action plutôt que de la proposer et d'échouer en
+    // silence sur le poste — l'opérateur n'aurait rien vu, ni ici ni là-bas.
+    const agentBtn = sMenu.querySelector('button[data-act="agent"]');
+    if (agentBtn) agentBtn.hidden = !!c.png_purged;
     sMenu.hidden = false; const r = sMenu.getBoundingClientRect();
     sMenu.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 8) + "px"; sMenu.style.top = Math.max(8, ev.clientY - r.height - 8) + "px";
   }, true);
