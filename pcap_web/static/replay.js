@@ -209,8 +209,10 @@
   sMenu.addEventListener("click", async ev => {
     const b = ev.target.closest("button"); if (!b || !sCur) return;
     const m = mission(); const act = b.dataset.act;
-    if (act === "png") { window.open(`api/captures/${encodeURIComponent(m)}/${encodeURIComponent(sCur.png)}?download=1`, "_blank"); hideSMenu(); }
-    else if (act === "agent") { callAgent(m, sCur.id); hideSMenu(); }
+    // Le téléchargement du PNG a été retiré : la capture vit dans le PowerPoint,
+    // et bientôt en base (couche ponctuelle). La ROUTE, elle, reste — c'est par
+    // elle que l'agent StratusSnap récupère l'image pour bâtir la diapositive.
+    if (act === "agent") { callAgent(m, sCur.id); hideSMenu(); }
   });
 
   // ══ Vidéo : MGRS sous le curseur (homographie sur les coins KLV), menu clic droit, mesure tracée sur la vidéo ══

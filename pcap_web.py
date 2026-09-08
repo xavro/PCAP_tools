@@ -39,6 +39,8 @@ API :
   GET/POST /api/settings        réglages (dernier pcap, récents, IHM) — pcap_web_settings.json
   GET/POST /api/env             paramètres d'environnement (ports par CR, services carto) — environnement.json
                                 du volume partagé ; l'environnement du conteneur reste le défaut
+  GET  /api/archive[?mission=]  archivage vidéo : travaux en cours, manifeste d'une mission
+  POST /api/archive/{mission}   met la mission en file d'archivage (segments .ts, sans ré-encodage)
   GET  /login · /api/session    page de connexion · état de session (requise ? qui ?)
   POST /api/login · /api/logout · /api/password    ouverture / fermeture de session, changement de mot de passe
                                 STRATUS_ADMIN_PASSWORD vide = aucune connexion demandée. Sinon les PAGES et les
@@ -4211,11 +4213,15 @@ def capture_sets_spec(sets):
 # sont des surfaces de travail denses, hors du défaut sans être interdites.
 FOND_DEFAUT = {"url": "static/background.html", "pages": ["login", "pages"]}
 
+# Archivage vidéo : destination (point de montage du disque externe) et découpe. Une heure par défaut —
+# un fichier d'une journée entière est ingérable pour celui qui le reçoit, et une coupure horaire se cite.
+ARCHIVE_DEFAUT = {"dossier": os.getenv("ARCHIVE_DIR", "/data/archive"), "segment_min": 60, "klv": True}
+
 
 def env_defaults():
     """Valeurs par défaut : celles de l'environnement du conteneur (docker/.env)."""
     return {"capture_sets": parse_capture_sets(os.getenv("CAPTURE_SETS", "")),
-            "mapservers": [], "fond": dict(FOND_DEFAUT)}
+            "mapservers": [], "fond": dict(FOND_DEFAUT), "archive": dict(ARCHIVE_DEFAUT)}
 
 
 def env_config_load():
@@ -4227,7 +4233,7 @@ def env_config_load():
         with open(ENV_CONFIG_PATH, encoding="utf-8") as f:
             raw = json.load(f)
         if isinstance(raw, dict):
-            for k in ("capture_sets", "mapservers", "fond"):
+            for k in ("capture_sets", "mapservers", "fond", "archive"):
                 if k in raw:
                     cfg[k] = raw[k]
     except FileNotFoundError:
@@ -4270,6 +4276,13 @@ def env_config_validate(patch):
                 raise ValueError("%s : au moins le port vidéo est nécessaire" % nm)
             sets[nm] = lst
         out["capture_sets"] = sets
+    if "archive" in patch:
+        a = patch["archive"] or {}
+        seg = int(a.get("segment_min") or 60)
+        if not (5 <= seg <= 720):
+            raise ValueError("archive : durée de segment entre 5 et 720 minutes")
+        out["archive"] = {"dossier": str(a.get("dossier") or "").strip(), "segment_min": seg,
+                          "klv": bool(a.get("klv", True))}
     if "fond" in patch:
         f = patch["fond"] or {}
         url = str(f.get("url") or "").strip()
@@ -4338,6 +4351,224 @@ def env_state():
     return {"config": cfg, "defauts": env_defaults(), "fichier": ENV_CONFIG_PATH, "erreur": err,
             "capture": {"vif": vif, "vif_erreur": vif_err, "voulu": voulu, "source": source,
                         "spec": capture_sets_spec(voulu), "redemarrage_requis": besoin}}
+
+
+# ── Archivage vidéo (.ts exploitables hors de ce serveur) ────────────────────
+# Le pcap maître ne s'ouvre nulle part ailleurs ; l'archive en extrait la vidéo TELLE QU'ELLE A ÉTÉ
+# CAPTURÉE (copie octet à octet, aucun ré-encodage) en segments d'une heure. Ce qui est perdu en route est
+# perdu dans le fichier : une coupure UDP en vol donne une discontinuité, le sidecar la laisse voir par
+# l'écart entre durée annoncée et octets écrits.
+ARCHIVE_JOBS = {}                                          # mission -> état du travail (vue IHM)
+ARCHIVE_Q = queue.Queue()
+ARCHIVE_LOCK = threading.Lock()
+_ARCHIVE_WORKER = None
+
+
+def archive_cfg():
+    cfg, _ = env_config_load()
+    a = dict(ARCHIVE_DEFAUT)
+    a.update(cfg.get("archive") or {})
+    return a
+
+
+def archive_dir(mission):
+    """Un dossier par mission, sous la destination réglée. Le nom de mission commence par la date : le
+    tri alphabétique du disque externe est déjà un tri chronologique, sans arborescence à maintenir."""
+    base = (archive_cfg().get("dossier") or "").strip()
+    if not base:
+        raise ValueError("aucune destination d'archive configurée (Paramètres → Archives)")
+    return os.path.join(base, mission)
+
+
+def _hhmm(t):
+    return time.strftime("%H%M", time.gmtime(t)) + "Z"
+
+
+def archive_manifest(mission):
+    """Manifeste de l'archive d'une mission, ou None. Il fait foi : c'est lui qui dit ce qui a été écrit,
+    vérifié, et à quelle date — pas la présence d'un fichier, qui peut être un reste d'écriture."""
+    try:
+        with open(os.path.join(archive_dir(mission), "archive.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def archive_mission(mission, on_progress=None):
+    """Extrait la vidéo de la mission en segments .ts + sidecars, dans la destination configurée.
+
+    Reprend un travail interrompu : un segment déjà écrit et non vide est conservé tel quel. L'écriture
+    passe par un `.part` renommé à la fin — un disque débranché en cours de route ne doit pas laisser un
+    fichier crédible mais tronqué.
+    """
+    info = mission_resolve(mission)
+    if info.get("recent"):
+        raise ValueError("mission en cours : arrêter l'enregistrement avant d'archiver")
+    cfg = archive_cfg()
+    # Plancher à 1 minute ici, alors que la SAISIE est bornée à 5 : la borne de l'IHM est un garde-fou
+    # d'exploitation (des segments trop courts multiplient les fichiers sans servir), pas une contrainte du
+    # découpage — et une valeur plus fine reste utile pour éprouver la découpe.
+    seg_s = max(1, int(cfg.get("segment_min") or 60)) * 60
+    garder_klv = bool(cfg.get("klv", True))
+    dest = archive_dir(mission)
+    os.makedirs(dest, exist_ok=True)
+
+    pcap0 = info["pcap"]
+    eng = FOLLOWS.get(follow_id(pcap0))
+    if eng is None or not eng.state.get("running"):
+        follow_start(pcap0, None, None, [])
+        eng = follow_get(follow_id(pcap0))
+    for _ in range(3000):                                  # rattrapage de l'index (≤ 5 min)
+        if not eng.catching_up:
+            break
+        eng.touch(); time.sleep(0.1)
+
+    streams = list(eng.streams.values())
+    if not streams:
+        raise ValueError("aucun flux vidéo dans cette mission")
+    # Le port n'entre dans le nom QUE s'il y a plusieurs flux : sur une mission mono-flux, le nom reste
+    # celui qui a été demandé, `{mission}_HHMMZ_a_HHMMZ`.
+    multi = len(streams) > 1
+    total = sum(st.nbytes for st in streams) or 1
+    faits = 0
+    fichiers = []
+
+    for st in streams:
+        t0, t1 = st.t0, st.t1
+        if not t0 or not t1 or t1 <= t0:
+            continue
+        deb = t0
+        while deb < t1:
+            fin = min(deb + seg_s, t1)
+            nom = "%s_%s_a_%s" % (mission, _hhmm(deb), _hhmm(fin))
+            if multi:
+                nom += "_%d" % st.dport
+            out = os.path.join(dest, nom + ".ts")
+            if os.path.exists(out) and os.path.getsize(out) > 0:
+                faits += os.path.getsize(out)
+                fichiers.append(nom + ".ts")
+                if on_progress:
+                    on_progress(nom + ".ts", faits, total, True)
+                deb = fin
+                continue
+            seg_no, off, _cum = st.locate_time(deb)
+            sha = hashlib.sha256()
+            n = 0
+            klv_pid = None
+            pmt_pids = ()
+            probe = bytearray()
+            tmp = out + ".part"
+            try:
+                with open(tmp, "wb") as fh:
+                    for chunk in eng.iter_ts(st, seg_no, off, 0, t_min=deb, t_max=fin):
+                        if not garder_klv:
+                            if klv_pid is None:            # PID KLV déterminé sur les premiers Mo (PMT)
+                                probe += chunk
+                                if len(probe) < 2 << 20:
+                                    continue
+                                inf = v9.analyze_stream(bytes(probe))
+                                klv_pid = inf.get("klv_pid") or -1
+                                pmt_pids = tuple(inf.get("pmt_pids") or ())
+                                chunk = _strip_pid(bytes(probe), klv_pid, pmt_pids)
+                                probe = bytearray()
+                            else:
+                                chunk = _strip_pid(chunk, klv_pid, pmt_pids)
+                        fh.write(chunk); sha.update(chunk); n += len(chunk)
+                        faits += len(chunk)
+                        if on_progress and n % (8 << 20) < (1 << 20):
+                            on_progress(nom + ".ts", faits, total, False)
+                    if probe:
+                        inf = v9.analyze_stream(bytes(probe))
+                        data = _strip_pid(bytes(probe), inf.get("klv_pid") or -1, tuple(inf.get("pmt_pids") or ()))
+                        fh.write(data); sha.update(data); n += len(data); faits += len(data)
+                if n == 0:                                 # créneau sans vidéo : pas de fichier vide sur le disque
+                    os.remove(tmp)
+                    deb = fin
+                    continue
+                os.replace(tmp, out)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            meta = {"fichier": nom + ".ts", "mission": mission, "dport": st.dport,
+                    "debut_utc": deb, "fin_utc": fin, "duree_s": round(fin - deb, 3), "octets": n,
+                    "sha256": sha.hexdigest(), "klv": garder_klv,
+                    "debut": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(deb)),
+                    "fin": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(fin)),
+                    "cree_le": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            with open(os.path.join(dest, nom + ".json"), "w", encoding="utf-8") as fh:
+                json.dump(meta, fh, ensure_ascii=False, indent=1)
+            # Positions KLV du créneau : un tiers qui reçoit la vidéo veut savoir où elle a été prise, sans
+            # avoir à décoder le flux de métadonnées.
+            rows = [k for k in eng.klv if deb <= (eng.t0 or 0) + k[0] <= fin and (len(k) < 8 or k[7] == st.dport)]
+            if rows:
+                with open(os.path.join(dest, nom + "_klv.csv"), "w", encoding="utf-8", newline="") as fh:
+                    fh.write("utc,timestamp,lat,lon,alt_m,heading,frame_center_lat,frame_center_lon\n")
+                    for k in rows:
+                        t = (eng.t0 or 0) + k[0]
+                        fh.write("%s,%.3f,%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)), t,
+                                                   ",".join("" if v is None else str(v) for v in k[1:7])))
+            fichiers.append(nom + ".ts")
+            if on_progress:
+                on_progress(nom + ".ts", faits, total, True)
+            deb = fin
+
+    man = {"mission": mission, "cree_le": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "segment_min": seg_s // 60, "klv": garder_klv, "dossier": dest,
+           "flux": [{"dport": st.dport, "octets": st.nbytes} for st in streams],
+           "fichiers": fichiers,
+           "octets": sum(os.path.getsize(os.path.join(dest, f)) for f in fichiers if os.path.exists(os.path.join(dest, f)))}
+    with open(os.path.join(dest, "archive.json"), "w", encoding="utf-8") as fh:
+        json.dump(man, fh, ensure_ascii=False, indent=1)
+    print("[archive] %s : %d fichier(s), %.1f Go dans %s" % (mission, len(fichiers), man["octets"] / 1e9, dest))
+    return man
+
+
+def _archive_worker():
+    """Un seul travail à la fois : l'extraction lit le même disque que la capture en cours, et deux
+    archivages simultanés se voleraient la bande passante sans rien accélérer."""
+    while True:
+        mission = ARCHIVE_Q.get()
+        job = ARCHIVE_JOBS.get(mission) or {}
+        job.update({"etat": "en cours", "debut": time.time(), "erreur": None})
+        ARCHIVE_JOBS[mission] = job
+        try:
+            def prog(fichier, faits, total, fini):
+                job.update({"fichier": fichier, "octets": faits, "total": total,
+                            "pourcent": round(100.0 * faits / max(total, 1), 1)})
+            man = archive_mission(mission, prog)
+            job.update({"etat": "terminé", "fin": time.time(), "fichiers": man["fichiers"],
+                        "dossier": man["dossier"], "pourcent": 100.0})
+        except Exception as e:
+            job.update({"etat": "erreur", "fin": time.time(), "erreur": "%s" % e})
+            print("[archive] %s : ECHEC %s" % (mission, e))
+        finally:
+            ARCHIVE_Q.task_done()
+
+
+def archive_enqueue(mission):
+    """Met une mission en file. Un travail déjà en cours ou en attente n'est pas redemandé — un double clic
+    ne doit pas lancer deux extractions du même flux."""
+    global _ARCHIVE_WORKER
+    with ARCHIVE_LOCK:
+        etat = (ARCHIVE_JOBS.get(mission) or {}).get("etat")
+        if etat in ("en attente", "en cours"):
+            return ARCHIVE_JOBS[mission]
+        ARCHIVE_JOBS[mission] = {"mission": mission, "etat": "en attente", "pourcent": 0.0,
+                                 "demande": time.time()}
+        if _ARCHIVE_WORKER is None or not _ARCHIVE_WORKER.is_alive():
+            _ARCHIVE_WORKER = threading.Thread(target=_archive_worker, daemon=True, name="archive")
+            _ARCHIVE_WORKER.start()
+        ARCHIVE_Q.put(mission)
+        return ARCHIVE_JOBS[mission]
+
+
+def archive_state(mission=None):
+    """Vue IHM : travaux en cours et archives déjà présentes (le manifeste fait foi)."""
+    if mission:
+        return {"job": ARCHIVE_JOBS.get(mission), "manifeste": archive_manifest(mission),
+                "dossier": archive_cfg().get("dossier") or ""}
+    return {"jobs": list(ARCHIVE_JOBS.values()), "dossier": archive_cfg().get("dossier") or "",
+            "segment_min": archive_cfg().get("segment_min")}
 
 
 # ── Accès : session administrateur pour les pages, API ExB libre ─────────────
@@ -4625,6 +4856,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(health_status())
             if u.path == "/api/env":                              # paramètres d'environnement (lecture)
                 return self._json(env_state())
+            if u.path == "/api/archive":                          # travaux en cours + destination
+                return self._json(archive_state(q.get("mission", [None])[0]))
             if u.path == "/api/capture/status":                   # proxy vers le démon (accès direct :8767 sans nginx)
                 try:
                     with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=3) as r:
@@ -5045,6 +5278,11 @@ class Handler(BaseHTTPRequestHandler):
                 # capture muette, que rien ne signalerait ensuite. Le refus est ici, pas au redémarrage.
                 env_config_save(env_config_validate(body if isinstance(body, dict) else {}))
                 return self._json(env_state())
+            m_ = re.match(r"^/api/archive/([^/]+)$", u.path)
+            if m_:
+                # Mise en FILE, pas exécution directe : l'extraction d'une mission de plusieurs heures
+                # dépasse largement le temps d'une requête HTTP, et l'IHM suit l'avancement par /api/archive.
+                return self._json(archive_enqueue(urllib.parse.unquote(m_.group(1))))
             if u.path == "/api/login":
                 ip = (self.headers.get("X-Forwarded-For", "").split(",")[0].strip() or self.client_address[0])
                 if login_blocked(ip):

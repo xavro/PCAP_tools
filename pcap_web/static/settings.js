@@ -176,6 +176,17 @@
         <p class="hint" id="s-bm-hint"></p>
       </section>
       <section>
+        <h4>Archives vidéo</h4>
+        <label class="lbl">Destination <input type="text" id="s-ar-dir" placeholder="/data/archive (point de montage du disque externe)"></label>
+        <label class="lbl">Durée d'un segment <input type="number" id="s-ar-seg" min="5" max="720" step="5" style="max-width:110px"> minutes</label>
+        <label class="lbl chk"><input type="checkbox" id="s-ar-klv"> conserver les métadonnées KLV dans le .ts</label>
+        <p class="hint">La vidéo est extraite du pcap sans ré-encodage, en fichiers
+        <span class="path">{mission}_HHMMZ_a_HHMMZ.ts</span> rangés par mission, avec pour chacun un
+        descriptif JSON et les positions KLV en CSV. Compter <b>1,85 Go par heure et par CR</b> (mesuré) :
+        l'archive rend la vidéo lisible ailleurs, elle ne fait pas gagner de place. Retirer le KLV allège
+        peu et prive le destinataire de la géolocalisation — à ne faire que pour une diffusion qui l'exige.</p>
+      </section>
+      <section>
         <h4>Fond animé des pages</h4>
         <label class="lbl">Page du fond <input type="text" id="s-bg-url" placeholder="static/background.html ou https://…"></label>
         <div class="row" id="s-bg-pages" style="display:flex;gap:12px;flex-wrap:wrap;font-size:12.5px;color:var(--muted,#8a8f98)">
@@ -204,6 +215,11 @@
         <button type="button" class="accent" id="s-save">Enregistrer</button>
       </footer>`;
 
+    // Archives vidéo
+    const ar = (state.config && state.config.archive) || {};
+    box.querySelector("#s-ar-dir").value = ar.dossier || "";
+    box.querySelector("#s-ar-seg").value = ar.segment_min || 60;
+    box.querySelector("#s-ar-klv").checked = ar.klv !== false;
     // Fond animé : URL + pages concernées
     const fond = (state.config && state.config.fond) || {};
     box.querySelector("#s-bg-url").value = fond.url || "";
@@ -310,7 +326,10 @@
     });
     const fond = { url: (box.querySelector("#s-bg-url").value || "").trim(),
       pages: Array.from(box.querySelectorAll(".s-bg-p")).filter(c => c.checked).map(c => c.value) };
-    return { capture_sets: sets, mapservers: map, fond };
+    const archive = { dossier: (box.querySelector("#s-ar-dir").value || "").trim(),
+      segment_min: Number(box.querySelector("#s-ar-seg").value) || 60,
+      klv: box.querySelector("#s-ar-klv").checked };
+    return { capture_sets: sets, mapservers: map, fond, archive };
   }
 
   async function save () {

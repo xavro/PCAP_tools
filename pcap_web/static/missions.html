@@ -26,6 +26,7 @@
     <span class="muted" id="hint">captures réseau (pcap maître) du dossier des enregistrements — mise à jour toutes les 10 s</span>
   </div>
   <div class="pg-tools" id="hold-bar" hidden><span id="hold-txt" class="mono"></span><button class="btn accent" id="hold-resume">⏵ Reprendre l'enregistrement</button></div>
+  <div class="pg-tools" id="arch-bar" hidden><span id="arch-txt" class="mono"></span></div>
   <table class="pg">
     <thead><tr><th>Mission</th><th>CR</th><th>Indicatif · capteur</th><th>Début (UTC)</th><th>Fin</th><th>Durée</th><th>Flux</th><th>Taille</th><th>État</th><th>Actions</th></tr></thead>
     <tbody id="rows"><tr><td colspan="10" class="mono" style="color:var(--muted)">chargement…</td></tr></tbody>
@@ -35,6 +36,7 @@
   <div class="t" id="rm-title"></div>
   <button id="rm-replay">▶ Ouvrir dans la page opérateur</button>
   <button id="rm-details">⋯ Détails (JSON)</button>
+  <button id="rm-archive">🗄 Archiver la vidéo (.ts)</button>
   <button id="rm-stop">⏹ Forcer l'arrêt de l'enregistrement</button>
   <button id="rm-del" class="danger">✕ Supprimer l'enregistrement</button>
 </div>
@@ -77,6 +79,9 @@
   document.addEventListener("click", ev => {
     const b = ev.target.closest("button[data-menu]");
     if (b) { cur = b.dataset.menu; armed = false; stopArmed = false; $("rm-title").textContent = cur; $("rm-del").disabled = b.dataset.live === "1"; $("rm-del").title = b.dataset.live === "1" ? "mission en cours : arrêter la capture d'abord" : "";
+      $("rm-archive").disabled = b.dataset.live === "1";
+      $("rm-archive").title = b.dataset.live === "1" ? "mission en cours : arrêter l'enregistrement avant d'archiver"
+        : "extrait la vidéo en fichiers .ts (segments, sans ré-encodage) vers la destination d'archive";
       $("rm-stop").disabled = b.dataset.live !== "1"; $("rm-stop").title = b.dataset.live === "1" ? "ferme la session tout de suite ; le CR reste en attente tant que son flux coule" : "aucun enregistrement en cours pour cette mission"; menu.hidden = false; const r = b.getBoundingClientRect(); const mr = menu.getBoundingClientRect(); menu.style.left = Math.min(r.left, window.innerWidth - mr.width - 8) + "px"; menu.style.top = (r.bottom + 4) + "px"; ev.stopPropagation(); return; }
     if (!menu.hidden && !menu.contains(ev.target)) hide();
   });
@@ -86,6 +91,40 @@
   const say = (txt, bad) => { $("hint").textContent = txt; $("hint").style.color = bad ? "var(--danger)" : ""; if (bad) setTimeout(() => { $("hint").style.color = ""; }, 6000); };
   // Arrêt FORCÉ : la session se ferme immédiatement et le CR reste EN ATTENTE tant que son flux coule —
   // sans cela, le mode trafic rouvrirait une mission au paquet suivant et l'arrêt paraîtrait sans effet.
+  // Archivage : mise en file côté serveur, l'avancement est suivi par sondage — l'extraction d'une
+  // mission de plusieurs heures dépasse de loin le temps d'une requête.
+  let archTimer = null;
+  async function archPoll() {
+    let st = null;
+    try { st = await api("/api/archive"); } catch { return; }
+    const actifs = (st.jobs || []).filter(j => j.etat === "en cours" || j.etat === "en attente");
+    const dernier = (st.jobs || []).slice(-1)[0];
+    const bar = $("arch-bar"), txt = $("arch-txt");
+    if (actifs.length) {
+      const j = actifs[0];
+      txt.textContent = `archivage ${j.mission} — ${j.etat}${j.fichier ? " · " + j.fichier : ""}${j.pourcent ? " · " + j.pourcent + " %" : ""}`;
+      bar.hidden = false;
+    } else if (dernier && dernier.etat === "erreur") {
+      txt.textContent = `archivage ${dernier.mission} : ${dernier.erreur}`; bar.hidden = false;
+      clearInterval(archTimer); archTimer = null;
+    } else if (dernier && dernier.etat === "terminé") {
+      txt.textContent = `archivage ${dernier.mission} terminé — ${(dernier.fichiers || []).length} fichier(s) dans ${dernier.dossier || st.dossier}`;
+      bar.hidden = false;
+      clearInterval(archTimer); archTimer = null;
+    } else { bar.hidden = true; }
+  }
+  $("rm-archive").addEventListener("click", async () => {
+    if (!cur) return;
+    const name = cur; hide();
+    try {
+      await api("/api/archive/" + encodeURIComponent(name), { method: "POST" });
+      say(`archivage de ${name} demandé`);
+      if (archTimer) clearInterval(archTimer);
+      archTimer = setInterval(archPoll, 1500); archPoll();
+    } catch (e) { say(`archivage refusé : ${e.message}`, true); }
+  });
+  void archPoll();                                   // un travail lancé ailleurs se voit aussi ici
+
   $("rm-stop").addEventListener("click", async () => {
     if (!cur) return;
     if (!stopArmed) { stopArmed = true; $("rm-stop").textContent = "⏹ Confirmer l'arrêt de l'enregistrement"; return; }
