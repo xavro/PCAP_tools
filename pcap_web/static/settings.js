@@ -60,7 +60,9 @@
   .stx-set .banner.err { border-color: var(--danger, #ff5252); color: var(--danger, #ff5252); background: rgba(255,82,82,.10); }
   .stx-set .path { font: 11px var(--mono, Consolas, monospace); color: var(--muted, #8a8f98); }
   .stx-set label.lbl { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12.5px; color: var(--muted, #8a8f98); }
-  .stx-set label.lbl > select, .stx-set label.lbl > input[type=text] { flex: 1; min-width: 0; }
+  .stx-set label.lbl > select, .stx-set label.lbl > input[type=text], .stx-set label.lbl > input[type=password] { flex: 1; min-width: 0; }
+  .stx-set input[type=password] { background: var(--panel2, #1c232c); color: var(--fg, #e6edf3);
+    border: 1px solid var(--border, #2a323d); border-radius: 6px; padding: 4px 7px; font-size: 12.5px; }
   .stx-set label.lbl.chk { color: var(--muted, #8a8f98); }
   .stx-set select { background: var(--panel2, #1c232c); color: var(--fg, #e6edf3);
     border: 1px solid var(--border, #2a323d); border-radius: 6px; padding: 4px 7px; font-size: 12.5px; }`;
@@ -69,6 +71,7 @@
   style.textContent = CSS;
   document.head.appendChild(style);
 
+  let sess = null;                                         // {requise, user} — /api/session
   let state = null;                                        // dernier /api/env reçu
   let bm = null;                                           // dernier /api/basemap reçu (source du fond)
   let box = null, back = null;
@@ -133,6 +136,21 @@
         jamais à chaud — rebinder pendant une capture perdrait des datagrammes sans le dire.
         Équivalent <span class="path">CAPTURE_SETS=${esc(cap.spec || "")}</span></p>
       </section>
+      <section id="s-sec">
+        <h4>Accès aux pages</h4>
+        ${sess && sess.requise
+          ? `<p class="hint">Connecté en tant que <b>${esc(sess.user || "—")}</b>. Les pages et les routes
+             d'administration exigent une session ; les flux de l'application cartographique restent libres.</p>
+             <label class="lbl">Mot de passe actuel <input type="password" id="s-pw-old"></label>
+             <label class="lbl">Nouveau mot de passe <input type="password" id="s-pw-new" placeholder="8 caractères minimum"></label>
+             <div class="row" style="display:flex;gap:8px;align-items:center">
+               <button type="button" id="s-pw-go">Changer le mot de passe</button>
+               <span class="path" id="s-pw-msg"></span></div>
+             <p class="hint">Le changement ferme toutes les sessions ouvertes, y compris celle-ci.</p>`
+          : `<p class="hint">Aucun mot de passe n'est configuré : <b>les pages sont accessibles sans connexion</b>.
+             Définir <span class="path">STRATUS_ADMIN_PASSWORD</span> dans l'environnement du service de relecture
+             active la connexion ; le mot de passe pourra ensuite être changé ici.</p>`}
+      </section>
       <section>
         <h4>Fond de carte</h4>
         <label class="lbl">Source
@@ -172,6 +190,8 @@
         <button type="button" class="accent" id="s-save">Enregistrer</button>
       </footer>`;
 
+    const pwGo = box.querySelector("#s-pw-go");
+    if (pwGo) pwGo.onclick = changePassword;
     fillBasemap();
     box.querySelector("#s-bm-provider").onchange = bmRows;
     box.querySelector("#s-bm-service").onchange = bmService;
@@ -204,6 +224,20 @@
         const tr = t.closest("tr"); if (tr) tr.remove();
       }
     });
+  }
+
+  /** Changement de mot de passe : l'actuel est redemandé — un poste laissé ouvert ne doit pas suffire. */
+  async function changePassword () {
+    const msg = box.querySelector("#s-pw-msg");
+    msg.className = "path"; msg.textContent = "…";
+    try {
+      await api("api/password", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actuel: box.querySelector("#s-pw-old").value,
+          nouveau: box.querySelector("#s-pw-new").value }) });
+      msg.className = "path vif";
+      msg.textContent = "changé — reconnexion nécessaire";
+      setTimeout(() => { location.reload(); }, 1500);
+    } catch (e) { msg.className = "path err"; msg.textContent = String(e.message || e); }
   }
 
   /** Remplit la section « Fond de carte » depuis /api/basemap (le catalogue vient de la section voisine). */
@@ -304,8 +338,8 @@
     document.body.append(back, box);
     document.addEventListener("keydown", onKey);
     try {
-      const [env, base] = await Promise.all([api("api/env"), api("api/basemap")]);
-      state = env; bm = base;
+      const [env, base, se] = await Promise.all([api("api/env"), api("api/basemap"), api("api/session")]);
+      state = env; bm = base; sess = se;
       render();
     } catch (e) {
       box.innerHTML = `<h3>⚙ Paramètres d'environnement</h3><section><div class="banner err">${esc(e.message || e)}</div></section>
@@ -326,6 +360,7 @@
 
   function mount () {
     if (document.getElementById("stx-set-btn") || document.getElementById("stx-set-row")) return;
+    void mountLogout();          // avant tout retour anticipé : la console aussi doit pouvoir se déconnecter
 
     // Console (et rejeu) : panneau de paramètres déjà présent → on s'y range, pas de seconde roue.
     const body = document.querySelector("#settings .st-body");
@@ -355,6 +390,31 @@
     const head = document.querySelector("#app > header") || document.querySelector("header");
     if (head) head.appendChild(b);
   }
+  /**
+   * Bouton de déconnexion, seulement quand une session est ouverte. Sans lui, se déconnecter demanderait de
+   * vider les cookies du navigateur — et rien ne dirait sous quel compte on travaille.
+   */
+  async function mountLogout () {
+    let se = null;
+    try { se = await api("api/session"); } catch { return; }
+    sess = se;
+    if (!se.requise || !se.user || document.getElementById("stx-out-btn")) return;
+    const host = document.querySelector(".pg-nav") || document.querySelector("#app > header") || document.querySelector("header");
+    if (!host) return;
+    const b = document.createElement("button");
+    b.id = "stx-out-btn";
+    b.type = "button";
+    b.className = host.classList.contains("pg-nav") ? "btn" : "";
+    b.title = "Se déconnecter (" + se.user + ")";
+    b.setAttribute("aria-label", b.title);
+    b.textContent = "⏻";
+    b.onclick = async () => {
+      try { await api("api/logout", { method: "POST" }); } catch { /* la session expirera d'elle-même */ }
+      location.reload();
+    };
+    host.appendChild(b);
+  }
+
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount);
   else mount();
 })();

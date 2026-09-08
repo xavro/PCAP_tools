@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>StratusServer — Connexion</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="static/favicon.ico">
+<link rel="stylesheet" href="static/style.css">
+<style>
+  /* Page volontairement autonome : elle doit s'afficher même si le reste du serveur est en peine. */
+  html, body { overflow: auto; }
+  .lg-wrap { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .lg { width: min(380px, 92vw); background: var(--panel); border: 1px solid var(--border);
+        border-radius: 10px; padding: 22px 22px 18px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+  .lg h1 { margin: 0 0 4px; font-size: 16px; letter-spacing: .04em; display: flex; align-items: center; gap: 9px; }
+  .lg h1 img { width: 26px; height: 26px; }
+  .lg .sub { color: var(--muted); font-size: 12px; margin: 0 0 18px; }
+  .lg label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  .lg input { width: 100%; padding: 7px 9px; font-size: 13px; }
+  .lg button { width: 100%; margin-top: 16px; padding: 8px; font-weight: 600; }
+  .lg .msg { margin-top: 10px; font-size: 12px; min-height: 16px; color: var(--danger); }
+  .lg .foot { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+              color: var(--muted); font-size: 11px; line-height: 1.55; }
+</style>
+</head>
+<body>
+<div class="lg-wrap">
+  <form class="lg" id="f" autocomplete="on">
+    <h1><img src="static/stratus.png" alt="">StratusServer <span style="color:var(--accent)">v2</span></h1>
+    <p class="sub">Accès aux pages d'analyse et de gestion des enregistrements.</p>
+    <label for="u">Identifiant</label>
+    <input id="u" name="username" type="text" autocomplete="username" autofocus spellcheck="false">
+    <label for="p">Mot de passe</label>
+    <input id="p" name="password" type="password" autocomplete="current-password">
+    <button type="submit" class="accent" id="go">Se connecter</button>
+    <div class="msg" id="msg"></div>
+    <div class="foot">
+      Les flux consommés par l'application cartographique (télémétrie, GMTI, vidéo, relecture) restent
+      accessibles sans compte&nbsp;: seule l'exploitation directe du serveur est protégée.
+    </div>
+  </form>
+</div>
+<script>
+(() => {
+  "use strict";
+  const BASE = location.pathname.replace(/[^/]*$/, "");
+  const $ = id => document.getElementById(id);
+  const next = new URLSearchParams(location.search).get("next");
+  $("f").addEventListener("submit", async e => {
+    e.preventDefault();
+    $("msg").textContent = ""; $("go").disabled = true;
+    try {
+      const r = await fetch(BASE + "api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: $("u").value, password: $("p").value }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
+      // `next` vient de l'URL : on n'y obéit que s'il désigne CE serveur — une redirection ouverte
+      // transformerait la page de connexion en tremplin vers un site tiers.
+      let dest = BASE;
+      if (next) { const u = new URL(next, location.origin); if (u.origin === location.origin) dest = u.pathname + u.search; }
+      location.replace(dest);
+    } catch (err) {
+      $("msg").textContent = err.message || String(err);
+      $("p").value = ""; $("p").focus();
+    } finally { $("go").disabled = false; }
+  });
+})();
+</script>
+</body>
+</html>

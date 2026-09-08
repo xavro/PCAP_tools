@@ -39,6 +39,12 @@ API :
   GET/POST /api/settings        réglages (dernier pcap, récents, IHM) — pcap_web_settings.json
   GET/POST /api/env             paramètres d'environnement (ports par CR, services carto) — environnement.json
                                 du volume partagé ; l'environnement du conteneur reste le défaut
+  GET  /login · /api/session    page de connexion · état de session (requise ? qui ?)
+  POST /api/login · /api/logout · /api/password    ouverture / fermeture de session, changement de mot de passe
+                                STRATUS_ADMIN_PASSWORD vide = aucune connexion demandée. Sinon les PAGES et les
+                                routes d'administration exigent une session ; les routes de l'application ExB
+                                (/ws/*, follow, missions, clips, captures, gmti/ports|profiles, detect…) restent
+                                libres — cf. AUTH_OPEN_PREFIXES
   GET /api/browse?dir=          explorateur de fichiers côté serveur (dossiers + captures)
   GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export dynamique)
   GET /api/gmti/decode?pcap=    décodage GMTI (extracteur complet | streaming) + inventaire 4607
@@ -60,6 +66,7 @@ API :
 import argparse
 import base64
 import hashlib
+import hmac
 import importlib.util
 import json
 import math
@@ -74,6 +81,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import secrets
 import time
 import types
 import urllib.error
@@ -4294,6 +4302,133 @@ def env_state():
                         "spec": capture_sets_spec(voulu), "redemarrage_requis": besoin}}
 
 
+# ── Accès : session administrateur pour les pages, API ExB libre ─────────────
+# Les pages permettent de parcourir le disque du serveur, d'écouter le réseau, de réémettre en UDP, de
+# changer les ports de capture et de supprimer des missions : elles demandent une session. L'application ExB
+# doit rester utilisable sans identifiants — et comme elle POSTE aussi (suivi, clips, captures, profil
+# GMTI), la frontière passe par les ROUTES, pas par la méthode HTTP.
+AUTH_FILE = os.path.join(os.path.dirname(ENV_CONFIG_PATH), "auth.json")
+SESSION_TTL_S = float(os.getenv("SESSION_TTL_H", "12") or 12) * 3600
+SESSIONS = {}                                              # jeton -> {"user":…, "exp":…}
+_LOGIN_FAILS = {}                                          # ip -> [horodatages des échecs récents]
+LOGIN_MAX_FAILS, LOGIN_WINDOW_S = 10, 300.0
+
+# Routes LIBRES : ce dont l'application ExB (et la page de connexion) a besoin. Tout le reste demande une
+# session. Ordre voulu : on liste ce qui est ouvert, jamais ce qui est fermé — un endpoint ajouté demain est
+# protégé d'office, ce qui est le bon sens de l'erreur.
+AUTH_OPEN_PREFIXES = (
+    "/ws/",                                                # KLV, GMTI, vidéo, événements, détection
+    "/static/", "/login", "/favicon.ico",
+    "/api/login", "/api/logout", "/api/session",
+    "/api/health",                                         # supervision (docker healthcheck, sondes)
+    "/api/follow/", "/api/streams/", "/api/missions", "/api/mission/resolve",
+    "/api/clips/", "/api/captures/", "/api/thumbnails/", "/api/hls/",
+    "/api/detect/", "/api/playback/", "/api/gmti/ports", "/api/gmti/profiles",
+)
+# Exceptions DANS une famille ouverte : `/api/missions` (liste) est libre, mais supprimer une mission ou
+# arrêter un enregistrement ne l'est pas.
+AUTH_CLOSED_PATTERNS = (
+    re.compile(r"^/api/missions/[^/]+/(delete|stop-recording)$"),
+)
+
+
+def auth_config():
+    """Identifiants attendus : `auth.json` (empreinte PBKDF2 posée depuis l'IHM) sinon l'environnement.
+    Sans mot de passe configuré, l'authentification est ÉTEINTE — mettre à jour ne doit pas verrouiller un
+    déploiement existant à l'insu de son exploitant."""
+    try:
+        with open(AUTH_FILE, encoding="utf-8") as f:
+            raw = json.load(f) or {}
+        if raw.get("hash") and raw.get("salt"):
+            return {"user": raw.get("user") or "admin", "salt": raw["salt"], "hash": raw["hash"],
+                    "iters": int(raw.get("iters") or 200000), "source": AUTH_FILE}
+    except (OSError, ValueError):
+        pass
+    pwd = os.getenv("STRATUS_ADMIN_PASSWORD", "")
+    if pwd:
+        return {"user": os.getenv("STRATUS_ADMIN_USER", "admin"), "plain": pwd, "source": "env"}
+    return None
+
+
+def auth_required():
+    return auth_config() is not None
+
+
+def _pbkdf2(pwd, salt, iters=200000):
+    return hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), bytes.fromhex(salt), iters).hex()
+
+
+def auth_check(user, pwd):
+    """Comparaison à temps constant, des deux côtés : l'identifiant aussi, sinon la durée de la réponse
+    dirait s'il existe."""
+    cfg = auth_config()
+    if not cfg or not pwd:
+        return False
+    ok_user = hmac.compare_digest((user or "").strip(), cfg["user"])
+    if "plain" in cfg:
+        ok_pwd = hmac.compare_digest(pwd, cfg["plain"])
+    else:
+        ok_pwd = hmac.compare_digest(_pbkdf2(pwd, cfg["salt"], cfg["iters"]), cfg["hash"])
+    return ok_user and ok_pwd
+
+
+def auth_set_password(user, pwd):
+    """Pose l'empreinte dans `auth.json` (le mot de passe en clair n'est jamais écrit)."""
+    salt = os.urandom(16).hex()
+    data = {"user": (user or "admin").strip() or "admin", "salt": salt, "iters": 200000,
+            "hash": _pbkdf2(pwd, salt), "maj": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    d = os.path.dirname(AUTH_FILE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = AUTH_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, AUTH_FILE)
+    try:
+        os.chmod(AUTH_FILE, 0o600)                         # sans effet sur Windows, utile en conteneur
+    except OSError:
+        pass
+    return data["user"]
+
+
+def session_new(user):
+    tok = secrets.token_urlsafe(32)
+    now = time.time()
+    for k in [k for k, v in SESSIONS.items() if v["exp"] < now]:   # ménage à chaque ouverture
+        del SESSIONS[k]
+    SESSIONS[tok] = {"user": user, "exp": now + SESSION_TTL_S}
+    return tok
+
+
+def session_user(tok):
+    s_ = SESSIONS.get(tok or "")
+    if not s_:
+        return None
+    if s_["exp"] < time.time():
+        SESSIONS.pop(tok, None)
+        return None
+    return s_["user"]
+
+
+def auth_open_path(path):
+    """La route est-elle accessible sans session ?"""
+    for rx in AUTH_CLOSED_PATTERNS:
+        if rx.match(path):
+            return False
+    return any(path == p.rstrip("/") or path.startswith(p) for p in AUTH_OPEN_PREFIXES)
+
+
+def login_blocked(ip):
+    now = time.time()
+    fails = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < LOGIN_WINDOW_S]
+    _LOGIN_FAILS[ip] = fails
+    return len(fails) >= LOGIN_MAX_FAILS
+
+
+def login_failed(ip):
+    _LOGIN_FAILS.setdefault(ip, []).append(time.time())
+
+
 # ── Serveur HTTP ─────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     server_version = "pcap-web/0.2"
@@ -4372,10 +4507,49 @@ class Handler(BaseHTTPRequestHandler):
             if rest == "" or rest.startswith("/") or rest.startswith("?"):
                 self.path = rest or "/"
 
+    def _cookie(self, name):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name:
+                return v
+        return ""
+
+    def _https(self):
+        """Requête arrivée en TLS ? Derrière nginx, c'est l'en-tête transmis qui fait foi."""
+        return (self.headers.get("X-Forwarded-Proto", "").lower() == "https")
+
+    def _set_session_cookie(self, token, ttl=None):
+        """Cookie de session : HttpOnly (hors de portée d'un script), SameSite=Lax (une requête POST venue
+        d'un autre site ne l'emporte pas), Secure dès que la liaison est en TLS."""
+        parts = ["stx_session=%s" % token, "Path=%s/" % (BASE_PATH or ""), "HttpOnly", "SameSite=Lax"]
+        if ttl is not None:
+            parts.append("Max-Age=%d" % ttl)
+        if self._https():
+            parts.append("Secure")
+        self.send_header("Set-Cookie", "; ".join(parts))
+
+    def _guard(self, path):
+        """Session exigée hors routes ouvertes. Renvoie True quand la requête a été traitée (refusée)."""
+        if not auth_required() or auth_open_path(path):
+            return False
+        if session_user(self._cookie("stx_session")):
+            return False
+        if path.startswith("/api/") or path.startswith("/ws/"):
+            # Réponse JSON : un appel d'API doit recevoir une erreur exploitable, pas une page HTML.
+            self._err(401, "authentification requise")
+        else:
+            self.send_response(302)
+            self.send_header("Location", "%s/login?next=%s" % (BASE_PATH or "", urllib.parse.quote(self.path, safe="")))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        return True
+
     def do_GET(self):
         self._strip_base()
         u = urllib.parse.urlsplit(self.path)
         q = urllib.parse.parse_qs(u.query)
+        if self._guard(u.path):
+            return
         try:
             if u.path in ("/", "/index.html"):
                 return self._static("index.html")
@@ -4387,6 +4561,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("health.html")
             if u.path in ("/api/docs", "/docs", "/apidocs.html"):
                 return self._static("apidocs.html")
+            if u.path in ("/login", "/login.html"):
+                return self._static("login.html")
+            if u.path == "/api/session":
+                # Lue par toutes les pages : dit si une connexion est exigée sur ce serveur, et qui est
+                # connecté. Sans authentification configurée, les pages n'affichent aucun bouton.
+                return self._json({"requise": auth_required(), "user": session_user(self._cookie("stx_session")),
+                                   "source": (auth_config() or {}).get("source")})
             if u.path == "/api/health":
                 return self._json(health_status())
             if u.path == "/api/env":                              # paramètres d'environnement (lecture)
@@ -4690,6 +4871,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._strip_base()
+        if self._guard(urllib.parse.urlsplit(self.path).path):
+            return
         u = urllib.parse.urlsplit(self.path)
         n = int(self.headers.get("Content-Length") or 0)
         # Dépôt d'un fichier de préparation : corps = octets bruts, nom en query string.
@@ -4809,6 +4992,47 @@ class Handler(BaseHTTPRequestHandler):
                 # capture muette, que rien ne signalerait ensuite. Le refus est ici, pas au redémarrage.
                 env_config_save(env_config_validate(body if isinstance(body, dict) else {}))
                 return self._json(env_state())
+            if u.path == "/api/login":
+                ip = (self.headers.get("X-Forwarded-For", "").split(",")[0].strip() or self.client_address[0])
+                if login_blocked(ip):
+                    return self._err(429, "trop de tentatives — réessayez dans quelques minutes")
+                if not auth_required():
+                    return self._err(400, "aucun mot de passe configuré sur ce serveur")
+                if not auth_check((body or {}).get("user"), (body or {}).get("password")):
+                    login_failed(ip)
+                    time.sleep(1.0)                        # une réponse instantanée invite à essayer en boucle
+                    return self._err(401, "identifiant ou mot de passe incorrect")
+                tok = session_new((auth_config() or {}).get("user") or "admin")
+                data = json.dumps({"user": session_user(tok)}, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self._set_session_cookie(tok, int(SESSION_TTL_S))
+                self.end_headers()
+                return self.wfile.write(data)
+            if u.path == "/api/logout":
+                SESSIONS.pop(self._cookie("stx_session"), None)
+                data = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self._set_session_cookie("", 0)            # cookie vidé et expiré
+                self.end_headers()
+                return self.wfile.write(data)
+            if u.path == "/api/password":
+                # Route PROTÉGÉE par la garde (hors liste ouverte) : seul un opérateur déjà connecté passe
+                # ici. On redemande quand même le mot de passe actuel — un poste laissé ouvert ne doit pas
+                # suffire à changer les identifiants.
+                b_ = body or {}
+                if not auth_check((auth_config() or {}).get("user"), b_.get("actuel")):
+                    time.sleep(1.0)
+                    return self._err(401, "mot de passe actuel incorrect")
+                nouveau = (b_.get("nouveau") or "").strip()
+                if len(nouveau) < 8:
+                    return self._err(400, "mot de passe trop court (8 caractères au minimum)")
+                user = auth_set_password(b_.get("user") or (auth_config() or {}).get("user"), nouveau)
+                SESSIONS.clear()                           # les sessions ouvertes ne survivent pas au changement
+                return self._json({"user": user, "sessions_fermees": True})
             self._err(404, "route inconnue")
         except (FileNotFoundError, ValueError) as e:
             self._err(400, str(e))
