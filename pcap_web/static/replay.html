@@ -120,23 +120,8 @@
   <div class="st-body">
     <section>
       <div class="row"><label class="chk"><input type="checkbox" id="basemap" checked> afficher le fond de carte</label></div>
-      <label>Source <select id="bm-provider">
-        <option value="arcgis_online">ArcGIS Online (internet)</option>
-        <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
-        <option value="none">Aucun</option></select></label>
-      <label id="bm-layer-row">Couche <select id="bm-layer">
-        <option value="World_Imagery">Imagerie</option>
-        <option value="World_Topo_Map">Topographique</option>
-        <option value="World_Street_Map">Rues</option>
-        <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option></select></label>
-      <div id="bm-ms-rows">
-        <label id="bm-service-row">Service <select id="bm-service" title="services déclarés dans « Paramètres » — le service par défaut s'applique tant qu'aucun choix n'est fait ici"><option value="">— URL libre —</option></select></label>
-        <label>URL MapServer <input id="bm-url" type="text" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
-        <label>Token <input id="bm-token" type="text" placeholder="(optionnel)"></label>
-        <label class="chk"><input type="checkbox" id="bm-insecure" checked> accepter un certificat auto-signé</label>
-      </div>
-      <div class="row"><button id="bm-save" class="accent">Appliquer &amp; enregistrer</button><span id="bm-msg" class="muted"></span></div>
-      <div class="row"><span class="muted">Réglage commun à la console pcap (fichier basemap.json du serveur).</span></div>
+      <div class="row"><span class="muted">Source du fond (fournisseur, service, jeton) : <b>Paramètres → Fond de carte</b> —
+      réglage du serveur, commun à toutes les pages.</span></div>
     </section>
   </div>
 </div>

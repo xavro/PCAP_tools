@@ -3628,14 +3628,71 @@ def snap_capture(mission, t_utc, description=None, dport=None, snaps_label=None)
     return meta
 
 
+SNAP_DECK_IMAGE = os.getenv("SNAP_DECK_IMAGE", "jpg")            # jpg | png (png = ancien comportement)
+SNAP_DECK_MAX_W = int(os.getenv("SNAP_DECK_MAX_W", "1920"))      # largeur max de l'image embarquée
+SNAP_DECK_QUALITY = os.getenv("SNAP_DECK_QUALITY", "3")          # -q:v ffmpeg : 2 = quasi sans perte, 5 = correcte
+
+
+def _deck_image(png):
+    """Dérivé léger du PNG, destiné à la DIAPOSITIVE seulement. Renvoie (chemin, temporaire).
+
+    Le deck est rouvert et réécrit ENTIÈREMENT à chaque capture — python-pptx ne
+    sait pas ajouter en place. Le coût est donc proportionnel au poids des images
+    déjà embarquées, et une capture 1920×1080 pèse 2 à 4 Mo en PNG : à la
+    trentième diapositive, chaque nouvelle capture recompresse une centaine de
+    mégaoctets. C'est de là que vient le délai d'apparition, et c'est pourquoi il
+    s'allonge au fil de la mission.
+
+    En JPEG de qualité 3, la même image tombe autour de 300 ko — un ordre de
+    grandeur — pour un rendu indiscernable à l'écran comme à l'impression : une
+    image vidéo est une photo, le PNG n'y apporte rien qu'un poids mort.
+
+    Le PNG pleine résolution n'est PAS touché : il reste sur le disque, dans la
+    fiche JSON et dans le partage MASTER MISSION. Seule la copie embarquée dans le
+    PowerPoint est allégée. `SNAP_DECK_IMAGE=png` rétablit l'ancien comportement.
+    """
+    if SNAP_DECK_IMAGE.lower() == "png" or not FFMPEG or not os.path.isfile(png):
+        return png, False
+    out = png[:-4] + ".deck.jpg" if png.endswith(".png") else png + ".deck.jpg"
+    vf = "scale='min(%d,iw)':-2" % SNAP_DECK_MAX_W
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", png,
+           "-vf", vf, "-q:v", SNAP_DECK_QUALITY, out]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if os.path.isfile(out) and os.path.getsize(out) > 1000:
+        return out, True
+    # Échec de la conversion : on embarque le PNG, une diapositive lourde valant
+    # mieux qu'une diapositive absente.
+    try:
+        if os.path.isfile(out):
+            os.remove(out)
+    except OSError:
+        pass
+    return png, False
+
+
 def _snap_finish(d, cid, meta, png, ts, snaps_label):
     mission, mgrs, description, t_utc = meta["mission"], meta.get("mgrs"), meta.get("description") or "", meta["t_utc"]
+    slide_img, tmp_img = _deck_image(png)
+    t_deck = time.time()
     try:
         import snap_pptx
         deck = os.path.join(d, "%s_SNAPS.pptx" % mission)
-        meta["slide"] = snap_pptx.append_capture(deck, SNAP_TEMPLATE, png, dict(meta, ts=ts))
+        meta["slide"] = snap_pptx.append_capture(deck, SNAP_TEMPLATE, slide_img, dict(meta, ts=ts))
+        # Chronométré : le délai d'apparition dans le PPT croît avec le nombre de
+        # diapositives (deck réécrit en entier), c'est la seule façon de le voir venir.
+        print("[captures] %s : deck %.1fs (%d slides, image %d ko)" % (
+            mission, time.time() - t_deck, meta["slide"] or 0, os.path.getsize(slide_img) // 1024))
     except Exception as e:
         meta["deck_error"] = str(e); print("[captures] %s : deck PPTX : %s" % (mission, e))
+    finally:
+        if tmp_img:
+            try:
+                os.remove(slide_img)
+            except OSError:
+                pass
     if SNAPS_EXPORT and snaps_label:
         try:
             sd = os.path.join(snaps_mission_dir(snaps_label), SNAPS_SUBDIR)

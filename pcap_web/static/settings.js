@@ -58,13 +58,19 @@
   .stx-set .banner { margin: 0 0 10px; padding: 7px 10px; border-radius: 6px; font-size: 12px;
     border: 1px solid var(--warn, #ffd54f); color: var(--warn, #ffd54f); background: rgba(255,213,79,.10); }
   .stx-set .banner.err { border-color: var(--danger, #ff5252); color: var(--danger, #ff5252); background: rgba(255,82,82,.10); }
-  .stx-set .path { font: 11px var(--mono, Consolas, monospace); color: var(--muted, #8a8f98); }`;
+  .stx-set .path { font: 11px var(--mono, Consolas, monospace); color: var(--muted, #8a8f98); }
+  .stx-set label.lbl { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12.5px; color: var(--muted, #8a8f98); }
+  .stx-set label.lbl > select, .stx-set label.lbl > input[type=text] { flex: 1; min-width: 0; }
+  .stx-set label.lbl.chk { color: var(--muted, #8a8f98); }
+  .stx-set select { background: var(--panel2, #1c232c); color: var(--fg, #e6edf3);
+    border: 1px solid var(--border, #2a323d); border-radius: 6px; padding: 4px 7px; font-size: 12.5px; }`;
 
   const style = document.createElement("style");
   style.textContent = CSS;
   document.head.appendChild(style);
 
   let state = null;                                        // dernier /api/env reçu
+  let bm = null;                                           // dernier /api/basemap reçu (source du fond)
   let box = null, back = null;
 
   const api = async (path, opt) => {
@@ -128,6 +134,29 @@
         Équivalent <span class="path">CAPTURE_SETS=${esc(cap.spec || "")}</span></p>
       </section>
       <section>
+        <h4>Fond de carte</h4>
+        <label class="lbl">Source
+          <select id="s-bm-provider">
+            <option value="arcgis_online">ArcGIS Online (internet)</option>
+            <option value="mapserver">MapServer ArcGIS dynamique — export (réseau local, via proxy)</option>
+            <option value="none">Aucun</option>
+          </select></label>
+        <label class="lbl" id="s-bm-layer-row">Couche
+          <select id="s-bm-layer">
+            <option value="World_Imagery">Imagerie</option>
+            <option value="World_Topo_Map">Topographique</option>
+            <option value="World_Street_Map">Rues</option>
+            <option value="Canvas/World_Dark_Gray_Base">Gris foncé (canvas)</option>
+          </select></label>
+        <div id="s-bm-ms">
+          <label class="lbl">Service <select id="s-bm-service"></select></label>
+          <label class="lbl">URL <input type="text" id="s-bm-url" placeholder="https://serveur/arcgis/rest/services/X/MapServer"></label>
+          <label class="lbl">Jeton <input type="text" id="s-bm-token" placeholder="(optionnel)"></label>
+          <label class="lbl chk"><input type="checkbox" id="s-bm-insecure"> accepter un certificat auto-signé</label>
+        </div>
+        <p class="hint" id="s-bm-hint"></p>
+      </section>
+      <section>
         <h4>Services cartographiques (MapServer)</h4>
         <table><thead><tr><th>Nom</th><th>URL du service</th><th>Défaut</th><th></th></tr></thead>
         <tbody id="s-map">${rowsMap()}</tbody></table>
@@ -143,6 +172,9 @@
         <button type="button" class="accent" id="s-save">Enregistrer</button>
       </footer>`;
 
+    fillBasemap();
+    box.querySelector("#s-bm-provider").onchange = bmRows;
+    box.querySelector("#s-bm-service").onchange = bmService;
     box.querySelector("#s-close").onclick = close;
     box.querySelector("#s-cancel").onclick = close;
     box.querySelector("#s-save").onclick = save;
@@ -174,6 +206,39 @@
     });
   }
 
+  /** Remplit la section « Fond de carte » depuis /api/basemap (le catalogue vient de la section voisine). */
+  function fillBasemap () {
+    const c = bm || {}, svc = c.services || [];
+    box.querySelector("#s-bm-provider").value = c.provider || "arcgis_online";
+    box.querySelector("#s-bm-layer").value = c.layer || "World_Imagery";
+    box.querySelector("#s-bm-url").value = c.url || "";
+    box.querySelector("#s-bm-token").value = c.token || "";
+    box.querySelector("#s-bm-insecure").checked = c.insecure !== false;
+    const sel = box.querySelector("#s-bm-service");
+    sel.innerHTML = '<option value="">— URL libre —</option>' +
+      svc.map(m => `<option value="${esc(m.nom)}">${esc(m.nom)}${m.defaut ? " (défaut)" : ""}</option>`).join("");
+    sel.value = svc.some(m => m.nom === c.service) ? c.service : "";
+    // Le service choisi a disparu du catalogue : le dire, sinon la carte affiche un fond de repli sans que
+    // rien n'explique pourquoi ce n'est plus celui qui avait été choisi.
+    box.querySelector("#s-bm-hint").innerHTML = c.service_absent
+      ? `<b>service « ${esc(c.service_absent)} » absent du catalogue</b> — repli sur le service par défaut.`
+      : "Tant qu'aucun choix n'est fait ici, le service marqué « défaut » du catalogue ci-dessous s'applique.";
+    bmService(); bmRows();
+  }
+  function bmRows () {
+    const p = box.querySelector("#s-bm-provider").value;
+    box.querySelector("#s-bm-layer-row").hidden = p !== "arcgis_online";
+    box.querySelector("#s-bm-ms").hidden = p !== "mapserver";
+  }
+  /** URL verrouillée quand elle vient du catalogue : la vérité est la liste, pas ce champ recopié. */
+  function bmService () {
+    const svc = (bm && bm.services) || [];
+    const m = svc.find(x => x.nom === box.querySelector("#s-bm-service").value);
+    const url = box.querySelector("#s-bm-url");
+    url.readOnly = !!m;
+    if (m) url.value = m.url;
+  }
+
   /** Lecture des tableaux → charge utile POST. Les champs vides sont ignorés (un GMTI sans port est licite). */
   function collect () {
     const sets = {};
@@ -199,9 +264,21 @@
     const btn = box.querySelector("#s-save");
     msg.className = "path"; msg.textContent = "enregistrement…"; btn.disabled = true;
     try {
+      // Le catalogue d'abord : le choix de fond peut désigner un service que l'on vient d'ajouter.
       state = await api("api/env", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(collect()) });
+      bm = await api("api/basemap", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: box.querySelector("#s-bm-provider").value,
+          layer: box.querySelector("#s-bm-layer").value,
+          url: (box.querySelector("#s-bm-url").value || "").trim(),
+          token: (box.querySelector("#s-bm-token").value || "").trim() || null,
+          insecure: box.querySelector("#s-bm-insecure").checked,
+          // `service` part MÊME vide : il marque le choix explicite et fige le fond contre le défaut.
+          service: box.querySelector("#s-bm-service").value }) });
       render();
+      // La page qui héberge une carte la rafraîchit sans rechargement (console, rejeu).
+      if (typeof window.stxBasemapReload === "function") void window.stxBasemapReload();
       const m2 = box.querySelector("#s-msg");
       m2.className = "path vif";
       m2.textContent = state.capture && state.capture.redemarrage_requis
@@ -227,7 +304,8 @@
     document.body.append(back, box);
     document.addEventListener("keydown", onKey);
     try {
-      state = await api("api/env");
+      const [env, base] = await Promise.all([api("api/env"), api("api/basemap")]);
+      state = env; bm = base;
       render();
     } catch (e) {
       box.innerHTML = `<h3>⚙ Paramètres d'environnement</h3><section><div class="banner err">${esc(e.message || e)}</div></section>
