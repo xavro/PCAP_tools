@@ -6,6 +6,36 @@ automatiquement par `pcap_web` / `pcap_console` (version la plus élevée conten
 
 Banc : `python compare_tracker_versions.py <plots.csv> --profile maritime --ladder`.
 
+## Sigmas de mesure : deux hypotheses mesurees, deux hypotheses refutees — 2026-09-08
+
+La documentation du capteur (manuel de l'application d'exploitation, chapitre performances) donne la
+precision de localisation : moins de 0,2 degre en transverse a deux voies, 0,6 a une voie, moins de 30 m en
+distance. De quoi soupconner nos sigmas.
+
+**Ce que le flux declare deja.** Sur la capture cargo, les 185 plots portent TOUS leur incertitude :
+50 m en transverse (mediane) a 11-14 km, soit 0,2 degre — exactement la precision a deux voies. Le tracker
+l'utilisait deja : le `sigma_cross_m` du profil (120 m) n'est qu'un defaut, employe seulement quand le flux
+se tait. Nous ne degradions donc rien.
+
+**Hypothese 1 — sigma transverse angulaire.** Rendre sigma transverse proportionnel a la portee ne change
+rien a 0,2 degre (le flux dit deja cela), et a 0,6 degre echange une stabilite de cap (sigma cap 3,9 puis
+1,9 degre) contre un biais de vitesse et de cap (16,0 km/h pour 13,3 de reference, erreur de cap 11 contre
+7 degres). Aucune des deux variantes ne reduit le nombre d'identites sur la cible.
+
+**Hypothese 2 — le sigma en distance serait une cellule de resolution.** Le flux annonce 101 m pour tous
+les plots, valeur constante egale au plafond de resolution en distance du capteur, alors que sa precision
+de localisation est annoncee sous 30 m : le champ ressemble a une cellule, et 101/racine(12) donne 29 m,
+qui retombe pile sur la specification. Mesure : cela DEGRADE — 3 identites sur la cible au lieu de 2,
+3 pistes simultanees au lieu de 2, jitter 20 m au lieu de 15, sigma vitesse 1,6 au lieu de 1,0 km/h.
+
+**Conclusion.** Les 101 m fonctionnent mieux parce qu'ils absorbent implicitement l'ETENDUE de la cible :
+une coque de 250 m dont les echos se promenent d'un dwell a l'autre. Le dedoublement du cargo n'est donc
+pas un probleme de forme d'ellipse de mesure, mais un probleme de cible etendue — ce que l'etage contact
+traite a l'affichage, et qu'un estimateur d'etendue traiterait a la racine.
+
+Les deux leviers restent dans le code, inactifs par defaut (`sigma_cross_deg = 0`, `sigma_range_scale = 1`)
+et documentes : ils serviront le jour ou le radar se taira sur ses incertitudes, ou tournera a une voie.
+
 ## 0. Prérequis livré : le CSV transporte le dwell
 
 Le tracker v9 a besoin de savoir **si une piste était regardée** au moment d'un dwell. Ces champs

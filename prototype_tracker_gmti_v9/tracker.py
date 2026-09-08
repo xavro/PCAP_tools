@@ -77,10 +77,22 @@ class Profile:
     # --- bruit de mesure par défaut (si D32.12/13/15 absents ou sentinelles) ---
     sigma_range_m: float = 15.0
     sigma_cross_m: float = 120.0
+    # σ TRANSVERSE ANGULAIRE (degrés). L'erreur transverse d'un radar est un ANGLE : à 5 km elle vaut le
+    # quart de ce qu'elle vaut à 20 km. Une valeur en mètres, fixe, sur-pondère donc les détections proches
+    # et croit trop les lointaines. Quand ce champ est > 0, σ transverse = portée × tan(angle), borné par
+    # `sigma_cross_m` qui devient un PLANCHER. 0 = comportement d'avant (σ fixe).
+    sigma_cross_deg: float = 0.0
     sigma_vr_mps: float = 1.5
     sigma_vr_floor_mps: float = 0.0       # plancher sur σ_v_LOS, quoi qu'annonce le flux (cf. ci-dessous)
     sigma_min_m: float = 5.0              # bornes de garde sur les sigmas venus du flux
     sigma_max_m: float = 500.0
+    # Facteur appliqué au sigma EN DISTANCE venu du flux. Sur la capture maritime de reference, le radar
+    # annonce 101 m pour TOUS les plots, valeur constante qui correspond au plafond de resolution en
+    # distance du capteur (10 a 100 m selon la portee, d'apres sa documentation) et non a une precision de
+    # localisation, annoncee elle a moins de 30 m. Le champ decrit donc une CELLULE, pas un ecart-type :
+    # 1/sqrt(12) (loi uniforme sur la cellule) ramene 101 m a 29 m, ce qui retombe sur la specification.
+    # 1.0 = prendre le flux au mot.
+    sigma_range_scale: float = 1.0
     # --- dynamique ---
     q_accel_mps2: float = 0.05
     v_init_cross_std_mps: float = 8.0
@@ -311,7 +323,12 @@ def cluster_dwell(dwell: Dwell, prof: Profile, sx, sy, sz) -> list:
 
         dx, dy, rho, _r = los_geometry(sx, sy, sz, cx, cy)
         sig_r = float(np.mean([clamp(m.sigma_range_m, prof.sigma_range_m) for m in members]))
+        if prof.sigma_range_scale != 1.0:
+            sig_r = max(prof.sigma_min_m, sig_r * prof.sigma_range_scale)
         sig_c = float(np.mean([clamp(m.sigma_cross_m, prof.sigma_cross_m) for m in members]))
+        if prof.sigma_cross_deg > 0.0:
+            # `_r` est la portée capteur→écho : l'ouverture angulaire s'y convertit en mètres.
+            sig_c = max(sig_c, float(_r) * math.tan(math.radians(prof.sigma_cross_deg)))
         # Plancher sur σ_v_LOS. Le flux annonce 0,23 à 0,51 m/s sur la capture maritime, mais deux échos
         # SIMULTANÉS de la même coque y diffèrent de 2,9 m/s (à moins de 150 m) à 10,5 m/s (150-300 m) :
         # le Doppler mesure l'agitation des diffuseurs, pas la translation du navire. Le prendre au mot
