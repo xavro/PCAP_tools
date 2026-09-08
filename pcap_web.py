@@ -37,6 +37,8 @@ API :
   WS  /ws/video?dport=          TS binaire du flux tapé (mpegts.js WebSocket loader)
   GET/POST /api/basemap         config fond de carte (basemap.json)
   GET/POST /api/settings        réglages (dernier pcap, récents, IHM) — pcap_web_settings.json
+  GET/POST /api/env             paramètres d'environnement (ports par CR, services carto) — environnement.json
+                                du volume partagé ; l'environnement du conteneur reste le défaut
   GET /api/browse?dir=          explorateur de fichiers côté serveur (dossiers + captures)
   GET /basemap?bbox=&w=&h=&sr=  PNG fond de carte (proxy ArcGIS MapServer export dynamique)
   GET /api/gmti/decode?pcap=    décodage GMTI (extracteur complet | streaming) + inventaire 4607
@@ -3879,6 +3881,157 @@ def basemap_save(cfg):
     return cur
 
 
+# ── Paramètres d'environnement (fichier partagé entre conteneurs) ────────────
+# Le déploiement se règle dans `docker/.env` ; ce fichier-ci porte ce que l'IHM a CHANGÉ. L'environnement
+# reste le défaut : un déploiement neuf tourne sans fichier, et le fichier ne contient que les écarts.
+# Il vit sur un volume monté par la capture ET par la relecture — c'est ce qui permet au démon de capture
+# de lire au démarrage des ports décidés depuis l'interface de relecture.
+ENV_CONFIG_PATH = os.getenv("ENV_CONFIG", "/data/config/environnement.json")
+if not os.path.isdir(os.path.dirname(ENV_CONFIG_PATH)):          # hors conteneur : à côté du script
+    ENV_CONFIG_PATH = os.path.join(HERE, "environnement.json")
+
+CR_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,15}$")
+
+
+def parse_capture_sets(spec):
+    """'CR1:6789+5454,CR2:9876' → {nom: [ports]} — MÊME grammaire que capture_daemon.parse_sets :
+    le 1er port est la vidéo (clé de session), le 2e le GMTI. Toute divergence de lecture entre les deux
+    services se paierait en ports silencieusement absents."""
+    out = {}
+    for item in (spec or "").split(","):
+        name, _, ports = item.strip().partition(":")
+        if not name or not ports:
+            continue
+        out[name.strip()] = [int(p) for p in ports.replace("+", " ").split() if p.strip().isdigit()]
+    return out
+
+
+def capture_sets_spec(sets):
+    """{nom: [ports]} → 'CR1:6789+5454,CR2:9876' (forme attendue par CAPTURE_SETS)."""
+    return ",".join("%s:%s" % (n, "+".join(str(p) for p in ports)) for n, ports in sets.items() if ports)
+
+
+def env_defaults():
+    """Valeurs par défaut : celles de l'environnement du conteneur (docker/.env)."""
+    return {"capture_sets": parse_capture_sets(os.getenv("CAPTURE_SETS", "")),
+            "mapservers": []}
+
+
+def env_config_load():
+    """Défauts d'environnement, surchargés par le fichier. Un fichier illisible n'est jamais fatal :
+    l'IHM doit rester ouvrable pour le réparer."""
+    cfg = env_defaults()
+    err = None
+    try:
+        with open(ENV_CONFIG_PATH, encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            for k in ("capture_sets", "mapservers"):
+                if k in raw:
+                    cfg[k] = raw[k]
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        err = "%s illisible : %s" % (ENV_CONFIG_PATH, e)
+    return cfg, err
+
+
+def env_config_validate(patch):
+    """Contrôle avant écriture. Un port en double entre deux CR, ou un CR sans port vidéo, produit une
+    capture muette que rien ne signale ensuite — c'est le genre d'erreur qui doit être refusée ici."""
+    out = {}
+    if "capture_sets" in patch:
+        sets, seen = {}, {}
+        raw = patch["capture_sets"]
+        if not isinstance(raw, dict) or not raw:
+            raise ValueError("capture_sets : au moins un CR est nécessaire")
+        for name, ports in raw.items():
+            nm = str(name).strip()
+            if not CR_RE.match(nm):
+                raise ValueError("nom de CR invalide : %r (lettres, chiffres, - et _)" % name)
+            if isinstance(ports, dict):                       # forme {video, gmti} de l'IHM
+                ports = [ports.get("video"), ports.get("gmti")]
+            lst = []
+            for p in (ports or []):
+                if p in (None, "", 0):
+                    continue
+                try:
+                    v = int(p)
+                except (TypeError, ValueError):
+                    raise ValueError("%s : port non numérique %r" % (nm, p))
+                if not (1 <= v <= 65535):
+                    raise ValueError("%s : port hors plage %d" % (nm, v))
+                if v in seen:
+                    raise ValueError("port %d utilisé deux fois (%s et %s)" % (v, seen[v], nm))
+                seen[v] = nm
+                lst.append(v)
+            if not lst:
+                raise ValueError("%s : au moins le port vidéo est nécessaire" % nm)
+            sets[nm] = lst
+        out["capture_sets"] = sets
+    if "mapservers" in patch:
+        srv = []
+        for i, m in enumerate(patch["mapservers"] or []):
+            url = str((m or {}).get("url", "")).strip()
+            nom = str((m or {}).get("nom", "")).strip() or url
+            if not url:
+                continue
+            if not url.lower().startswith(("http://", "https://")):
+                raise ValueError("service %s : URL http(s) attendue" % (nom or i + 1))
+            srv.append({"nom": nom, "url": url.rstrip("/"), "defaut": bool((m or {}).get("defaut"))})
+        if sum(1 for m in srv if m["defaut"]) > 1:
+            raise ValueError("un seul service peut être marqué par défaut")
+        out["mapservers"] = srv
+    return out
+
+
+def env_config_save(patch):
+    """Écriture ATOMIQUE (fichier temporaire puis remplacement) : les deux services lisent ce fichier,
+    aucun ne doit tomber sur une écriture à moitié faite."""
+    cur = {}
+    try:
+        with open(ENV_CONFIG_PATH, encoding="utf-8") as f:
+            cur = json.load(f) or {}
+    except (OSError, ValueError):
+        cur = {}
+    cur.update(patch)
+    d = os.path.dirname(ENV_CONFIG_PATH)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = ENV_CONFIG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cur, f, indent=2, ensure_ascii=False, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, ENV_CONFIG_PATH)
+    return cur
+
+
+def env_state():
+    """Vue complète pour l'IHM : configuration effective, défauts, et surtout comparaison entre ce que le
+    démon de capture fait VIVRE et ce qui est VOULU — un réglage enregistré n'est pas un réglage appliqué."""
+    cfg, err = env_config_load()
+    vif, vif_err = None, None
+    try:
+        with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=3) as r:
+            st = json.load(r)
+        vif = {n: list(v.get("ports") or []) for n, v in (st.get("sets") or {}).items()}
+    except Exception as e:
+        vif_err = str(e)
+    voulu = cfg.get("capture_sets") or {}
+    # Déploiement neuf (ni fichier, ni CAPTURE_SETS lisible ici — la relecture et la capture n'ont pas le
+    # même environnement) : on présente ce qui TOURNE. L'opérateur corrige une configuration réelle au lieu
+    # de repartir d'un tableau vide, et enregistrer ne fabrique pas une capture muette.
+    source = "fichier" if voulu else "env"
+    if not voulu and vif:
+        voulu = dict(vif)
+        cfg["capture_sets"] = dict(vif)
+        source = "vif"
+    besoin = bool(vif is not None and voulu and vif != voulu)
+    return {"config": cfg, "defauts": env_defaults(), "fichier": ENV_CONFIG_PATH, "erreur": err,
+            "capture": {"vif": vif, "vif_erreur": vif_err, "voulu": voulu, "source": source,
+                        "spec": capture_sets_spec(voulu), "redemarrage_requis": besoin}}
+
+
 # ── Serveur HTTP ─────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     server_version = "pcap-web/0.2"
@@ -3974,6 +4127,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("apidocs.html")
             if u.path == "/api/health":
                 return self._json(health_status())
+            if u.path == "/api/env":                              # paramètres d'environnement (lecture)
+                return self._json(env_state())
             if u.path == "/api/capture/status":                   # proxy vers le démon (accès direct :8767 sans nginx)
                 try:
                     with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=3) as r:
@@ -4387,6 +4542,11 @@ class Handler(BaseHTTPRequestHandler):
                 cfg = basemap_save(body)
                 self.__class__.basemap_cfg = cfg
                 return self._json(basemap_load())
+            if u.path == "/api/env":
+                # Validation AVANT écriture : un port en double ou un CR sans port vidéo produirait une
+                # capture muette, que rien ne signalerait ensuite. Le refus est ici, pas au redémarrage.
+                env_config_save(env_config_validate(body if isinstance(body, dict) else {}))
+                return self._json(env_state())
             self._err(404, "route inconnue")
         except (FileNotFoundError, ValueError) as e:
             self._err(400, str(e))
