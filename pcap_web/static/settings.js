@@ -64,6 +64,7 @@
   .stx-set input[type=password] { background: var(--panel2, #1c232c); color: var(--fg, #e6edf3);
     border: 1px solid var(--border, #2a323d); border-radius: 6px; padding: 4px 7px; font-size: 12.5px; }
   .stx-set label.lbl.chk { color: var(--muted, #8a8f98); }
+  .stx-set label.chk { display: inline-flex; align-items: center; gap: 5px; }
   .stx-set select { background: var(--panel2, #1c232c); color: var(--fg, #e6edf3);
     border: 1px solid var(--border, #2a323d); border-radius: 6px; padding: 4px 7px; font-size: 12.5px; }`;
 
@@ -175,6 +176,19 @@
         <p class="hint" id="s-bm-hint"></p>
       </section>
       <section>
+        <h4>Fond animé des pages</h4>
+        <label class="lbl">Page du fond <input type="text" id="s-bg-url" placeholder="static/background.html ou https://…"></label>
+        <div class="row" id="s-bg-pages" style="display:flex;gap:12px;flex-wrap:wrap;font-size:12.5px;color:var(--muted,#8a8f98)">
+          ${["login:Connexion", "pages:Missions · Health · Doc", "console:Console pcap", "replay:Rejeu"].map(x => {
+            const [k, t] = x.split(":");
+            return `<label class="chk"><input type="checkbox" class="s-bg-p" value="${k}"> ${esc(t)}</label>`;
+          }).join("")}
+        </div>
+        <p class="hint">Page HTML autonome posée sous le contenu, inerte aux clics. La console et le rejeu en sont
+        exclus par défaut : une animation derrière des panneaux d'analyse gêne plus qu'elle n'habille. Laisser la
+        page vide retire le fond partout.</p>
+      </section>
+      <section>
         <h4>Services cartographiques (MapServer)</h4>
         <table><thead><tr><th>Nom</th><th>URL du service</th><th>Défaut</th><th></th></tr></thead>
         <tbody id="s-map">${rowsMap()}</tbody></table>
@@ -190,6 +204,10 @@
         <button type="button" class="accent" id="s-save">Enregistrer</button>
       </footer>`;
 
+    // Fond animé : URL + pages concernées
+    const fond = (state.config && state.config.fond) || {};
+    box.querySelector("#s-bg-url").value = fond.url || "";
+    box.querySelectorAll(".s-bg-p").forEach(c => { c.checked = (fond.pages || []).indexOf(c.value) >= 0; });
     const pwGo = box.querySelector("#s-pw-go");
     if (pwGo) pwGo.onclick = changePassword;
     fillBasemap();
@@ -290,7 +308,9 @@
       map.push({ nom: (tr.querySelector(".m-nom").value || "").trim() || url,
         url, defaut: tr.querySelector(".m-def").checked });
     });
-    return { capture_sets: sets, mapservers: map };
+    const fond = { url: (box.querySelector("#s-bg-url").value || "").trim(),
+      pages: Array.from(box.querySelectorAll(".s-bg-p")).filter(c => c.checked).map(c => c.value) };
+    return { capture_sets: sets, mapservers: map, fond };
   }
 
   async function save () {

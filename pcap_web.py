@@ -3329,7 +3329,13 @@ class ThumbWorker:
 
 # ── Captures SNAP : image de la vidéo à l'instant t + métadonnées KLV → PNG/JSON + slide PowerPoint (template) ──
 SNAP_TEMPLATE = os.getenv("SNAP_TEMPLATE", "/data/templates/Template.pptx")
-SNAPS_EXPORT = os.getenv("SNAPS_EXPORT", "1") not in ("0", "false", "no")     # copie du PNG dans le partage MASTER MISSION
+SNAPS_EXPORT = os.getenv("SNAPS_EXPORT", "1") not in ("0", "false", "no")     # dépôt du livrable dans le partage MASTER MISSION
+# Le PNG BRUT n'est plus déposé sur le partage : son image est déjà dans le deck,
+# et le dossier 1-Snaps sert à autre chose — il recueille les snaps « habillés »,
+# que l'addin ArcGIS Pro y range et y relit. Nos captures brutes ne faisaient qu'y
+# ajouter du bruit à trier. Elles restent côté serveur, où la galerie du rejeu les
+# affiche. `SNAPS_EXPORT_PNG=1` rétablit l'ancien dépôt.
+SNAPS_EXPORT_PNG = os.getenv("SNAPS_EXPORT_PNG", "0") not in ("0", "false", "no")
 CAPTURES_LOCK = threading.Lock()
 FT_PER_M = 3.280839895
 
@@ -3578,7 +3584,7 @@ def _snap_frame_and_klv(eng, st, t_utc, png_path):
 
 def snap_capture(mission, t_utc, description=None, dport=None, snaps_label=None):
     """Capture SNAP à t_utc : PNG + JSON dans {mission}/captures/, slide ajoutée au deck {mission}/captures/{mission}_SNAPS.pptx
-    (template SNAP_TEMPLATE), copie du PNG nommé selon la convention dans le partage MASTER MISSION si `snaps_label` résolu."""
+    (template SNAP_TEMPLATE), deck copié dans le partage MASTER MISSION (3-Production/1-Snaps) si `snaps_label` résolu."""
     t_utc = float(t_utc)
     d = captures_dir(mission)
     pcap0 = mission_resolve(mission)["pcap"]
@@ -3684,10 +3690,10 @@ def _deck_image(png):
 def _snap_finish(d, cid, meta, png, ts, snaps_label):
     mission, mgrs, description, t_utc = meta["mission"], meta.get("mgrs"), meta.get("description") or "", meta["t_utc"]
     slide_img, tmp_img = _deck_image(png)
+    deck = os.path.join(d, "%s_SNAPS.pptx" % mission)
     t_deck = time.time()
     try:
         import snap_pptx
-        deck = os.path.join(d, "%s_SNAPS.pptx" % mission)
         meta["slide"] = snap_pptx.append_capture(deck, SNAP_TEMPLATE, slide_img, dict(meta, ts=ts))
         # Chronométré : le délai d'apparition dans le PPT croît avec le nombre de
         # diapositives (deck réécrit en entier), c'est la seule façon de le voir venir.
@@ -3705,9 +3711,25 @@ def _snap_finish(d, cid, meta, png, ts, snaps_label):
         try:
             sd = os.path.join(snaps_mission_dir(snaps_label), SNAPS_SUBDIR)
             os.makedirs(sd, exist_ok=True)
-            name = "%s_DR_%sZ_SNAP_%s%s.png" % (time.strftime("%y%m%d", time.gmtime(t_utc)), time.strftime("%H%M", time.gmtime(t_utc)), mgrs or "NOFIX",
-                                                ("_" + re.sub(r"[^\w\-]+", "_", description).strip("_")) if description else "")
-            shutil.copyfile(png, os.path.join(sd, name)); meta["share_png"] = name
+            # Le deck rejoint les images qu'il contient : le chercher dans le
+            # conteneur alors que ses captures sont sur le partage n'avait aucune
+            # raison d'être. Copie ATOMIQUE — PowerPoint peut avoir le fichier
+            # ouvert pendant qu'une capture arrive, et un .pptx à moitié écrit ne
+            # s'ouvre pas.
+            try:
+                if meta.get("slide"):
+                    dst = os.path.join(sd, "%s_SNAPS.pptx" % snaps_label)
+                    tmp = dst + ".part"
+                    shutil.copyfile(deck, tmp)
+                    os.replace(tmp, dst)
+                    meta["share_deck"] = os.path.basename(dst)
+            except Exception as e:
+                meta["share_deck_error"] = str(e)
+                print("[captures] %s : deck sur le partage : %s" % (mission, e))
+            if SNAPS_EXPORT_PNG:
+                name = "%s_DR_%sZ_SNAP_%s%s.png" % (time.strftime("%y%m%d", time.gmtime(t_utc)), time.strftime("%H%M", time.gmtime(t_utc)), mgrs or "NOFIX",
+                                                    ("_" + re.sub(r"[^\w\-]+", "_", description).strip("_")) if description else "")
+                shutil.copyfile(png, os.path.join(sd, name)); meta["share_png"] = name
         except Exception as e:
             meta["share_error"] = str(e); print("[captures] %s : partage snaps : %s" % (mission, e))
     meta["pending"] = False
@@ -3717,7 +3739,9 @@ def _snap_finish(d, cid, meta, png, ts, snaps_label):
                 json.dump(meta, fh, ensure_ascii=False, indent=1)
     except Exception as e:
         print("[captures] %s : fiche %s : %s" % (mission, cid, e))
-    print("[captures] %s : %s  slide %s%s" % (mission, cid, meta.get("slide"), (" · partage " + meta["share_png"]) if meta.get("share_png") else ""))
+    print("[captures] %s : %s  slide %s%s%s" % (mission, cid, meta.get("slide"),
+          (" · partage " + meta["share_png"]) if meta.get("share_png") else "",
+          (" · deck " + meta["share_deck"]) if meta.get("share_deck") else ""))
 
 
 def mission_delete(name):
@@ -4181,10 +4205,17 @@ def capture_sets_spec(sets):
     return ",".join("%s:%s" % (n, "+".join(str(p) for p in ports)) for n, ports in sets.items() if ports)
 
 
+# Fond animé des pages : page HTML autonome posée en iframe sous le contenu. Le défaut est la copie
+# SERVIE LOCALEMENT — dépendre d'un autre hôte exposerait les pages à son indisponibilité et au blocage
+# d'une iframe dont le certificat n'a pas été accepté. `pages` dit où l'appliquer : la console et le rejeu
+# sont des surfaces de travail denses, hors du défaut sans être interdites.
+FOND_DEFAUT = {"url": "static/background.html", "pages": ["login", "pages"]}
+
+
 def env_defaults():
     """Valeurs par défaut : celles de l'environnement du conteneur (docker/.env)."""
     return {"capture_sets": parse_capture_sets(os.getenv("CAPTURE_SETS", "")),
-            "mapservers": []}
+            "mapservers": [], "fond": dict(FOND_DEFAUT)}
 
 
 def env_config_load():
@@ -4196,7 +4227,7 @@ def env_config_load():
         with open(ENV_CONFIG_PATH, encoding="utf-8") as f:
             raw = json.load(f)
         if isinstance(raw, dict):
-            for k in ("capture_sets", "mapservers"):
+            for k in ("capture_sets", "mapservers", "fond"):
                 if k in raw:
                     cfg[k] = raw[k]
     except FileNotFoundError:
@@ -4239,6 +4270,13 @@ def env_config_validate(patch):
                 raise ValueError("%s : au moins le port vidéo est nécessaire" % nm)
             sets[nm] = lst
         out["capture_sets"] = sets
+    if "fond" in patch:
+        f = patch["fond"] or {}
+        url = str(f.get("url") or "").strip()
+        pages = [p for p in (f.get("pages") or []) if p in ("login", "pages", "console", "replay")]
+        if url and not (url.startswith(("http://", "https://")) or url.startswith("static/")):
+            raise ValueError("fond : URL http(s) attendue, ou fichier servi par ce serveur (static/…)")
+        out["fond"] = {"url": url, "pages": pages}
     if "mapservers" in patch:
         srv = []
         for i, m in enumerate(patch["mapservers"] or []):
@@ -4319,7 +4357,7 @@ LOGIN_MAX_FAILS, LOGIN_WINDOW_S = 10, 300.0
 AUTH_OPEN_PREFIXES = (
     "/ws/",                                                # KLV, GMTI, vidéo, événements, détection
     "/static/", "/login", "/favicon.ico",
-    "/api/login", "/api/logout", "/api/session",
+    "/api/login", "/api/logout", "/api/session", "/api/ui",
     "/api/health",                                         # supervision (docker healthcheck, sondes)
     "/api/follow/", "/api/streams/", "/api/missions", "/api/mission/resolve",
     "/api/clips/", "/api/captures/", "/api/thumbnails/", "/api/hls/",
@@ -4563,6 +4601,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("apidocs.html")
             if u.path in ("/login", "/login.html"):
                 return self._static("login.html")
+            if u.path == "/api/ui":
+                # Réglages d'apparence, lisibles SANS session : la page de connexion en a besoin, et elle
+                # est par définition non authentifiée. Rien de sensible n'y transite.
+                cfg_, _ = env_config_load()
+                return self._json({"fond": cfg_.get("fond") or dict(FOND_DEFAUT)})
             if u.path == "/api/session":
                 # Lue par toutes les pages : dit si une connexion est exigée sur ce serveur, et qui est
                 # connecté. Sans authentification configurée, les pages n'affichent aucun bouton.

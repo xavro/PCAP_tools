@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<!-- Fond animé des pages StratusServer.
+     Copie SERVIE LOCALEMENT de https://asus-xav/isrbox-app/stratus-background.html : la charger depuis
+     l'hôte d'origine exposerait les pages à son indisponibilité et au blocage d'une iframe dont le
+     certificat n'a pas été accepté par le navigateur. L'URL reste réglable dans « Paramètres » pour
+     pointer ailleurs. Ce fichier est repris tel quel ; le modifier ici ne modifie pas l'original. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STRATUS SERVER — fond animé</title>
+<style>
+  :root {
+    --bg-deep: #101112;
+    --bg-mid:  #171a1c;
+    --ink:     #d4d8da;
+    --ink-dim: #8a9196;
+    --accent:  #7cc7ee;   /* bleu des boutons */
+    --ok:      #3fb950;   /* vert d'état */
+    --edge:    rgba(124, 199, 238, .18);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg-deep);
+    color: var(--ink);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+
+  /* Couche 1 — fond neutre, très légèrement réchauffé par l'accent bleu */
+  .backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    background:
+      radial-gradient(110% 65% at 50% 46%, rgba(124, 199, 238, .07), rgba(16, 17, 18, 0) 62%),
+      linear-gradient(180deg, #0d0e0f 0%, var(--bg-mid) 48%, #0d0e0f 100%);
+  }
+
+  /* Couche 2 — canvas animé, transparent */
+  #stratus-canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    display: block;
+    pointer-events: none;
+  }
+
+  /* Couche 3 — le contenu de la page vient ici, en z-index 2 ou plus. */
+</style>
+</head>
+<body>
+
+<div class="backdrop"></div>
+<canvas id="stratus-canvas"></canvas>
+
+<!-- Contenu de la page : conteneur en position: relative et z-index: 2. -->
+
+<!-- ====================================================================
+     DÉBUT DU MODULE RÉUTILISABLE
+     Copier ce bloc dans stratus-grid.js pour le réutiliser ailleurs.
+     Usage : StratusGrid.mount(document.getElementById('stratus-canvas'), {...})
+     ==================================================================== -->
+<script>
+const StratusGrid = (function () {
+  'use strict';
+
+  const DEFAULTS = {
+    // Palette reprise de l'interface StratusServer :
+    // bleu des boutons, vert d'état, gris typographique.
+    gridColor:      '108, 138, 155',  // maillage du plan sol (gris bleuté)
+    horizonColor:   '124, 199, 238',  // ligne d'horizon et halo (accent bleu)
+    sensorColor:    '226, 240, 248',  // le capteur (le vecteur)
+    footprintColor: '63, 185, 80',    // empreinte au sol et point central (vert d'état)
+    losColor:       '124, 199, 238',  // ligne de visée
+    trailColor:     '96, 160, 200',   // ficelle de vol
+    hudColor:       '128, 138, 144',  // graduations de cadre (gris neutre)
+
+    // Opacité d'ensemble, appliquée à tout le canvas.
+    // 1.00 : page d'accueil, fond nu
+    // 0.45 : derrière un contenu dense (tableau missions, lecteur vidéo)
+    intensity:    1,
+
+    horizonY:     0.44,   // hauteur de l'horizon, en fraction de l'écran
+    camHeight:    62,     // hauteur de l'œil au-dessus du sol, unités monde
+    scrollSpeed:  46,     // avance du point de vue, unités/s
+    gridStep:     44,     // pas du maillage
+    depth:        920,    // portée du maillage
+    halfWidth:    460,    // demi-largeur du maillage
+
+    sensorAlt:    118,    // altitude du capteur
+    sensorLead:   250,    // distance devant le point de vue
+    sweepPeriod:  17,     // durée d'un aller-retour du balayage capteur, s
+    trailPoints:  90,
+
+    scanline:     true,   // bandeau de balayage vidéo
+    hudTicks:     true,   // graduations sur les bords
+    starCount:    70,
+
+    seed:         4609,
+    maxDpr:       2,
+    fullscreen:   true    // false : le canvas se cale sur son conteneur
+  };
+
+  const TAU = Math.PI * 2;
+
+  function makeRng(seed) {
+    let s = seed >>> 0;
+    return function () {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+
+  function mount(canvas, options) {
+    const cfg = Object.assign({}, DEFAULTS, options || {});
+    const ctx = canvas.getContext('2d');
+    const rng = makeRng(cfg.seed);
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    let width = 0, height = 0, cx = 0, horizon = 0, focal = 0;
+    let rafId = null, running = false, lastTime = 0, clock = 0;
+
+    // Poussière de fond, en fraction d'écran
+    const motes = [];
+    for (let i = 0; i < cfg.starCount; i++) {
+      motes.push({
+        x: rng(), y: rng() * 0.55,
+        r: 0.4 + rng() * 1.1,
+        a: 0.08 + rng() * 0.3,
+        freq: 0.25 + rng() * 0.9,
+        phase: rng() * TAU
+      });
+    }
+
+    const trail = [];   // positions absolues du capteur, les plus anciennes en tête
+
+    // ------------------------------------------------------------------
+    // Projection perspective. Le monde est un plan (x, z), z croissant vers
+    // l'horizon ; camZ avance avec le temps, ce qui fait défiler le sol.
+    // ------------------------------------------------------------------
+    function project(wx, alt, wz, camZ, out) {
+      const dz = wz - camZ;
+      if (dz < 6) { out.ok = false; return out; }
+      out.ok = true;
+      out.sx = cx + focal * wx / dz;
+      out.sy = horizon + focal * (cfg.camHeight - alt) / dz;
+      out.dz = dz;
+      return out;
+    }
+
+    const pA = { ok: false, sx: 0, sy: 0, dz: 0 };
+    const pB = { ok: false, sx: 0, sy: 0, dz: 0 };
+    const pC = { ok: false, sx: 0, sy: 0, dz: 0 };
+
+    function depthAlpha(dz) {
+      return 1 / (1 + dz / 230);
+    }
+
+    // ------------------------------------------------------------------
+    function drawHorizon() {
+      const g = ctx.createLinearGradient(0, horizon - height * 0.16, 0, horizon + height * 0.05);
+      g.addColorStop(0, 'rgba(' + cfg.horizonColor + ',0)');
+      g.addColorStop(0.82, 'rgba(' + cfg.horizonColor + ',0.055)');
+      g.addColorStop(1, 'rgba(' + cfg.horizonColor + ',0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, horizon - height * 0.16, width, height * 0.21);
+
+      ctx.strokeStyle = 'rgba(' + cfg.horizonColor + ',0.16)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, horizon);
+      ctx.lineTo(width, horizon);
+      ctx.stroke();
+    }
+
+    function drawGrid(camZ) {
+      const step = cfg.gridStep;
+      const near = camZ + 10;
+      const far = camZ + cfg.depth;
+
+      // Lignes de fuite : x constant, de near à far.
+      // Un dégradé le long du tracé rend l'atténuation avec la distance.
+      ctx.lineWidth = 1;
+      for (let x = -cfg.halfWidth; x <= cfg.halfWidth; x += step) {
+        project(x, 0, near, camZ, pA);
+        project(x, 0, far, camZ, pB);
+        if (!pA.ok || !pB.ok) continue;
+        const g = ctx.createLinearGradient(pA.sx, pA.sy, pB.sx, pB.sy);
+        const edge = 1 - Math.min(1, Math.abs(x) / cfg.halfWidth) * 0.75;
+        g.addColorStop(0, 'rgba(' + cfg.gridColor + ',' + (0.20 * edge).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(' + cfg.gridColor + ',0)');
+        ctx.strokeStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(pA.sx, pA.sy);
+        ctx.lineTo(pB.sx, pB.sy);
+        ctx.stroke();
+      }
+
+      // Lignes transversales : z constant. On les cale sur une grille
+      // absolue, sinon elles glisseraient avec le point de vue.
+      const first = Math.ceil(near / step) * step;
+      for (let z = first; z < far; z += step) {
+        project(-cfg.halfWidth, 0, z, camZ, pA);
+        project(cfg.halfWidth, 0, z, camZ, pB);
+        if (!pA.ok || !pB.ok) continue;
+        const a = depthAlpha(pA.dz) * 0.26;
+        if (a < 0.004) continue;
+        ctx.strokeStyle = 'rgba(' + cfg.gridColor + ',' + a.toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.moveTo(pA.sx, pA.sy);
+        ctx.lineTo(pB.sx, pB.sy);
+        ctx.stroke();
+      }
+    }
+
+    // Position du capteur à l'instant t, en coordonnées absolues
+    function sensorAt(t) {
+      const camZ = t * cfg.scrollSpeed;
+      return {
+        x: Math.sin(t * 0.21) * 96 + Math.sin(t * 0.07) * 42,
+        z: camZ + cfg.sensorLead,
+        alt: cfg.sensorAlt + Math.sin(t * 0.33) * 9
+      };
+    }
+
+    // Point visé au sol : le capteur balaie latéralement, en avant du vecteur
+    function frameCenterAt(t, s) {
+      const sweep = Math.sin(t * TAU / cfg.sweepPeriod);
+      return {
+        x: s.x + sweep * 165,
+        z: s.z + 120 + Math.cos(t * TAU / cfg.sweepPeriod) * 55
+      };
+    }
+
+    function drawTrail(camZ) {
+      if (trail.length < 2) return;
+      ctx.lineWidth = 1.4;
+      for (let i = 1; i < trail.length; i++) {
+        const a0 = trail[i - 1], a1 = trail[i];
+        project(a0.x, a0.alt, a0.z, camZ, pA);
+        project(a1.x, a1.alt, a1.z, camZ, pB);
+        if (!pA.ok || !pB.ok) continue;
+        // Fondu double : ancienneté du point et distance au point de vue
+        const age = i / trail.length;
+        const a = age * depthAlpha(pB.dz) * 0.5;
+        if (a < 0.004) continue;
+        ctx.strokeStyle = 'rgba(' + cfg.trailColor + ',' + a.toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.moveTo(pA.sx, pA.sy);
+        ctx.lineTo(pB.sx, pB.sy);
+        ctx.stroke();
+      }
+    }
+
+    function drawFootprint(t, fc, camZ) {
+      // Empreinte : quadrilatère au sol autour du point visé, légèrement
+      // pivotant — l'équivalent des quatre coins des tags MISB.
+      const half = 74, rot = Math.sin(t * 0.18) * 0.3;
+      const cosR = Math.cos(rot), sinR = Math.sin(rot);
+      const corners = [[-half, -half], [half, -half], [half, half], [-half, half]];
+      const pts = [];
+
+      for (let i = 0; i < 4; i++) {
+        const ox = corners[i][0] * cosR - corners[i][1] * sinR;
+        const oz = corners[i][0] * sinR + corners[i][1] * cosR;
+        const p = project(fc.x + ox, 0, fc.z + oz, camZ, { ok: false, sx: 0, sy: 0, dz: 0 });
+        if (!p.ok) return;
+        pts.push(p);
+      }
+
+      const a = depthAlpha(pts[0].dz);
+
+      ctx.fillStyle = 'rgba(' + cfg.footprintColor + ',' + (0.05 * a).toFixed(3) + ')';
+      ctx.strokeStyle = 'rgba(' + cfg.footprintColor + ',' + (0.5 * a).toFixed(3) + ')';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].sx, pts[0].sy);
+      for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].sx, pts[i].sy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Réticule du frame center
+      project(fc.x, 0, fc.z, camZ, pC);
+      if (pC.ok) {
+        const r = 7 * a + 2;
+        ctx.strokeStyle = 'rgba(' + cfg.footprintColor + ',' + (0.7 * a).toFixed(3) + ')';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pC.sx - r, pC.sy); ctx.lineTo(pC.sx + r, pC.sy);
+        ctx.moveTo(pC.sx, pC.sy - r); ctx.lineTo(pC.sx, pC.sy + r);
+        ctx.stroke();
+        glow(pC.sx, pC.sy, 2.2, cfg.footprintColor, 0.55 * a);
+      }
+    }
+
+    function drawLos(s, fc, camZ) {
+      project(s.x, s.alt, s.z, camZ, pA);
+      project(fc.x, 0, fc.z, camZ, pB);
+      if (!pA.ok || !pB.ok) return;
+
+      const g = ctx.createLinearGradient(pA.sx, pA.sy, pB.sx, pB.sy);
+      g.addColorStop(0, 'rgba(' + cfg.losColor + ',0.42)');
+      g.addColorStop(1, 'rgba(' + cfg.losColor + ',0.10)');
+      ctx.strokeStyle = g;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 6]);
+      ctx.beginPath();
+      ctx.moveTo(pA.sx, pA.sy);
+      ctx.lineTo(pB.sx, pB.sy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    function drawSensor(s, camZ) {
+      project(s.x, s.alt, s.z, camZ, pA);
+      if (!pA.ok) return;
+      const a = depthAlpha(pA.dz);
+
+      // Petit chevron orienté vers l'avant, plutôt qu'un simple point
+      const w = 9 * a + 3;
+      ctx.fillStyle = 'rgba(' + cfg.sensorColor + ',' + (0.85 * a + 0.15).toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.moveTo(pA.sx, pA.sy - w * 0.9);
+      ctx.lineTo(pA.sx + w * 0.75, pA.sy + w * 0.6);
+      ctx.lineTo(pA.sx, pA.sy + w * 0.2);
+      ctx.lineTo(pA.sx - w * 0.75, pA.sy + w * 0.6);
+      ctx.closePath();
+      ctx.fill();
+
+      glow(pA.sx, pA.sy, 3.4, cfg.sensorColor, 0.7);
+    }
+
+    function glow(x, y, size, rgb, alpha) {
+      if (alpha <= 0.01) return;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, size * 4);
+      g.addColorStop(0, 'rgba(' + rgb + ',' + Math.min(1, alpha).toFixed(3) + ')');
+      g.addColorStop(0.25, 'rgba(' + rgb + ',' + (alpha * 0.32).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(' + rgb + ',0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 4, 0, TAU);
+      ctx.fill();
+    }
+
+    function drawMotes() {
+      for (let i = 0; i < motes.length; i++) {
+        const m = motes[i];
+        const a = m.a * (0.4 + 0.6 * Math.sin(clock * m.freq + m.phase));
+        if (a <= 0) continue;
+        ctx.fillStyle = 'rgba(' + cfg.horizonColor + ',' + a.toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.arc(m.x * width, m.y * height, m.r, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    function drawScanline() {
+      // Bandeau qui descend lentement — rappel du rafraîchissement vidéo
+      const y = ((clock * 0.11) % 1) * (height + 160) - 80;
+      const g = ctx.createLinearGradient(0, y - 70, 0, y + 70);
+      g.addColorStop(0, 'rgba(' + cfg.horizonColor + ',0)');
+      g.addColorStop(0.5, 'rgba(' + cfg.horizonColor + ',0.028)');
+      g.addColorStop(1, 'rgba(' + cfg.horizonColor + ',0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, y - 70, width, 140);
+    }
+
+    function drawHud() {
+      const m = 22, len = 7, step = 26;
+      ctx.strokeStyle = 'rgba(' + cfg.hudColor + ',0.13)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = m; x < width - m; x += step) {
+        const long = (x - m) % (step * 5) < 1 ? len + 5 : len;
+        ctx.moveTo(x, m); ctx.lineTo(x, m + long);
+        ctx.moveTo(x, height - m); ctx.lineTo(x, height - m - long);
+      }
+      for (let y = m; y < height - m; y += step) {
+        const long = (y - m) % (step * 5) < 1 ? len + 5 : len;
+        ctx.moveTo(m, y); ctx.lineTo(m + long, y);
+        ctx.moveTo(width - m, y); ctx.lineTo(width - m - long, y);
+      }
+      ctx.stroke();
+    }
+
+    // ------------------------------------------------------------------
+    function render() {
+      ctx.clearRect(0, 0, width, height);
+
+      // Opacité d'ensemble : un seul point de réglage plutôt qu'une
+      // retouche des alphas de chaque tracé.
+      ctx.globalAlpha = cfg.intensity;
+
+      const camZ = clock * cfg.scrollSpeed;
+      const s = sensorAt(clock);
+      const fc = frameCenterAt(clock, s);
+
+      drawMotes();
+      drawHorizon();
+      if (cfg.hudTicks) drawHud();
+      drawGrid(camZ);
+
+      ctx.globalCompositeOperation = 'lighter';
+      drawTrail(camZ);
+      drawFootprint(clock, fc, camZ);
+      drawLos(s, fc, camZ);
+      drawSensor(s, camZ);
+      ctx.globalCompositeOperation = 'source-over';
+
+      if (cfg.scanline) drawScanline();
+
+      ctx.globalAlpha = 1;
+    }
+
+    function frame(now) {
+      if (!running) return;
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+      clock += dt;
+
+      // Un point de ficelle tous les ~0,12 s, longueur bornée
+      const s = sensorAt(clock);
+      const last = trail[trail.length - 1];
+      if (!last || clock - last.t > 0.12) {
+        trail.push({ x: s.x, z: s.z, alt: s.alt, t: clock });
+        if (trail.length > cfg.trailPoints) trail.shift();
+      }
+
+      render();
+      rafId = requestAnimationFrame(frame);
+    }
+
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, cfg.maxDpr);
+
+      if (cfg.fullscreen) {
+        width = window.innerWidth;
+        height = window.innerHeight;
+      } else {
+        const box = (canvas.parentNode || canvas).getBoundingClientRect();
+        width = Math.round(box.width) || window.innerWidth;
+        height = Math.round(box.height) || window.innerHeight;
+      }
+
+      canvas.style.width = width + 'px';
+      canvas.style.height = height + 'px';
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      cx = width * 0.5;
+      horizon = height * cfg.horizonY;
+      focal = height * 0.95;
+    }
+
+    function start() {
+      if (running || reduceMotion) return;
+      running = true;
+      lastTime = performance.now();
+      rafId = requestAnimationFrame(frame);
+    }
+
+    function stop() {
+      running = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+
+    function onVisibility() { if (document.hidden) stop(); else start(); }
+
+    let resizeTimer = null;
+    function onResize() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function () { resize(); render(); }, 120);
+    }
+
+    resize();
+    render();
+    window.addEventListener('load', onResize);
+    requestAnimationFrame(function () { resize(); render(); });
+
+    let observer = null;
+    if (!cfg.fullscreen && window.ResizeObserver) {
+      observer = new ResizeObserver(onResize);
+      observer.observe(canvas.parentNode || canvas);
+    }
+
+    window.addEventListener('resize', onResize);
+    if (!reduceMotion) {
+      document.addEventListener('visibilitychange', onVisibility);
+      start();
+    }
+
+    return {
+      start: start,
+      stop: stop,
+      destroy: function () {
+        stop();
+        clearTimeout(resizeTimer);
+        window.removeEventListener('resize', onResize);
+        window.removeEventListener('load', onResize);
+        document.removeEventListener('visibilitychange', onVisibility);
+        if (observer) observer.disconnect();
+        ctx.clearRect(0, 0, width, height);
+      }
+    };
+  }
+
+  return { mount: mount };
+})();
+
+StratusGrid.mount(document.getElementById('stratus-canvas'));
+</script>
+<!-- ==================== FIN DU MODULE RÉUTILISABLE ==================== -->
+
+</body>
+</html>
