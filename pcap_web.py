@@ -41,6 +41,7 @@ API :
                                 du volume partagé ; l'environnement du conteneur reste le défaut
   GET  /api/archive[?mission=]  archivage vidéo : travaux en cours, manifeste d'une mission
   POST /api/archive/{mission}   met la mission en file d'archivage (segments .ts, sans ré-encodage)
+                                passage automatique quotidien : missions closes d'au moins N jours (J-2)
   GET  /login · /api/session    page de connexion · état de session (requise ? qui ?)
   POST /api/login · /api/logout · /api/password    ouverture / fermeture de session, changement de mot de passe
                                 STRATUS_ADMIN_PASSWORD vide = aucune connexion demandée. Sinon les PAGES et les
@@ -3746,6 +3747,99 @@ def _snap_finish(d, cid, meta, png, ts, snaps_label):
           (" · deck " + meta["share_deck"]) if meta.get("share_deck") else ""))
 
 
+SNAP_PNG_KEEP_DAYS = float(os.getenv("SNAP_PNG_KEEP_DAYS", "30"))   # 0 = jamais de purge
+# Une fois par jour suffit pour une rétention qui se compte en semaines. Le
+# balayage ne LIT aucun fichier — il liste les dossiers et fait un `stat` par
+# image : mesuré à ~5 000 fichiers/s sur un poste Windows, soit ~4 s pour
+# 20 000 captures, et bien moins sur l'ext4 du conteneur. Ce n'est pas la charge
+# qui commandait ce réglage, c'est l'inutilité de repasser quatre fois par jour.
+SNAP_PURGE_EVERY_S = 24 * 3600
+# Le premier balayage attend que le serveur ait fini de démarrer : `CAPTURES_DIR`
+# est posé par `main()`, APRÈS le lancement de ce thread. Sans ce délai le premier
+# passage tombait toujours dans le vide, et le suivant n'arrivait qu'un jour plus
+# tard — sur un serveur redémarré chaque matin, la purge n'aurait JAMAIS tourné.
+SNAP_PURGE_DELAY_S = 180
+
+
+def captures_purge_pngs(now=None):
+    """Efface les images brutes des captures passées, la fiche restant en place.
+
+    L'image d'une capture sert deux fois : à bâtir la diapositive du deck serveur
+    dans la foulée, et à l'agent StratusSnap quand l'opérateur insère un repère
+    ANCIEN dans le PowerPoint de son poste. Ce second usage a une durée de vie
+    réelle — celle de la mission — après quoi le mégaoctet ne sert plus rien : la
+    capture vit dans le PPTX, et bientôt en base.
+
+    On ne supprime QUE le PNG. La fiche JSON pèse deux kilo-octets, porte le KLV
+    et le MGRS, et c'est elle qui dessine les repères de la ligne de temps : la
+    perdre effacerait l'historique des captures de la mission, ce qui n'est pas
+    demandé. Elle est marquée `png_purged` pour que l'IHM sache masquer l'action
+    d'insertion plutôt que de la proposer et d'échouer en silence.
+
+    `SNAP_PNG_KEEP_DAYS=0` désactive la purge.
+    """
+    if not CAPTURES_DIR or SNAP_PNG_KEEP_DAYS <= 0 or not os.path.isdir(CAPTURES_DIR):
+        return 0
+    cutoff = (now or time.time()) - SNAP_PNG_KEEP_DAYS * 86400
+    gone = 0
+    freed = 0
+    try:
+        missions = os.listdir(CAPTURES_DIR)
+    except OSError:
+        return 0
+    for mission in missions:
+        d = os.path.join(CAPTURES_DIR, mission, "captures")
+        if not os.path.isdir(d):
+            continue
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            if not n.endswith(".png"):
+                continue
+            png = os.path.join(d, n)
+            try:
+                # L'ancienneté se mesure sur le FICHIER, pas sur l'instant capturé :
+                # un rejeu d'archive capture un instant vieux de plusieurs mois, et
+                # dater la purge sur `t_utc` effacerait l'image à peine créée.
+                if os.path.getmtime(png) > cutoff:
+                    continue
+                size = os.path.getsize(png)
+                os.remove(png)
+                gone += 1
+                freed += size
+            except OSError:
+                continue
+            fiche = os.path.join(d, n[:-4] + ".json")
+            try:
+                with CAPTURES_LOCK:
+                    if os.path.isfile(fiche):
+                        with open(fiche, encoding="utf-8") as fh:
+                            meta = json.load(fh)
+                        meta["png_purged"] = True
+                        with open(fiche, "w", encoding="utf-8") as fh:
+                            json.dump(meta, fh, ensure_ascii=False, indent=1)
+            except (OSError, ValueError):
+                continue
+    if gone:
+        print("[captures] purge : %d image(s) de plus de %g jours, %.1f Mo libérés" % (gone, SNAP_PNG_KEEP_DAYS, freed / 1e6))
+    return gone
+
+
+def captures_purge_loop():
+    time.sleep(SNAP_PURGE_DELAY_S)
+    while True:
+        try:
+            captures_purge_pngs()
+        except Exception as e:
+            print("[captures] purge : %s" % e)
+        time.sleep(SNAP_PURGE_EVERY_S)
+
+
+threading.Thread(target=captures_purge_loop, name="captures_purge", daemon=True).start()
+
+
 def mission_delete(name):
     """Supprime le dossier d'une mission (pcap maître, index, journal, clips, captures, vignettes). Refusé si la mission
     est en cours (démon de capture) ; les suivis de relecture ouverts dessus sont arrêtés d'abord."""
@@ -4215,7 +4309,11 @@ FOND_DEFAUT = {"url": "static/background.html", "pages": ["login", "pages"]}
 
 # Archivage vidéo : destination (point de montage du disque externe) et découpe. Une heure par défaut —
 # un fichier d'une journée entière est ingérable pour celui qui le reçoit, et une coupure horaire se cite.
-ARCHIVE_DEFAUT = {"dossier": os.getenv("ARCHIVE_DIR", "/data/archive"), "segment_min": 60, "klv": True}
+ARCHIVE_DEFAUT = {"dossier": os.getenv("ARCHIVE_DIR", "/data/archive"), "segment_min": 60, "klv": True,
+                  # Passage automatique quotidien : heure UTC, et âge minimal des missions prises. « J-2 »
+                  # s'exprime par un âge de 2 jours — une mission manquée (serveur arrêté) est rattrapée au
+                  # passage suivant, ce qu'une sélection sur la seule date de la veille ne permettrait pas.
+                  "auto": False, "heure": "02:00", "age_jours": 2}
 
 
 def env_defaults():
@@ -4281,8 +4379,15 @@ def env_config_validate(patch):
         seg = int(a.get("segment_min") or 60)
         if not (5 <= seg <= 720):
             raise ValueError("archive : durée de segment entre 5 et 720 minutes")
+        heure = str(a.get("heure") or "02:00").strip()
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", heure):
+            raise ValueError("archive : heure de passage au format HH:MM (UTC)")
+        age = int(a.get("age_jours") or 2)
+        if not (0 <= age <= 60):
+            raise ValueError("archive : âge des missions entre 0 et 60 jours")
         out["archive"] = {"dossier": str(a.get("dossier") or "").strip(), "segment_min": seg,
-                          "klv": bool(a.get("klv", True))}
+                          "klv": bool(a.get("klv", True)), "auto": bool(a.get("auto")),
+                          "heure": heure, "age_jours": age}
     if "fond" in patch:
         f = patch["fond"] or {}
         url = str(f.get("url") or "").strip()
@@ -4562,13 +4667,118 @@ def archive_enqueue(mission):
         return ARCHIVE_JOBS[mission]
 
 
+ARCHIVE_AUTO_FILE = os.path.join(os.path.dirname(ENV_CONFIG_PATH), "archive_auto.json")
+ARCHIVE_AUTO = {"dernier": None, "resultat": None}         # dernier passage (vue IHM)
+
+
+def _auto_load():
+    """Dernier passage, relu au démarrage : un redémarrage ne doit ni rejouer le passage du jour ni le
+    sauter."""
+    try:
+        with open(ARCHIVE_AUTO_FILE, encoding="utf-8") as f:
+            d = json.load(f) or {}
+        ARCHIVE_AUTO.update({"dernier": d.get("dernier"), "resultat": d.get("resultat")})
+    except (OSError, ValueError):
+        pass
+
+
+def _auto_save():
+    try:
+        d = os.path.dirname(ARCHIVE_AUTO_FILE)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(ARCHIVE_AUTO_FILE, "w", encoding="utf-8") as f:
+            json.dump(ARCHIVE_AUTO, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def archive_pending(age_jours=None, now=None):
+    """Missions à archiver : closes, d'au moins `age_jours`, sans archive complète.
+
+    « Complète » se juge sur le manifeste ET sur la présence des fichiers qu'il annonce : un manifeste seul
+    ne prouve rien si le disque a été remplacé ou vidé entre-temps.
+    """
+    cfg = archive_cfg()
+    age = int(cfg.get("age_jours") if age_jours is None else age_jours)
+    now = now if now is not None else time.time()
+    limite = now - age * 86400
+    out = []
+    for m in missions_list():
+        if m.get("recent"):
+            continue
+        fin = m.get("end_utc") or m.get("start_utc") or m.get("mtime")
+        if not fin or fin > limite:
+            continue
+        man = archive_manifest(m["name"])
+        if man and man.get("fichiers"):
+            d = man.get("dossier") or ""
+            if all(os.path.isfile(os.path.join(d, f)) for f in man["fichiers"]):
+                continue                                   # déjà archivée, fichiers vérifiés présents
+        out.append(m["name"])
+    return out
+
+
+def archive_auto_tick(now=None, force=False):
+    """Un passage si l'heure est venue. Renvoie le compte rendu, ou None si rien n'était dû.
+
+    Le passage est repéré par la DATE du dernier passage, pas par un intervalle : le service peut redémarrer
+    dix fois dans la journée sans déclencher dix archivages.
+    """
+    cfg = archive_cfg()
+    now = now if now is not None else time.time()
+    if not force:
+        if not cfg.get("auto"):
+            return None
+        hh, mm = (cfg.get("heure") or "02:00").split(":")
+        t = time.gmtime(now)
+        jour = time.strftime("%Y-%m-%d", t)
+        if ARCHIVE_AUTO.get("dernier") == jour:
+            return None                                    # déjà passé aujourd'hui
+        if (t.tm_hour, t.tm_min) < (int(hh), int(mm)):
+            return None                                    # l'heure n'est pas venue
+    dest = (cfg.get("dossier") or "").strip()
+    res = {"heure": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "missions": [], "erreur": None}
+    if not dest or not os.path.isdir(dest):
+        # Disque externe absent : on le dit et on NE consomme PAS le passage du jour — au prochain tour,
+        # le disque peut être là. Empiler des travaux voués à l'échec n'aiderait personne.
+        res["erreur"] = "destination indisponible : %s" % (dest or "(non configurée)")
+        ARCHIVE_AUTO["resultat"] = res
+        _auto_save()
+        print("[archive] passage automatique : %s" % res["erreur"])
+        return res
+    res["missions"] = archive_pending(now=now)
+    for m in res["missions"]:
+        archive_enqueue(m)
+    ARCHIVE_AUTO["dernier"] = time.strftime("%Y-%m-%d", time.gmtime(now))
+    ARCHIVE_AUTO["resultat"] = res
+    _auto_save()
+    print("[archive] passage automatique : %d mission(s) mise(s) en file" % len(res["missions"]))
+    return res
+
+
+def archive_auto_loop():
+    """Réveil chaque minute : assez fin pour une heure de passage, assez rare pour ne rien coûter."""
+    _auto_load()
+    while True:
+        try:
+            archive_auto_tick()
+        except Exception as e:
+            print("[archive] passage automatique : %s" % e)
+        time.sleep(60)
+
+
 def archive_state(mission=None):
     """Vue IHM : travaux en cours et archives déjà présentes (le manifeste fait foi)."""
     if mission:
         return {"job": ARCHIVE_JOBS.get(mission), "manifeste": archive_manifest(mission),
                 "dossier": archive_cfg().get("dossier") or ""}
-    return {"jobs": list(ARCHIVE_JOBS.values()), "dossier": archive_cfg().get("dossier") or "",
-            "segment_min": archive_cfg().get("segment_min")}
+    cfg = archive_cfg()
+    return {"jobs": list(ARCHIVE_JOBS.values()), "dossier": cfg.get("dossier") or "",
+            "segment_min": cfg.get("segment_min"),
+            "auto": {"actif": bool(cfg.get("auto")), "heure": cfg.get("heure"), "age_jours": cfg.get("age_jours"),
+                     "dernier": ARCHIVE_AUTO.get("dernier"), "resultat": ARCHIVE_AUTO.get("resultat"),
+                     "en_attente": archive_pending()}}
 
 
 # ── Accès : session administrateur pour les pages, API ExB libre ─────────────
@@ -5613,6 +5823,10 @@ def main():
     global BASE_PATH, CAPTURES_DIR
     BASE_PATH = ("/" + a.base_path.strip("/")) if a.base_path and a.base_path.strip("/") else ""
     CAPTURES_DIR = os.path.abspath(a.captures_dir) if a.captures_dir else None
+    # Passage d'archivage : le fil tourne toujours, c'est le réglage qui décide s'il fait quelque chose.
+    # Ainsi, activer l'archivage automatique depuis l'IHM ne demande pas de redémarrer le service.
+    if CAPTURES_DIR:
+        threading.Thread(target=archive_auto_loop, name="archive_auto", daemon=True).start()
     if CAPTURES_DIR and os.getenv("AUTO_FOLLOW", "1").strip().lower() not in ("0", "false", "no", "off"):
         threading.Thread(target=auto_follow_loop, name="auto_follow", daemon=True).start()
         print("[follow] suivi automatique des missions en cours (%s, GMTI live sur /ws/gmti/{CR})" % CAPTURE_STATUS_URL, flush=True)

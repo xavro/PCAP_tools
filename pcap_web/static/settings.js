@@ -180,6 +180,12 @@
         <label class="lbl">Destination <input type="text" id="s-ar-dir" placeholder="/data/archive (point de montage du disque externe)"></label>
         <label class="lbl">Durée d'un segment <input type="number" id="s-ar-seg" min="5" max="720" step="5" style="max-width:110px"> minutes</label>
         <label class="lbl chk"><input type="checkbox" id="s-ar-klv"> conserver les métadonnées KLV dans le .ts</label>
+        <label class="lbl chk"><input type="checkbox" id="s-ar-auto"> archivage automatique quotidien</label>
+        <div class="row" id="s-ar-auto-rows" style="display:flex;gap:12px;flex-wrap:wrap">
+          <label class="lbl" style="flex:0 0 auto">à <input type="text" id="s-ar-heure" placeholder="02:00" style="width:70px"> UTC</label>
+          <label class="lbl" style="flex:0 0 auto">missions d'au moins <input type="number" id="s-ar-age" min="0" max="60" style="width:70px"> jour(s)</label>
+        </div>
+        <p class="hint" id="s-ar-etat"></p>
         <p class="hint">La vidéo est extraite du pcap sans ré-encodage, en fichiers
         <span class="path">{mission}_HHMMZ_a_HHMMZ.ts</span> rangés par mission, avec pour chacun un
         descriptif JSON et les positions KLV en CSV. Compter <b>1,85 Go par heure et par CR</b> (mesuré) :
@@ -220,6 +226,12 @@
     box.querySelector("#s-ar-dir").value = ar.dossier || "";
     box.querySelector("#s-ar-seg").value = ar.segment_min || 60;
     box.querySelector("#s-ar-klv").checked = ar.klv !== false;
+    box.querySelector("#s-ar-auto").checked = !!ar.auto;
+    box.querySelector("#s-ar-heure").value = ar.heure || "02:00";
+    box.querySelector("#s-ar-age").value = ar.age_jours == null ? 2 : ar.age_jours;
+    const arRows = () => { box.querySelector("#s-ar-auto-rows").style.display = box.querySelector("#s-ar-auto").checked ? "flex" : "none"; };
+    box.querySelector("#s-ar-auto").onchange = arRows; arRows();
+    void archiveEtat();
     // Fond animé : URL + pages concernées
     const fond = (state.config && state.config.fond) || {};
     box.querySelector("#s-bg-url").value = fond.url || "";
@@ -258,6 +270,25 @@
         const tr = t.closest("tr"); if (tr) tr.remove();
       }
     });
+  }
+
+  /**
+   * Ce que l'archivage automatique ferait MAINTENANT : nombre de missions en attente et compte rendu du
+   * dernier passage. Un réglage d'archivage sans cette réponse laisse deviner s'il travaille ou non.
+   */
+  async function archiveEtat () {
+    const el = box && box.querySelector("#s-ar-etat");
+    if (!el) return;
+    try {
+      const st = await api("api/archive");
+      const a = st.auto || {};
+      const n = (a.en_attente || []).length;
+      const r = a.resultat || {};
+      el.innerHTML = `${n} mission(s) en attente d'archivage` +
+        (a.dernier ? ` · dernier passage le ${esc(a.dernier)}` : " · aucun passage encore") +
+        (r.erreur ? ` · <b class="err">${esc(r.erreur)}</b>` : "") +
+        (st.dossier ? ` · destination <span class="path">${esc(st.dossier)}</span>` : "");
+    } catch { el.textContent = ""; }
   }
 
   /** Changement de mot de passe : l'actuel est redemandé — un poste laissé ouvert ne doit pas suffire. */
@@ -328,7 +359,10 @@
       pages: Array.from(box.querySelectorAll(".s-bg-p")).filter(c => c.checked).map(c => c.value) };
     const archive = { dossier: (box.querySelector("#s-ar-dir").value || "").trim(),
       segment_min: Number(box.querySelector("#s-ar-seg").value) || 60,
-      klv: box.querySelector("#s-ar-klv").checked };
+      klv: box.querySelector("#s-ar-klv").checked,
+      auto: box.querySelector("#s-ar-auto").checked,
+      heure: (box.querySelector("#s-ar-heure").value || "02:00").trim(),
+      age_jours: Number(box.querySelector("#s-ar-age").value) };
     return { capture_sets: sets, mapservers: map, fond, archive };
   }
 
