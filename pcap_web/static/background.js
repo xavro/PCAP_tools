@@ -24,12 +24,13 @@
   function pageKey () {
     const p = location.pathname.replace(/\/+$/, "");
     if (/\/login(\.html)?$/.test(p)) return "login";
+    if (/\/console_pcap(\.html)?$/.test(p)) return "console";
     if (/\/replay(\.html)?$/.test(p)) return "replay";
     if (/\/(missions|health)(\.html)?$/.test(p) || /\/(api\/docs|docs|apidocs\.html)$/.test(p)) return "pages";
     if (document.body && document.body.dataset && document.body.dataset.page) {
       return document.body.dataset.page === "console" ? "console" : "pages";
     }
-    return "console";                                      // racine du serveur = console pcap
+    return "pages";                                        // page inconnue : traitée comme une page ordinaire
   }
 
   const CSS = `

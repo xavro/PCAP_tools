@@ -22,7 +22,9 @@
     const burger = $("stx-burger"), drawer = $("stx-drawer"), backdrop = $("stx-backdrop");
     burger.hidden = false;
     const root = BASE === "/" ? "" : "../";
-    drawer.querySelectorAll("a[data-page]").forEach(a => { const k = a.dataset.page; a.href = k === "console" ? "./" : (k === "missions" ? (BASE === "/" ? "missions" : "../") : root + ({ docs: "api/docs", health: "health" }[k])); });
+    // La console a sa propre adresse (`/console_pcap`) : à la racine du serveur, le lien la nomme ; sous un
+    // préfixe de reverse proxy, la page est déjà dans son dossier et « ./ » suffit.
+    drawer.querySelectorAll("a[data-page]").forEach(a => { const k = a.dataset.page; a.href = k === "console" ? (BASE === "/" ? "console_pcap" : "./") : (k === "missions" ? (BASE === "/" ? "missions" : "../") : root + ({ docs: "api/docs", health: "health" }[k])); });
     drawer.querySelectorAll(".stx-drawer-foot a[data-api]").forEach(a => { a.href = root + a.dataset.api; });
     const open = on => { drawer.classList.toggle("open", on); backdrop.hidden = !on; burger.setAttribute("aria-expanded", on ? "true" : "false"); drawer.setAttribute("aria-hidden", on ? "false" : "true"); };
     burger.addEventListener("click", () => open(!drawer.classList.contains("open")));

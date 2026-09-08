@@ -51,7 +51,9 @@
       if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
       // `next` vient de l'URL : on n'y obéit que s'il désigne CE serveur — une redirection ouverte
       // transformerait la page de connexion en tremplin vers un site tiers.
-      let dest = BASE;
+      // Entrée par défaut du serveur : la liste des missions. `next` (page demandée avant la connexion)
+      // reste prioritaire quand elle désigne bien ce serveur.
+      let dest = BASE + "missions";
       if (next) { const u = new URL(next, location.origin); if (u.origin === location.origin) dest = u.pathname + u.search; }
       location.replace(dest);
     } catch (err) {

@@ -4589,8 +4589,18 @@ class Handler(BaseHTTPRequestHandler):
         if self._guard(u.path):
             return
         try:
-            if u.path in ("/", "/index.html"):
+            if u.path in ("/console_pcap", "/console_pcap.html"):
                 return self._static("index.html")
+            if u.path in ("/", "/index.html", "/console_pcap/"):
+                # La racine n'est pas la console : l'entrée de ce serveur est la liste des missions. La
+                # barre finale de `/console_pcap/` est retirée — sinon la console calculerait ses URL d'API
+                # depuis ce dossier et les appellerait toutes une page trop bas.
+                dest = "/console_pcap" if u.path == "/console_pcap/" else "/missions"
+                self.send_response(302)
+                self.send_header("Location", (BASE_PATH or "") + dest)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if u.path in ("/replay", "/replay.html"):             # page opérateur (carte + vidéo + barre de temps)
                 return self._static("replay.html")
             if u.path in ("/missions", "/missions.html"):         # pages StratusServer v2

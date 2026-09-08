@@ -19,7 +19,7 @@
     ["docs", "Documentation API", "endpoints v2 : capture, suivi, live, GMTI", "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 0-3 3zM5 4v16M8 9h8M8 13h8"],
     ["health", "Health Check", "état des services", "M12 21s-7-4.5-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.5-9 9-9 9z"]
   ];
-  const HREF = { missions: "missions", console: "", replay: "replay", docs: "api/docs", health: "health" };   // console pcap = racine du serveur de relecture
+  const HREF = { missions: "missions", console: "console_pcap", replay: "replay", docs: "api/docs", health: "health" };
   const nav = document.createElement("div");
   nav.innerHTML = `<div class="stx-drawer-backdrop" id="stx-backdrop" hidden></div>
   <aside class="stx-drawer" id="stx-drawer" aria-hidden="true">
