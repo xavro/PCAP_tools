@@ -4309,7 +4309,8 @@ FOND_DEFAUT = {"url": "static/background.html", "pages": ["login", "pages"]}
 
 # Archivage vidéo : destination (point de montage du disque externe) et découpe. Une heure par défaut —
 # un fichier d'une journée entière est ingérable pour celui qui le reçoit, et une coupure horaire se cite.
-ARCHIVE_DEFAUT = {"dossier": os.getenv("ARCHIVE_DIR", "/data/archive"), "segment_min": 60, "klv": True,
+ARCHIVE_DEFAUT = {"actif": True,                           # interrupteur général de la fonction
+                  "dossier": os.getenv("ARCHIVE_DIR", "/data/archive"), "segment_min": 60, "klv": True,
                   # Passage automatique quotidien : heure UTC, et âge minimal des missions prises. « J-2 »
                   # s'exprime par un âge de 2 jours — une mission manquée (serveur arrêté) est rattrapée au
                   # passage suivant, ce qu'une sélection sur la seule date de la veille ne permettrait pas.
@@ -4385,7 +4386,8 @@ def env_config_validate(patch):
         age = int(a.get("age_jours") or 2)
         if not (0 <= age <= 60):
             raise ValueError("archive : âge des missions entre 0 et 60 jours")
-        out["archive"] = {"dossier": str(a.get("dossier") or "").strip(), "segment_min": seg,
+        out["archive"] = {"actif": bool(a.get("actif", True)),
+                          "dossier": str(a.get("dossier") or "").strip(), "segment_min": seg,
                           "klv": bool(a.get("klv", True)), "auto": bool(a.get("auto")),
                           "heure": heure, "age_jours": age}
     if "fond" in patch:
@@ -4654,6 +4656,10 @@ def archive_enqueue(mission):
     """Met une mission en file. Un travail déjà en cours ou en attente n'est pas redemandé — un double clic
     ne doit pas lancer deux extractions du même flux."""
     global _ARCHIVE_WORKER
+    if not archive_cfg().get("actif", True):
+        # L'interrupteur général vaut pour le manuel comme pour l'automatique : une fonction désactivée ne
+        # doit pas rester déclenchable par une requête directe, même depuis une session valide.
+        raise ValueError("archivage désactivé dans les paramètres du serveur")
     with ARCHIVE_LOCK:
         etat = (ARCHIVE_JOBS.get(mission) or {}).get("etat")
         if etat in ("en attente", "en cours"):
@@ -4728,7 +4734,7 @@ def archive_auto_tick(now=None, force=False):
     cfg = archive_cfg()
     now = now if now is not None else time.time()
     if not force:
-        if not cfg.get("auto"):
+        if not cfg.get("actif", True) or not cfg.get("auto"):
             return None
         hh, mm = (cfg.get("heure") or "02:00").split(":")
         t = time.gmtime(now)
@@ -4774,11 +4780,11 @@ def archive_state(mission=None):
         return {"job": ARCHIVE_JOBS.get(mission), "manifeste": archive_manifest(mission),
                 "dossier": archive_cfg().get("dossier") or ""}
     cfg = archive_cfg()
-    return {"jobs": list(ARCHIVE_JOBS.values()), "dossier": cfg.get("dossier") or "",
-            "segment_min": cfg.get("segment_min"),
+    return {"jobs": list(ARCHIVE_JOBS.values()), "actif": bool(cfg.get("actif", True)),
+            "dossier": cfg.get("dossier") or "", "segment_min": cfg.get("segment_min"),
             "auto": {"actif": bool(cfg.get("auto")), "heure": cfg.get("heure"), "age_jours": cfg.get("age_jours"),
                      "dernier": ARCHIVE_AUTO.get("dernier"), "resultat": ARCHIVE_AUTO.get("resultat"),
-                     "en_attente": archive_pending()}}
+                     "en_attente": archive_pending() if cfg.get("actif", True) else []}}
 
 
 # ── Accès : session administrateur pour les pages, API ExB libre ─────────────

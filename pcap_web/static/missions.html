@@ -79,6 +79,7 @@
   document.addEventListener("click", ev => {
     const b = ev.target.closest("button[data-menu]");
     if (b) { cur = b.dataset.menu; armed = false; stopArmed = false; $("rm-title").textContent = cur; $("rm-del").disabled = b.dataset.live === "1"; $("rm-del").title = b.dataset.live === "1" ? "mission en cours : arrêter la capture d'abord" : "";
+      $("rm-archive").hidden = !archActif;
       $("rm-archive").disabled = b.dataset.live === "1";
       $("rm-archive").title = b.dataset.live === "1" ? "mission en cours : arrêter l'enregistrement avant d'archiver"
         : "extrait la vidéo en fichiers .ts (segments, sans ré-encodage) vers la destination d'archive";
@@ -93,7 +94,10 @@
   // sans cela, le mode trafic rouvrirait une mission au paquet suivant et l'arrêt paraîtrait sans effet.
   // Archivage : mise en file côté serveur, l'avancement est suivi par sondage — l'extraction d'une
   // mission de plusieurs heures dépasse de loin le temps d'une requête.
-  let archTimer = null;
+  let archTimer = null, archActif = true;
+  // Fonction éteinte dans les paramètres : l'entrée de menu disparaît. Laisser un bouton qui répond
+  // « désactivé » ferait passer un choix d'exploitation pour une panne.
+  api("/api/archive").then(st => { archActif = st.actif !== false; }).catch(() => {});
   async function archPoll() {
     let st = null;
     try { st = await api("/api/archive"); } catch { return; }

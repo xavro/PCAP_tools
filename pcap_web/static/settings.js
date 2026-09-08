@@ -177,6 +177,8 @@
       </section>
       <section>
         <h4>Archives vidéo</h4>
+        <label class="lbl chk"><input type="checkbox" id="s-ar-actif"> <b>activer l'archivage vidéo</b></label>
+        <div id="s-ar-rows">
         <label class="lbl">Destination <input type="text" id="s-ar-dir" placeholder="/data/archive (point de montage du disque externe)"></label>
         <label class="lbl">Durée d'un segment <input type="number" id="s-ar-seg" min="5" max="720" step="5" style="max-width:110px"> minutes</label>
         <label class="lbl chk"><input type="checkbox" id="s-ar-klv"> conserver les métadonnées KLV dans le .ts</label>
@@ -191,6 +193,10 @@
         descriptif JSON et les positions KLV en CSV. Compter <b>1,85 Go par heure et par CR</b> (mesuré) :
         l'archive rend la vidéo lisible ailleurs, elle ne fait pas gagner de place. Retirer le KLV allège
         peu et prive le destinataire de la géolocalisation — à ne faire que pour une diffusion qui l'exige.</p>
+        </div>
+        <p class="hint" id="s-ar-off" hidden>Fonction désactivée : l'entrée « Archiver la vidéo » disparaît de la
+        page Missions, le passage automatique ne tourne pas, et une demande d'archivage est refusée même depuis
+        l'API — l'interrupteur n'est pas qu'un masquage d'écran.</p>
       </section>
       <section>
         <h4>Fond animé des pages</h4>
@@ -226,6 +232,13 @@
     box.querySelector("#s-ar-dir").value = ar.dossier || "";
     box.querySelector("#s-ar-seg").value = ar.segment_min || 60;
     box.querySelector("#s-ar-klv").checked = ar.klv !== false;
+    box.querySelector("#s-ar-actif").checked = ar.actif !== false;
+    const arActif = () => {
+      const on = box.querySelector("#s-ar-actif").checked;
+      box.querySelector("#s-ar-rows").hidden = !on;
+      box.querySelector("#s-ar-off").hidden = on;
+    };
+    box.querySelector("#s-ar-actif").onchange = arActif; arActif();
     box.querySelector("#s-ar-auto").checked = !!ar.auto;
     box.querySelector("#s-ar-heure").value = ar.heure || "02:00";
     box.querySelector("#s-ar-age").value = ar.age_jours == null ? 2 : ar.age_jours;
@@ -281,6 +294,7 @@
     if (!el) return;
     try {
       const st = await api("api/archive");
+      if (st.actif === false) { el.textContent = ""; return; }
       const a = st.auto || {};
       const n = (a.en_attente || []).length;
       const r = a.resultat || {};
@@ -357,7 +371,8 @@
     });
     const fond = { url: (box.querySelector("#s-bg-url").value || "").trim(),
       pages: Array.from(box.querySelectorAll(".s-bg-p")).filter(c => c.checked).map(c => c.value) };
-    const archive = { dossier: (box.querySelector("#s-ar-dir").value || "").trim(),
+    const archive = { actif: box.querySelector("#s-ar-actif").checked,
+      dossier: (box.querySelector("#s-ar-dir").value || "").trim(),
       segment_min: Number(box.querySelector("#s-ar-seg").value) || 60,
       klv: box.querySelector("#s-ar-klv").checked,
       auto: box.querySelector("#s-ar-auto").checked,
