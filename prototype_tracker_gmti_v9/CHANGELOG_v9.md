@@ -202,3 +202,19 @@ en écoute réseau comme du service GMTI — était écrit pour l'API v8 (`Track
 attributs du module, analyse de pcap, inspection d'une piste, barre de temps, pistage direct. **41 contrôles,
 0 échec, avec le v9 comme avec le v8** (`GMTI_TRACKER_VERSION=8.1`). Trois essais serveur avaient échoué
 faute de ce test : une constante manquante suffisait à ne plus produire aucune piste, sans autre signal.
+
+## Coasting : 10 s → 30 s (20 s routier / aérien) — 2026-09-07
+
+Constaté en pré-prod : une piste solide **disparaissait entre deux passages de dwells**. Elle n'était
+pas morte — le tracker la garde jusqu'à `delete_sec` ou `miss_delete_n` ratés observables — mais
+passée en COASTING après `coast_after_sec` = 10 s sans mise à jour, et le widget gmti-live-isr en mode
+« fiables seules » ne dessine que l'état SOLIDE. Une revisite radar dépasse couramment 10 s.
+
+COASTING n'est qu'un état d'affichage (une seule lecture dans `tracker.py`, la transition d'état) :
+monter le délai ne touche ni l'estimation ni la suppression. Nouveaux délais : maritime, defaut,
+routier_zone, convoi, personnel 30 s ; routier et aerien 20 s (cibles rapides, position prédite qui
+s'éloigne vite du réel). Tous restent sous `delete_sec` (45 s au minimum, personnel).
+
+Nouvelle surcharge à chaud `coastSec` (→ `coast_after_sec`) dans `JAVA2V9`, pour ajuster depuis le
+widget sans rebuild. Côté widget, « âge max piste » (60 s) plafonne encore l'affichage.
+

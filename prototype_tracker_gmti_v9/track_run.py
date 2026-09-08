@@ -60,7 +60,10 @@ def _profiles():
         # 14,3 km/h pour une référence à 13,3 ; 300 m donne 4,3 km/h et 18,9.
         v_init_cross_std_mps=8.0, gate_max_m=200.0,
         confirm_m=3, confirm_n=5, miss_delete_n=6,
-        coast_after_sec=10.0, delete_sec=240.0, tentative_delete_sec=20.0,
+        # Coasting à 30 s (10 s avant) : une revisite radar dépasse souvent 10 s, et l'état COASTING n'est
+        # qu'un état d'AFFICHAGE (l'estimation ne change pas) — à 10 s, le widget en mode « fiables seules »
+        # masquait la piste solide entre deux passages de dwells (constaté en pré-prod, 2026-09-07).
+        coast_after_sec=30.0, delete_sec=240.0, tentative_delete_sec=20.0,
         # Fusion de PISTES désactivée : mesurée, elle ajoute une piste au lieu d'en retirer (absorber une
         # piste libère ses mesures, qui en refont naître une au dwell suivant). Le regroupement se fait à
         # l'affichage, par l'étage « contact » ci-dessous, sans toucher à l'estimation.
@@ -81,13 +84,13 @@ def _profiles():
         sigma_range_m=15.0, sigma_cross_m=80.0, sigma_vr_mps=1.5,
         q_accel_mps2=0.5, v_init_cross_std_mps=15.0, gate_max_m=250.0,
         confirm_m=3, confirm_n=5, miss_delete_n=6,
-        coast_after_sec=10.0, delete_sec=90.0, tentative_delete_sec=10.0,
+        coast_after_sec=30.0, delete_sec=90.0, tentative_delete_sec=10.0,   # coasting 30 s : voir maritime
         merge_chi2=9.21, merge_dv_mps=8.0, merge_k=2,
     )
     # Les autres profils dérivent de ces deux-là (brief §5).
     defaut = T.profile_with(routier_zone, name="defaut", cluster_eps_xy_m=60.0, gate_max_m=300.0,
                             delete_sec=120.0, tentative_delete_sec=15.0)
-    routier = T.profile_with(routier_zone, name="routier", delete_sec=60.0, coast_after_sec=6.0)
+    routier = T.profile_with(routier_zone, name="routier", delete_sec=60.0, coast_after_sec=20.0)
     convoi = T.profile_with(routier_zone, name="convoi", cluster_eps_xy_m=20.0, cluster_eps_vr_mps=1.0,
                             merge_dv_mps=3.0, merge_k=3)          # ne JAMAIS coller deux véhicules d'un convoi
     personnel = T.profile_with(routier_zone, name="personnel", cluster_eps_xy_m=15.0, q_accel_mps2=0.3,
@@ -95,7 +98,7 @@ def _profiles():
                                delete_sec=45.0)
     aerien = T.profile_with(routier_zone, name="aerien", cluster_enabled=False,   # pas de cible étendue en l'air
                             q_accel_mps2=4.0, v_init_cross_std_mps=50.0, gate_max_m=800.0,
-                            merge_enabled=False, delete_sec=60.0, coast_after_sec=8.0)
+                            merge_enabled=False, delete_sec=60.0, coast_after_sec=20.0)
     return OrderedDict((p.name, p) for p in (defaut, maritime, routier, convoi, personnel, aerien, routier_zone))
 
 
@@ -109,6 +112,7 @@ JAVA2V9 = {
     "confirmM": "confirm_m", "confirmN": "confirm_n", "deleteSec": "delete_sec",
     "solidHits": "solid_hits", "initVelStd": "v_init_cross_std_mps",
     "minSnrDb": "min_snr_db", "classFilter": "class_filter",
+    "coastSec": "coast_after_sec",       # délai avant l'état COASTING — réglable à chaud depuis le widget
 }
 
 
