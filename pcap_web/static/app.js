@@ -669,8 +669,26 @@
   // dialogue fond de carte
   function bmDialogFill() {
     const c = state.bmCfg || {}; $("bm-provider").value = c.provider || "arcgis_online"; $("bm-layer").value = c.layer || "World_Imagery";
-    $("bm-url").value = c.url || ""; $("bm-token").value = c.token || ""; $("bm-insecure").checked = c.insecure !== false; bmDialogRows();
+    $("bm-url").value = c.url || ""; $("bm-token").value = c.token || ""; $("bm-insecure").checked = c.insecure !== false;
+    // Catalogue des services déclarés dans « Paramètres » : on choisit un service plutôt que de recopier une
+    // URL sur chaque poste. « URL libre » reste possible — un service ponctuel n'a pas à entrer au catalogue.
+    const sel = $("bm-service"), svc = c.services || [];
+    sel.innerHTML = '<option value="">— URL libre —</option>' +
+      svc.map(m => `<option value="${esc(m.nom)}">${esc(m.nom)}${m.defaut ? " (défaut)" : ""}</option>`).join("");
+    sel.value = svc.some(m => m.nom === c.service) ? c.service : "";
+    // Le service choisi a disparu du catalogue : on le dit, sinon la carte affiche un fond de repli sans
+    // que rien n'explique pourquoi ce n'est plus celui qui avait été choisi.
+    $("bm-msg").textContent = c.service_absent ? `service « ${c.service_absent} » absent du catalogue — repli sur le défaut` : "";
+    bmServiceRow(); bmDialogRows();
   }
+  /** URL verrouillée quand elle vient du catalogue : la source de vérité est « Paramètres », pas ce champ. */
+  function bmServiceRow() {
+    const svc = (state.bmCfg && state.bmCfg.services) || [];
+    const m = svc.find(x => x.nom === $("bm-service").value);
+    $("bm-url").readOnly = !!m;
+    if (m) $("bm-url").value = m.url;
+  }
+  $("bm-service").addEventListener("change", bmServiceRow);
   function bmDialogRows() { const p = $("bm-provider").value; $("bm-layer-row").hidden = p !== "arcgis_online"; $("bm-ms-rows").hidden = p !== "mapserver"; }
   $("bm-provider").addEventListener("change", bmDialogRows);
   $("btn-settings").addEventListener("click", () => { const st = $("settings"); st.hidden = !st.hidden; if (!st.hidden) { bmDialogFill(); renderFilesInfo(); } });
@@ -684,8 +702,10 @@
       (c.default_limit ? `<br>limite d'analyse : ${c.default_limit} paquets (--limit)` : "");
   }
   $("bm-save").addEventListener("click", async () => {
+    // `service` est envoyé MÊME vide : il marque le choix explicite de l'opérateur et fige le fond contre
+    // le service par défaut du catalogue (cf. basemap_load côté serveur).
     const cfg = { provider: $("bm-provider").value, layer: $("bm-layer").value, url: $("bm-url").value.trim(),
-      token: $("bm-token").value.trim() || null, insecure: $("bm-insecure").checked };
+      token: $("bm-token").value.trim() || null, insecure: $("bm-insecure").checked, service: $("bm-service").value };
     try { state.bmCfg = await api("/api/basemap", cfg); $("bm-msg").textContent = "enregistré (basemap.json)"; applyBasemap(); }
     catch (e) { $("bm-msg").textContent = "erreur : " + e.message; }
   });

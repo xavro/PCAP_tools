@@ -3857,13 +3857,40 @@ BASEMAP_DEFAULT = {"provider": "arcgis_online", "layer": "World_Imagery",
 
 
 def basemap_load():
+    """Fond de carte EFFECTIF : `basemap.json` complété par le catalogue de services des paramètres
+    d'environnement.
+
+    Le service marqué « défaut » REMPLACE le fond courant — c'est tout l'intérêt d'un réglage centralisé :
+    un déploiement pose son MapServer une fois et toutes les pages le prennent. Mais le choix EXPLICITE de
+    l'opérateur dans le dialogue prime : dès qu'il a choisi (un service, ou « URL libre »), `basemap.json`
+    porte la clé `service` et le défaut ne le rattrape plus, sinon le dialogue serait décoratif.
+    """
     cfg = dict(BASEMAP_DEFAULT)
+    choisi = None
     if arcgis_basemap:
         raw = arcgis_basemap.load_config(HERE)
         cfg["url"], cfg["token"], cfg["insecure"] = raw.get("url", ""), raw.get("token"), raw.get("insecure", True)
         for k in ("provider", "layer"):
             if k in raw:
                 cfg[k] = raw[k]
+        choisi = raw.get("service") if "service" in raw else None
+    env, _ = env_config_load()
+    services = [m for m in (env.get("mapservers") or []) if m.get("url")]
+    cfg["services"] = services
+    cfg["service"] = choisi or ""
+    defaut = next((m for m in services if m.get("defaut")), None)
+    ref = None
+    if choisi:
+        ref = next((m for m in services if m.get("nom") == choisi), None)
+        if ref is None:
+            # Le catalogue a changé sous les pieds de ce choix (service renommé ou retiré). Sans repli, le
+            # fond retomberait sur l'URL d'usine du module — une carte plausible mais fausse, et muette.
+            cfg["service_absent"] = choisi
+            ref = defaut
+    elif choisi is None:                                   # aucun choix explicite : le défaut s'applique
+        ref = defaut
+    if ref:
+        cfg["provider"], cfg["url"], cfg["service"] = "mapserver", ref["url"], ref["nom"]
     return cfg
 
 
@@ -3875,7 +3902,9 @@ def basemap_save(cfg):
             cur = json.load(f)
     except (OSError, ValueError):
         pass
-    cur.update({k: cfg[k] for k in ("provider", "layer", "url", "token", "insecure") if k in cfg})
+    # `service` est enregistré même vide : c'est la marque d'un choix EXPLICITE de l'opérateur, qui
+    # empêche le service par défaut du catalogue de reprendre la main au prochain chargement.
+    cur.update({k: cfg[k] for k in ("provider", "layer", "url", "token", "insecure", "service") if k in cfg})
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cur, f, indent=2, ensure_ascii=False)
     return cur
