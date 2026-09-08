@@ -237,19 +237,40 @@
   }
   window.stxSettings = { open, close };
 
-  // ── Bouton du bandeau ──
-  // Les pages ont une barre `.pg-nav`, la console un `header` : on se pose dans celle qui existe, plutôt
-  // que d'imposer une structure commune à des pages qui n'en ont jamais eu.
+  // ── Point d'entrée ──
+  // Une seule roue dentée par en-tête. Les pages (missions, health, docs, rejeu) ont une barre `.pg-nav`
+  // et rien d'autre : on y pose une icône seule. La console, elle, a DÉJÀ sa roue dentée — celle de ses
+  // paramètres — et en ajouter une seconde à côté ne dirait pas à l'opérateur laquelle ouvre quoi : on se
+  // greffe alors DANS son panneau, à la suite de ses propres réglages.
+  const GEAR = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">' +
+    '<circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+  const TITRE = "Paramètres d'environnement (ports par CR, services cartographiques)";
+
   function mount () {
-    if (document.getElementById("stx-set-btn")) return;
+    if (document.getElementById("stx-set-btn") || document.getElementById("stx-set-row")) return;
+
+    // Console (et rejeu) : panneau de paramètres déjà présent → on s'y range, pas de seconde roue.
+    const body = document.querySelector("#settings .st-body");
+    if (body && document.getElementById("btn-settings")) {
+      const sec = document.createElement("section");
+      sec.id = "stx-set-row";
+      sec.innerHTML = '<h4>Environnement (déploiement)</h4>' +
+        '<div class="row"><button type="button" id="stx-set-open" title="' + TITRE + '">' + GEAR +
+        " Ports par CR &amp; services cartographiques…</button></div>" +
+        '<div class="row"><span class="muted">Réglages du SERVEUR, partagés par toutes les pages et par le service de capture ' +
+        "(fichier <span class=\"mono\">environnement.json</span>), à distinguer des réglages locaux ci-dessus.</span></div>";
+      body.appendChild(sec);
+      sec.querySelector("#stx-set-open").onclick = () => { void open(); };
+      return;
+    }
+
     const b = document.createElement("button");
     b.id = "stx-set-btn";
     b.type = "button";
-    b.title = "Paramètres d'environnement (ports par CR, services cartographiques)";
+    b.title = TITRE;
+    b.setAttribute("aria-label", TITRE);       // icône seule : le lecteur d'écran a besoin du libellé
     b.className = "stx-set-btn";
-    b.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>' +
-      "<span>Paramètres</span>";
+    b.innerHTML = GEAR;
     b.onclick = () => { void open(); };
     const nav = document.querySelector(".pg-nav");
     if (nav) { b.classList.add("btn"); nav.appendChild(b); return; }

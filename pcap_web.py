@@ -3360,35 +3360,211 @@ def _klv_strings(d):
     return {"callsign": txt(10), "sensor": txt(11), "mission_id": txt(3), "tail": txt(4), "platform": txt(59)}
 
 
+SNAP_WINDOW_S = float(os.getenv("SNAP_WINDOW_S", "3"))          # fenêtre lue avant l'instant demandé
+SNAP_WINDOW_MAX_S = float(os.getenv("SNAP_WINDOW_MAX_S", "15"))  # élargissement si aucune image clé dedans
+SNAP_TAIL_S = 0.6                                                # durée réellement encodée en PNG (voir _snap_decode)
+
+
+def _ts_align(buf, start=0):
+    """Offset du prochain octet de synchronisation TS, ou -1.
+
+    Deux synchronisations espacées de 188 octets valent mieux qu'une : un 0x47
+    isolé au milieu d'une charge utile est fréquent.
+    """
+    n = len(buf)
+    for i in range(start, min(n, start + TS_PKT * 8)):
+        if buf[i] == 0x47 and (i + TS_PKT >= n or buf[i + TS_PKT] == 0x47):
+            return i
+    return -1
+
+
+def _pat_pmt_pids(pkt):
+    """PID(s) de PMT annoncés par un paquet PAT, ou set() si illisible."""
+    try:
+        afc = (pkt[3] >> 4) & 0x3
+        i = 4
+        if afc in (2, 3):
+            i += 1 + pkt[4]
+        if pkt[1] & 0x40:                                   # PUSI : pointer_field d'abord
+            i += 1 + pkt[i]
+        if i >= TS_PKT or pkt[i] != 0x00:
+            return set()
+        seclen = ((pkt[i + 1] & 0x0F) << 8) | pkt[i + 2]
+        end = min(TS_PKT, i + 3 + seclen - 4)               # -4 : CRC32
+        out = set()
+        j = i + 8
+        while j + 4 <= end:
+            prog = (pkt[j] << 8) | pkt[j + 1]
+            pid = ((pkt[j + 2] & 0x1F) << 8) | pkt[j + 3]
+            if prog != 0:                                   # 0 = NIT, pas une PMT
+                out.add(pid)
+            j += 4
+        return out
+    except (IndexError, ValueError):
+        return set()
+
+
+def _ts_last_random_access(buf):
+    """Dernier point d'accès aléatoire d'un tampon MPEG-TS.
+
+    Renvoie `(offset, entete)` : l'octet à partir duquel le décodeur peut repartir
+    proprement, et les paquets PAT/PMT à lui présenter d'abord — sans eux, un
+    démultiplexeur qui démarre en plein flux ne sait pas quel PID porte quoi.
+
+    Le PID vidéo n'est pas connu d'avance : on retient le plus bavard du tampon,
+    la vidéo représentant l'écrasante majorité des paquets d'un flux FMV. Le point
+    d'accès est signalé par le `random_access_indicator` du champ d'adaptation,
+    exactement ce que le multiplexeur pose sur l'IDR.
+
+    `(-1, b"")` si le tampon n'en contient aucun — c'est le cas qui faisait échouer
+    la capture : le décodeur démarrait alors en plein GOP, sans image de référence.
+    """
+    base = _ts_align(buf)
+    if base < 0:
+        return -1, b""
+    counts = {}
+    ra = {}                                                 # pid → (offset, pat, pmts)
+    pat = None
+    pmts = {}
+    pmt_pids = set()
+    i = base
+    n = len(buf)
+    while i + TS_PKT <= n:
+        if buf[i] != 0x47:                                  # trou dans la capture : on se resynchronise
+            j = _ts_align(buf, i)
+            if j < 0:
+                break
+            i = j
+            continue
+        pkt = buf[i:i + TS_PKT]
+        pid = ((pkt[1] & 0x1F) << 8) | pkt[2]
+        if pid != 0x1FFF:
+            counts[pid] = counts.get(pid, 0) + 1
+        if pid == 0:
+            pat = pkt
+            pmt_pids |= _pat_pmt_pids(pkt)
+        elif pid in pmt_pids:
+            pmts[pid] = pkt
+        else:
+            afc = (pkt[3] >> 4) & 0x3
+            if afc in (2, 3) and pkt[4] > 0 and (pkt[5] & 0x40) and (pkt[1] & 0x40):
+                ra[pid] = (i, pat, tuple(pmts.values()))
+        i += TS_PKT
+
+    for psi in (0, 0x1FFF):
+        counts.pop(psi, None)
+    for p in pmt_pids:
+        counts.pop(p, None)
+    if not counts:
+        return -1, b""
+    video = max(counts, key=counts.get)
+    hit = ra.get(video)
+    if not hit:
+        return -1, b""
+    off, pat_pkt, pmt_pkts = hit
+    head = (pat_pkt or b"") + b"".join(pmt_pkts)
+    return off, head
+
+
+def _snap_decode(payload, png_path, ss):
+    """Un essai de décodage : renvoie (ok, code, stderr).
+
+    `-update 1` réécrit le PNG à CHAQUE image décodée et ne garde donc que la
+    dernière — mais encode aussi toutes les autres. Sur une fenêtre de 3 s à
+    25-30 im/s, cela faisait près de quatre-vingt-dix encodages PNG pleine
+    résolution pour une seule capture. `-ss` en option de SORTIE fait décoder puis
+    jeter sans encoder : seule la fin de la fenêtre produit des fichiers.
+
+    `-compression_level 1` : ces PNG sont intermédiaires (seul le dernier survit),
+    la vitesse d'écriture prime sur leur taille.
+    """
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-fflags", "+genpts+discardcorrupt",
+           "-f", "mpegts", "-i", "pipe:0", "-an", "-sn", "-dn", "-map", "0:v:0", "-vsync", "0"]
+    if ss > 0.05:
+        cmd += ["-ss", "%.3f" % ss]
+    cmd += ["-update", "1", "-frames:v", "100000", "-compression_level", "1", "-y", png_path]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        _o, err = proc.communicate(input=payload, timeout=120)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _o, err = b"", b"timeout"
+    ok = os.path.isfile(png_path) and os.path.getsize(png_path) >= 1000
+    return ok, proc.returncode, err
+
+
 def _snap_frame_and_klv(eng, st, t_utc, png_path):
-    """Frame décodée la plus proche de t_utc (≤ t_utc) écrite en PNG (résolution native) + dernier LS KLV avant t_utc.
-    Le TS de [t_utc − 4 s, t_utc + 0,15 s] est envoyé à ffmpeg (-update 1 : la dernière image écrite reste)."""
+    """Frame décodée la plus proche de t_utc (≤ t_utc + 0,15 s) en PNG résolution native + dernier LS KLV avant t_utc.
+
+    Le TS de la fenêtre est mis en tampon, puis envoyé à ffmpeg **à partir de la
+    dernière image clé** : démarrer à un offset arbitraire laissait le décodeur
+    sans image de référence, d'où les « no frame! / cbp too large / error while
+    decoding MB » suivis d'aucune image produite. Faute d'image clé dans la
+    fenêtre, celle-ci est élargie avant d'abandonner.
+
+    Trois essais, du plus économique au plus sûr : depuis l'image clé en ne
+    encodant que la fin de la fenêtre, puis depuis l'image clé sans raccourci,
+    puis la fenêtre entière — ce dernier essai reproduit exactement l'ancien
+    comportement, de sorte qu'aucune capture qui passait ne peut cesser de passer.
+    """
     if not FFMPEG:
         raise RuntimeError("ffmpeg indisponible : capture d'image impossible")
-    t_a = max((st.t0 or t_utc) - 0.001, t_utc - 3.0); t_b = t_utc + 0.15
-    seg_no, off, _cum = st.locate_time(t_a)
-    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-fflags", "+genpts+discardcorrupt", "-f", "mpegts", "-i", "pipe:0",
-           "-an", "-sn", "-dn", "-map", "0:v:0", "-vsync", "0", "-update", "1", "-frames:v", "100000", "-y", png_path]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    merged = {}; last_ts = None; fed = 0
-    try:
+    t_start = time.time()
+    t_b = t_utc + 0.15
+    floor = (st.t0 or t_utc) - 0.001
+
+    buf = b""
+    merged = {}
+    ra, head = -1, b""
+    win = SNAP_WINDOW_S
+    widened = False
+    while True:
+        t_a = max(floor, t_utc - win)
+        seg_no, off, _cum = st.locate_time(t_a)
+        chunks = []
+        merged = {}
         for chunk in eng.iter_ts(st, seg_no, off, 0, t_min=t_a, t_max=t_b):
-            try:
-                proc.stdin.write(chunk); fed += len(chunk)
-            except (OSError, ValueError):
-                pass
+            chunks.append(chunk)
             d = klv_from_ts(chunk)
             if d:
-                merged.update(d)                                   # LS partiels : les derniers tags vus l'emportent
-                if 2 in d:
-                    last_ts = d
-    finally:
-        try:
-            _o, err = proc.communicate(timeout=120)
-        except subprocess.TimeoutExpired:
-            proc.kill(); err = b"timeout"
-    if not os.path.isfile(png_path) or os.path.getsize(png_path) < 1000:
-        raise RuntimeError("aucune image décodée à cet instant (ffmpeg %s : %s ; %d octets)" % (proc.returncode, (err or b"").decode("utf-8", "replace").strip()[-300:], fed))
+                merged.update(d)                            # LS partiels : les derniers tags vus l'emportent
+        buf = b"".join(chunks)
+        ra, head = _ts_last_random_access(buf)
+        if ra >= 0 or win >= SNAP_WINDOW_MAX_S or t_a <= floor:
+            break
+        win = min(SNAP_WINDOW_MAX_S, win * 3)               # aucune image clé : on remonte plus loin
+        widened = True
+
+    if not buf:
+        raise RuntimeError("aucune donnée vidéo à cet instant (fenêtre %.1f s)" % win)
+
+    attempts = []
+    if ra >= 0:
+        # Position de l'image clé estimée à la proportion d'octets : le débit d'un
+        # flux FMV varie peu sur quelques secondes, et une marge de SNAP_TAIL_S
+        # absorbe l'erreur. Un essai sans raccourci suit de toute façon.
+        span = (t_b - max(floor, t_utc - win))
+        t_key = t_b - span * (1.0 - float(ra) / max(1, len(buf)))
+        ss = max(0.0, (t_b - t_key) - SNAP_TAIL_S)
+        payload = head + buf[ra:]
+        attempts.append((payload, ss))
+        if ss > 0.05:
+            attempts.append((payload, 0.0))
+    attempts.append((buf, 0.0))
+
+    ok = False
+    code, err = None, b""
+    for payload, ss in attempts:
+        ok, code, err = _snap_decode(payload, png_path, ss)
+        if ok:
+            break
+    if not ok:
+        raise RuntimeError("aucune image décodée à cet instant (%s ; ffmpeg %s : %s ; %d octets)" % (
+            "aucune image clé dans les %.0f s précédentes" % win if ra < 0 else "depuis l'image clé",
+            code, (err or b"").decode("utf-8", "replace").strip()[-300:], len(buf)))
+    print("[captures] image décodée en %.1fs (fenêtre %.1f s%s, %d octets%s)" % (
+        time.time() - t_start, win, ", élargie" if widened else "", len(buf),
+        ", depuis l'image clé" if ra >= 0 else ", SANS image clé"))
     return merged
 
 
