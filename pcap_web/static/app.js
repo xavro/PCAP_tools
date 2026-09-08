@@ -243,6 +243,7 @@
   gmti.dwells = [];                                    // polygones des dernières dwells (fondu)
   const dwellLine = L.polyline([], { color: "#7cff6b", weight: 1, dashArray: "3 5", opacity: .7, renderer: canvasR });
   function onGmtiBatch(b) {
+    if (b && b.job) gmtiJob = b.job;                  // consigne du radar, portée par le lot
     gmti.stats.pkts = b.total_pkts; gmti.stats.plots = b.total_plots; gmti.stats.dwells = b.total_dwells || 0;
     // `$` rend un <div> factice quand le contrôle n'existe pas — la page opérateur
     // (replay.html) n'a pas la case « dwell » de la console d'analyse, et `.checked`
@@ -351,9 +352,27 @@
     $("gmti-live-body").innerHTML = st.error ? `pistage temps réel : <span style="color:var(--danger)">${st.error}</span>` :
       `pistage temps réel · profil <b>${st.profile}${Object.keys(st.overrides || {}).length ? "*" : ""}</b>` + (st.tracker ? ` · <span class="muted">${st.tracker}</span>` : "") + ` · dwells <b>${st.n_dwells}</b> · pistes vivantes <b>${st.displayable}</b> ` +
       `(solides <b>${st.solid}</b>, confirmées <b>${st.confirmed}</b>, coasting <b>${st.coasting}</b>, tentatives ${st.tentative}) · archivées ${st.archived}` +
-      (lv.contacts ? ` · contacts fusionnés <b>${lv.contacts.length}</b>` : "") + (st.n_resets ? ` · resets ${st.n_resets}` : "") + (st.n_filtered ? ` · filtrés ${st.n_filtered}` : "") + (st.n_ghosts ? ` · fantômes ${st.n_ghosts}` : "") + (st.n_absorbed ? ` · pistes absorbées ${st.n_absorbed}` : "") + (st.n_swallowed ? ` · échos avalés ${st.n_swallowed}` : "") + (st.n_clustered ? ` · échos regroupés ${st.n_clustered}` : "") + vidgapText();
+      jobText() + (lv.contacts ? ` · contacts fusionnés <b>${lv.contacts.length}</b>` : "") + (st.n_resets ? ` · resets ${st.n_resets}` : "") + (st.n_filtered ? ` · filtrés ${st.n_filtered}` : "") + (st.n_ghosts ? ` · fantômes ${st.n_ghosts}` : "") + (st.n_absorbed ? ` · pistes absorbées ${st.n_absorbed}` : "") + (st.n_swallowed ? ` · échos avalés ${st.n_swallowed}` : "") + (st.n_clustered ? ` · échos regroupés ${st.n_clustered}` : "") + vidgapText();
   }
   function resetLive() { live.layers.clear(); LY.live.clearLayers(); projLayers.length = 0; resetVidgap(); $("gmti-live-body").textContent = ""; }
+
+  /**
+   * Consigne déclarée par le radar (segment 4607 « définition de tâche ») : mode, revisite nominale, zone,
+   * modèle de terrain. Elle explique une partie de ce que l'on observe — une revisite longue n'est pas une
+   * piste perdue, une zone quittée n'est pas une cible disparue.
+   */
+  let gmtiJob = null;
+  function jobText() {
+    const j = gmtiJob;
+    if (!j) return "";
+    const z = (j.zone || []).length === 4
+      ? (() => { const la = j.zone.map(p => p[0]), lo = j.zone.map(p => p[1]);
+                 return ` · zone ${((Math.max(...la) - Math.min(...la)) * 111.3).toFixed(0)}×${((Math.max(...lo) - Math.min(...lo)) * 111.3 * Math.cos(la[0] * Math.PI / 180)).toFixed(0)} km`; })()
+      : "";
+    return ` · <span class="muted">tâche ${j.job_id} · mode ${j.mode}` +
+      (j.revisite_s ? ` · revisite ${j.revisite_s}s` : "") + z + ` · ${j.terrain}` +
+      (j.qualite_champs ? "" : " · qualité non déclarée") + "</span>";
+  }
 
   function resetGmti() { gmti.dots.forEach(d => lyPlots.removeLayer(d)); gmti.dots = []; gmti.dwells.forEach(d => lyDwell.removeLayer(d)); gmti.dwells = []; if (dwellLine._map) lyDwell.removeLayer(dwellLine); gmti.stats = { pkts: 0, plots: 0, dwells: 0, cls: {} }; if (gmtiSensor._map) lyDwell.removeLayer(gmtiSensor); }
   let fitOnce = false;

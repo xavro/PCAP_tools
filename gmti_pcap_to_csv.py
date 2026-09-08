@@ -67,6 +67,17 @@ FIELD_SIZE = [
 ]
 PKT_HDR = 32
 SEG_DWELL = 2
+SEG_MISSION = 1
+SEG_JOB_DEF = 5
+
+# Segment de définition de tâche (J1-J27, corps de 68 octets). Table des capteurs et des modèles de
+# terrain du 4607 — seuls les libellés utiles ici sont repris.
+JOB_SENSOR = {0: "non identifié", 1: "autre", 2: "HiSAR", 3: "ASTAMIDS", 4: "radar voilure tournante",
+              5: "Global Hawk (Canada)", 6: "HORIZON", 7: "E-8 (Joint STARS)", 8: "P-3C", 9: "Predator",
+              10: "RADARSAT2", 11: "ASARS-2A", 12: "TESAR", 13: "MP-RTIP"}
+JOB_TERRAIN = {0: "aucun", 1: "DTED0", 2: "DTED1", 3: "DTED2", 4: "DTED3", 5: "DTED4", 6: "DTED5",
+               7: "SRTM1", 8: "SRTM2", 9: "DGM50", 10: "DGM250", 11: "ITHD", 12: "STHD", 13: "SEDRIS"}
+JOB_GEOID = {0: "aucun", 1: "EGM96", 2: "GEO96", 3: "FLAT EARTH"}
 _2_31 = float(1 << 31)
 _2_32 = float(1 << 32)
 _2_15 = float(1 << 15)
@@ -189,6 +200,74 @@ def decode_packet_rows(b):
 
 def _decode_dwell(b, seg, job_id=None):
     return _decode_dwell_full(b, seg, job_id)[1]
+
+
+def _decode_job(b, idx, size):
+    """Segment de définition de tâche → dict, ou None si le corps est trop court.
+
+    Les champs de qualité (J16-J25) sont rendus tels quels sous `qualite_declaree` : ce radar les marque
+    « indisponible » (0xFF/0xFFFF), et publier une valeur interprétée à partir d'un champ non renseigné
+    serait pire que de dire qu'il ne l'est pas.
+    """
+    body = b[idx + 5:idx + size]
+    if len(body) < 68:
+        return None
+    sa32 = lambda i: struct.unpack_from(">i", body, i)[0] * 180.0 / 2 ** 32     # latitude signée
+    ba32 = lambda i: struct.unpack_from(">I", body, i)[0] * 360.0 / 2 ** 32     # longitude 0-360
+    coins = [(round(sa32(13 + 8 * k), 6), round(((ba32(17 + 8 * k) + 180.0) % 360.0) - 180.0, 6))
+             for k in range(4)]
+    rev = struct.unpack_from(">H", body, 46)[0]
+    qual = [struct.unpack_from(">H", body, i)[0] for i in range(48, 64, 2)] + [body[64], body[65]]
+    declare = [v for v in qual if v not in (0xFFFF, 0xFF)]
+    return {"job_id": struct.unpack_from(">I", body, 0)[0],
+            "capteur": JOB_SENSOR.get(body[4], "type %d" % body[4]),
+            "capteur_code": body[4],
+            "modele": body[5:11].decode("ascii", "replace").strip("\x00 "),
+            "filtrage": body[11], "priorite": body[12],
+            "zone": coins,
+            "mode": body[45],
+            # Revisite NOMINALE annoncée par le radar, en dixièmes de seconde. C'est la cadence que la
+            # consigne de balayage implique — pas nécessairement celle qu'on observe si la zone est large.
+            "revisite_s": round(rev / 10.0, 1) if rev not in (0, 0xFFFF) else None,
+            "terrain": JOB_TERRAIN.get(body[66], "code %d" % body[66]),
+            "geoide": JOB_GEOID.get(body[67], "code %d" % body[67]),
+            # NOMBRE de champs de qualité effectivement renseignés (sur 10). Un compte plutôt qu'un
+            # booléen : sur nos captures il en reste deux non nuls dont l'interprétation demande la table
+            # du 4607 — dire « 2 sur 10 » est exact, dire « qualité déclarée » ne le serait pas.
+            "qualite_champs": len(declare)}
+
+
+def decode_packet_jobs(b):
+    """Segments de définition de tâche d'un datagramme 4607 (souvent aucun : ils sont périodiques)."""
+    out = []
+    n = len(b)
+    off = 0
+    while off + PKT_HDR + 5 <= n:
+        if not (32 <= b[off] < 127 and 32 <= b[off + 1] < 127):
+            break
+        try:
+            pkt_size = _u32(b, off + 2)
+        except Exception:
+            break
+        if pkt_size < PKT_HDR:
+            break
+        limit = min(off + pkt_size, n)
+        idx = off + PKT_HDR
+        try:
+            while idx + 5 <= limit:
+                seg_type = _u8(b, idx)
+                seg_size = _u32(b, idx + 1)
+                if seg_size < 5 or idx + seg_size > limit:
+                    break
+                if seg_type == SEG_JOB_DEF:
+                    j = _decode_job(b, idx, seg_size)
+                    if j:
+                        out.append(j)
+                idx += seg_size
+        except Exception:
+            break
+        off += pkt_size
+    return out
 
 
 def decode_packet_dwells(b):

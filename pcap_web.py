@@ -1751,6 +1751,7 @@ class PacketSink:
         self.counters = {}; self.t_cap0 = None; self.last_pub = 0.0
         self.wall0 = time.perf_counter(); self.bytes_out = 0; self.t_rel = 0.0
         self.cot_batch = {}; self.gmti_batch = {"plots": [], "sensor": None, "pkts": 0, "dwells": []}
+        self.gmti_job = None                               # définition de tâche 4607 (segment type 5)
         self.app_batch_at = time.perf_counter()
         self.totals = {"cot": 0, "gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0}
         self.skip_state = {"cot": {}, "n": 0, "first": None}
@@ -1799,7 +1800,7 @@ class PacketSink:
             ev = {"type": "gmti", "t": round(self.t_rel, 3), "plots": plots, "sensor": gb["sensor"],
                   "dwells": gb["dwells"][-40:], "pkts": gb["pkts"],
                   "total_plots": self.totals["gmti_plots"], "total_pkts": self.totals["gmti_pkts"],
-                  "total_dwells": self.totals["gmti_dwells"]}
+                  "total_dwells": self.totals["gmti_dwells"], "job": self.gmti_job}
             if self.live is not None:
                 try:
                     ev["live"] = self.live.snapshot()
@@ -1826,6 +1827,11 @@ class PacketSink:
             if gmti_pcap_to_csv.looks_like_4607(pl):
                 try:
                     self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                except Exception:
+                    pass
+                try:
+                    for j in gmti_pcap_to_csv.decode_packet_jobs(pl):
+                        self.gmti_job = j                  # consigne du radar : mode, revisite, zone
                 except Exception:
                     pass
 
@@ -2174,6 +2180,10 @@ class FollowEngine:
         self.gmti_relay_rx = None                       # dernier datagramme 4607 reçu par le relais de la capture
         self.gmti_idle_done = False; self.gmti_idle_resets = 0   # purge des pistes sur silence 4607 prolongé
         self.gmti_profile = "defaut"; self.gmti_overrides = {}
+        # Dernière DÉFINITION DE TÂCHE reçue (segment 4607 type 5) : ce que le radar déclare de sa consigne
+        # — mode, revisite nominale, zone à couvrir, modèle de terrain. Une revisite longue n'est pas une
+        # piste perdue et une zone quittée n'est pas une cible disparue : l'opérateur doit le voir.
+        self.gmti_job = None
         self.tracks = {}; self.track_rows = []          # rows : (id, row) dans l'ordre d'ajout (delta)
         self._cmerger = None; self._cmerger_prof = None  # étage contact du journal (cf. contact_merger)
         self.streams = {}; self.watch = None; self.taps = set(); self.live = None
@@ -2581,6 +2591,11 @@ class FollowEngine:
                 try:
                     if not relayed:
                         self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
+                    for j in gmti_pcap_to_csv.decode_packet_jobs(pl):
+                        if self.gmti_job != j:
+                            print("[gmti] %s : tâche %s · mode %s · revisite %ss · terrain %s"
+                                  % (self.cr, j["job_id"], j["mode"], j["revisite_s"], j["terrain"]))
+                        self.gmti_job = j
                     # L'état des pistes est journalisé dans les deux cas : sous relais
                     # il a ~0,3 s d'avance sur la position pcap, sans conséquence pour
                     # une reprise de ligne de temps.
@@ -2847,6 +2862,7 @@ class FollowEngine:
                 # Voie d'alimentation du GMTI live : « relais » = direct depuis la
                 # capture, « pcap » = par le fichier suivi (une seconde environ de plus).
                 "idle_reset_s": GMTI_IDLE_RESET_S, "idle_resets": self.gmti_idle_resets,
+                "job": self.gmti_job,
                 "gmti_source": "relais" if self.gmti_relay_active() else "pcap",
                 "relay_age_s": round(now - self.gmti_relay_rx, 2) if self.gmti_relay_rx else None}
 
@@ -2886,6 +2902,16 @@ class FollowEngine:
                 self.live.step_dwells(gmti_pcap_to_csv.decode_packet_dwells(pl))
             except Exception as e:
                 EVENTS.publish({"type": "log", "msg": "relais GMTI : pistage : %s" % e})
+        # La définition de tâche arrive par la MÊME voie que les dwells : la décoder ici aussi, sinon le
+        # direct (qui passe par le relais) n'en saurait rien alors que la relecture, si.
+        try:
+            for j in gmti_pcap_to_csv.decode_packet_jobs(pl):
+                if self.gmti_job != j:
+                    print("[gmti] %s : tâche %s · mode %s · revisite %ss · terrain %s"
+                          % (self.cr, j["job_id"], j["mode"], j["revisite_s"], j["terrain"]))
+                self.gmti_job = j
+        except Exception:
+            pass
         self.gmti_totals["gmti_plots"] += len(plots)
         self.gmti_totals["gmti_pkts"] += 1
         self.gmti_totals["gmti_dwells"] += len(dw)
@@ -2955,7 +2981,8 @@ class FollowEngine:
         if len(plots) > 4000:
             plots = plots[::len(plots) // 4000 + 1]
         ev = {"type": "gmti", "port": self.cr, "t": round(time.time(), 3), "plots": plots, "sensor": gb["sensor"], "dwells": gb["dwells"][-40:],
-              "pkts": gb["pkts"], "total_plots": self.gmti_totals["gmti_plots"], "total_pkts": self.gmti_totals["gmti_pkts"], "total_dwells": self.gmti_totals["gmti_dwells"]}
+              "pkts": gb["pkts"], "total_plots": self.gmti_totals["gmti_plots"], "total_pkts": self.gmti_totals["gmti_pkts"], "total_dwells": self.gmti_totals["gmti_dwells"],
+              "job": self.gmti_job}
         try:
             ev["live"] = self.live.snapshot() if self.live else {"tracks": [], "contacts": None, "stats": {}}
         except Exception as e:
@@ -4022,7 +4049,8 @@ def gmti_status_idle(cr):
             "receiving": False, "last_rx_age_s": None, "totals": {"gmti_plots": 0, "gmti_pkts": 0, "gmti_dwells": 0},
             "n_dwells": 0, "n_ghosts": 0, "n_clustered": 0, "n_absorbed": 0, "n_resets": 0, "tracks_alive": 0,
             "subscribers": 0, "recording": None, "errors": 0, "mission_name": None, "catching_up": False,
-            "idle_reset_s": GMTI_IDLE_RESET_S, "idle_resets": 0, "gmti_source": None, "relay_age_s": None}
+            "idle_reset_s": GMTI_IDLE_RESET_S, "idle_resets": 0, "gmti_source": None, "relay_age_s": None,
+            "job": None}
 
 
 def cr_engine(cr):
