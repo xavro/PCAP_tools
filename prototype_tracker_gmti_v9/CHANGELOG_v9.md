@@ -6,6 +6,50 @@ automatiquement par `pcap_web` / `pcap_console` (version la plus élevée conten
 
 Banc : `python compare_tracker_versions.py <plots.csv> --profile maritime --ladder`.
 
+## v8.1 contre v9 sur deux missions reelles : aucune generation ne domine — 2026-09-09
+
+Materiel : mission maritime du 2 septembre (CR1, 7 h 42, 84 000 plots, 8 navires isoles) et mission
+routiere du 7 septembre (CR1, 4 h, 13 745 plots, 8 vehicules isoles). Dans les deux cas les cas sont
+decoupes par `prototype_tracker_gmti_v9ext/isoler_navires.py` (recherche de trajectoires rectilignes,
+sans tracker) et le tube exporte contient le fouillis environnant.
+
+**La variable decisive est la cadence de detection**, et les deux missions l'encadrent :
+
+| jeu | detections | v8.1 (en service) | v9 | v9ext |
+|---|---|---|---|---|
+| navires | toutes les 6-10 s | **79 %** / 110 m | 59 % / 130 m | 81 % / 172 m |
+| vehicules | toutes les 0,4 s | 22 % / 58 m | **35 %** / 57 m | 36 % / 73 m |
+
+(part de la fenetre tenue par UNE SEULE identite / ecart median a la trajectoire de reference.)
+
+Le v8.1 tient mieux les navires, le v9 tient mieux les vehicules. **Ce n'est pas un probleme de
+reglage** : aligner le profil maritime du v9 sur celui du v8.1 (porte 500 m, confirmation 4/6,
+suppression a 12 manques, bruit de manoeuvre 0,1) ne monte qu'a 56-62 %, avec un ecart qui reste
+moins bon (154-160 m contre 110).
+
+**La brique responsable est l'EKF Doppler.** En l'eteignant sur les navires, les deux cas catastrophiques
+du v9 se redressent : 7 % → 49 % et 12 % → 68 % (le v8.1 y fait 44 % et 65 %). Sur les vehicules il
+n'apporte rien non plus (37 % sans, 35 % avec). Mais sur la capture cargo, a 1,35 s de revisite, il est
+au contraire decisif : sigma cap 3,9 contre 10,7 degres, erreur de cap 7,9 contre 17,1, vitesse 14,8
+contre 18,9 km/h pour 13,3 de reference.
+
+Lecture physique : une vitesse radiale biaisee — et sur un navire elle l'est, elle mesure l'agitation des
+diffuseurs — est corrigee vite quand les mises a jour sont frequentes, mais elle pilote une longue
+extrapolation fausse quand elles sont rares. Le v9 met le Doppler dans le vecteur de mesure ; le v8.1 ne
+s'en sert que pour la classification, ce qui le protege a revisite lente.
+
+**La brique qui porte reellement la valeur du v9 est l'observabilite** : l'eteindre fait tomber les
+vehicules de 35 % a 20 %, et les navires de 59 % a 44 %.
+
+Volumetrie et cout sur scene routiere dense (3 000 plots, 1 144 dwells) : v8.1 289 pistes / duree
+moyenne 8,9 s / 1,3 s de calcul ; v9 198 pistes / 33,8 s / 4,2 s ; v9ext 120 pistes / 53,1 s / 6,5 s.
+Le v9 coute trois fois plus cher que le v8.1, le prototype etendu cinq fois.
+
+Effet secondaire mesure : sur cette meme scene dense, `gateGrowMps = 25` applique au profil `routier`
+du v8.1 double presque la duree moyenne des pistes (8,9 → 15,1 s) en en reduisant le nombre (289 → 277),
+sans rien changer aux vehicules bien detectes. Piste a instruire — sans verite terrain, « moins de
+pistes » peut aussi vouloir dire « vehicules fusionnes ».
+
 ## Porte d'association proportionnelle au temps ecoule — 2026-09-09
 
 **Le probleme.** `gate_max_m` est une distance fixe : elle suppose implicitement une cadence de revisite.
