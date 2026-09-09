@@ -69,6 +69,7 @@ API :
 import argparse
 import base64
 import hashlib
+import platform
 import hmac
 import importlib.util
 import json
@@ -4045,6 +4046,100 @@ def _capture_sets_by_cr():
     return out
 
 
+_VERSION = [None]                       # calculée une fois : les sources ne changent pas à chaud
+
+# CODE uniquement. Les fichiers de configuration en sont volontairement exclus, pour deux raisons :
+# le serveur en écrit certains dans son propre dossier en fonctionnement (`pcap_web_settings.json`,
+# et `environnement.json` quand /data/config n'existe pas), ce qui ferait dériver l'empreinte d'une
+# machine allumée ; et les réglages sont légitimement différents d'une plateforme à l'autre. La question
+# à laquelle cette empreinte répond est « exécutons-nous le même code ? », pas « avons-nous les mêmes
+# réglages ? » — les sections du dépôt de profils, elles, sont rapportées à part.
+_EMPREINTE_EXT = (".py", ".js", ".html", ".css", ".sh")
+_EMPREINTE_IGNORE = ("__pycache__", ".git", "logs", "node_modules", "data")
+
+
+def _empreinte_sources():
+    """Empreinte du contenu des sources déployées : deux machines qui affichent la même exécutent le
+    même code.
+
+    C'est la seule vérification qui certifie vraiment l'identité de deux plateformes. Un numéro de
+    version se met à jour à la main et finit par mentir ; un identifiant de commit disparaît dès que les
+    sources sont copiées sans leur `.git`, ce que fait le déploiement hors ligne. Une empreinte du
+    contenu, elle, ne peut pas se tromper.
+    """
+    h = hashlib.sha256()
+    fichiers = []
+    for racine, dossiers, noms in os.walk(HERE):
+        dossiers[:] = sorted(d for d in dossiers if d not in _EMPREINTE_IGNORE and not d.startswith("."))
+        for n in sorted(noms):
+            if n.endswith(_EMPREINTE_EXT):
+                fichiers.append(os.path.relpath(os.path.join(racine, n), HERE).replace(os.sep, "/"))
+    for rel in sorted(fichiers):
+        try:
+            with open(os.path.join(HERE, rel), "rb") as f:
+                contenu = f.read()
+        except OSError:
+            continue
+        # Fins de ligne normalisées : le même dépôt sous Windows et sous Linux doit donner la même
+        # empreinte, sans quoi la comparaison DEV / préprod serait toujours en défaut.
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(contenu.replace(b"\r\n", b"\n")).digest())
+    return h.hexdigest()[:16], len(fichiers)
+
+
+def _commit_git():
+    """Identifiant de commit si les sources sont un dépôt git. Absent après une copie hors ligne."""
+    tete = os.path.join(HERE, ".git", "HEAD")
+    try:
+        with open(tete, encoding="utf-8") as f:
+            ligne = f.read().strip()
+        if ligne.startswith("ref: "):
+            with open(os.path.join(HERE, ".git", ligne[5:]), encoding="utf-8") as f:
+                return f.read().strip()[:12]
+        return ligne[:12]
+    except OSError:
+        return None
+
+
+def version_status():
+    """Ce qui identifie la version en service, pour certifier deux plateformes l'une contre l'autre."""
+    if _VERSION[0] is not None:
+        return dict(_VERSION[0], ts=time.time())
+    empreinte, n_fichiers = _empreinte_sources()
+    out = {"empreinte": empreinte, "fichiers": n_fichiers, "commit": _commit_git(),
+           "python": platform.python_version(), "hote": platform.node()}
+    for nom in ("numpy", "scipy"):
+        try:
+            out[nom] = __import__(nom).__version__
+        except Exception:
+            out[nom] = None
+    try:
+        tr = load_track_run()
+        d = _tracker_dir()
+        out["tracker"] = os.path.basename(d) if d else None
+        vue = getattr(tr, "profiles_view", None)
+        out["generation"] = vue(tr.load_profiles())["generation"] if vue else "v8"
+        # Association hongroise (scipy) ou repli glouton : résultats mesurés identiques, mais le repli
+        # est environ deux fois plus lent.
+        out["association"] = "hongrois" if getattr(sys.modules.get("tracker"), "linear_sum_assignment", None) else "glouton"
+        chemin = getattr(tr, "PROFILES_JSON", None)
+        sections = []
+        if chemin and os.path.isfile(chemin):
+            try:
+                with open(chemin, encoding="utf-8") as f:
+                    sections = [k for k in (json.load(f) or {}) if not k.startswith("_")]
+            except (OSError, ValueError):
+                sections = None
+        out["profils"] = {"chemin": chemin, "present": bool(chemin and os.path.isfile(chemin)),
+                          "sections": sections}
+    except Exception as e:
+        out["tracker"] = None
+        out["erreur"] = "%s: %s" % (type(e).__name__, e)
+    _VERSION[0] = out
+    return dict(out, ts=time.time())
+
+
 def health_status():
     """État des services v2 pour la page Health : démon de capture, suivis, MediaMTX, disque, télémétrie."""
     out = {"ts": time.time(), "capture": {"ok": False}, "replay": {"ok": True}, "mediamtx": {"ok": False}, "disk": None, "klv": {}}
@@ -4876,7 +4971,7 @@ AUTH_OPEN_PREFIXES = (
     "/ws/",                                                # KLV, GMTI, vidéo, événements, détection
     "/static/", "/login", "/favicon.ico",
     "/api/login", "/api/logout", "/api/session", "/api/ui",
-    "/api/health",                                         # supervision (docker healthcheck, sondes)
+    "/api/health", "/api/version",                         # supervision (docker healthcheck, sondes)
     "/api/follow/", "/api/streams/", "/api/missions", "/api/mission/resolve",
     "/api/clips/", "/api/captures/", "/api/thumbnails/", "/api/hls/",
     "/api/detect/", "/api/playback/", "/api/gmti/ports", "/api/gmti/profiles",
@@ -5141,6 +5236,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "source": (auth_config() or {}).get("source")})
             if u.path == "/api/health":
                 return self._json(health_status())
+            if u.path == "/api/version":                          # certifier la version en service
+                return self._json(version_status())
             if u.path == "/api/env":                              # paramètres d'environnement (lecture)
                 return self._json(env_state())
             if u.path == "/api/archive":                          # travaux en cours + destination
