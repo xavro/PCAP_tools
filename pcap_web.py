@@ -547,12 +547,24 @@ def gmti_summary(entry):
 
 
 def gmti_profiles():
-    """Profils (source unique gmti_profiles.json) : defaults, profiles, params (doc), config effective."""
+    """Profils, DANS LES NOMS DE LA GÉNÉRATION DE TRACKER CHARGÉE.
+
+    Le v8.1 et le v9 n'ont pas les mêmes réglages et ne lisent pas la même section du fichier. Servir
+    les noms Java du v8 alors que le v9 tourne donnait un éditeur muet : les modifications partaient
+    dans une section que le tracker ne lit pas, et rien ne le signalait. Les trackers qui savent se
+    décrire (`profiles_view`) le font eux-mêmes ; les autres gardent la vue v8 historique.
+    """
     tr = load_track_run()
     data = tr.load_profiles()
+    vue = getattr(tr, "profiles_view", None)
+    if vue is not None:
+        v = vue(data)
+        return {"path": tr.PROFILES_JSON, "defaults": v["defaults"], "profiles": v["profiles"],
+                "params": v["params"], "names": v["names"], "generation": v["generation"],
+                "effective": {n: tr.java_config(n) for n in v["names"]}}
     names = list((data.get("profiles") or {}).keys()) or list(tr.PROFILES.keys())
     return {"path": tr.PROFILES_JSON, "defaults": data.get("defaults") or {}, "profiles": data.get("profiles") or {},
-            "params": data.get("params") or {}, "names": names,
+            "params": data.get("params") or {}, "names": names, "generation": "v8",
             "effective": {n: tr.java_config(n) for n in names}}
 
 
@@ -563,22 +575,22 @@ def gmti_profile_save(name, params):
     name = (name or "").strip()
     if not name or not all(c.isalnum() or c in "_-" for c in name):
         raise ValueError("nom de profil invalide (lettres, chiffres, _ -)")
-    if params is None:                                  # suppression
-        if name in ("defaut",):
-            raise ValueError("le profil « defaut » ne peut pas être supprimé")
+    if params is None and name in ("defaut",):
+        raise ValueError("le profil « defaut » ne peut pas être supprimé")
+    ecrire = getattr(tr, "save_profile", None)
+    if ecrire is not None:                              # le tracker écrit dans SA section
+        data = ecrire(data, name, params)
+    elif params is None:                                # suppression, vue v8 historique
         (data.get("profiles") or {}).pop(name, None)
-        with open(tr.PROFILES_JSON, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        tr.load_profiles()
-        return gmti_profiles()
-    defaults = data.get("defaults") or {}
-    prof = {}
-    for k, v in (params or {}).items():
-        if k not in defaults and k != "deleteSec":
-            continue
-        if v != defaults.get(k):
-            prof[k] = v
-    data.setdefault("profiles", {})[name] = prof
+    else:
+        defaults = data.get("defaults") or {}
+        prof = {}
+        for k, v in (params or {}).items():
+            if k not in defaults and k != "deleteSec":
+                continue
+            if v != defaults.get(k):
+                prof[k] = v
+        data.setdefault("profiles", {})[name] = prof
     with open(tr.PROFILES_JSON, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     tr.load_profiles()

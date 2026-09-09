@@ -312,5 +312,289 @@
       "unit": "m/s",
       "doc": "En dessous de cette vitesse, le cap n'est pas significatif (critère de cap ignoré)."
     }
-  }
+  },
+  "v9": {},
+  "v9_params": {
+    "cluster_enabled": {
+      "group": "briques",
+      "unit": "bool",
+      "doc": "Regrouper les échos d'un même dwell en une seule mesure. Sans cela, une cible étendue (navire) porte plusieurs pistes."
+    },
+    "doppler_enabled": {
+      "group": "briques",
+      "unit": "bool",
+      "doc": "Utiliser la vitesse radiale dans le filtre, et pas seulement pour la classification. C'est elle qui stabilise le cap."
+    },
+    "observability_enabled": {
+      "group": "briques",
+      "unit": "bool",
+      "doc": "Ne compter un dwell sans détection comme un manque QUE si la piste était dans l'empreinte du dwell et hors zone aveugle. Sans cela, un radar qui balaie ailleurs tue toutes les pistes."
+    },
+    "merge_enabled": {
+      "group": "briques",
+      "unit": "bool",
+      "doc": "Fusionner deux pistes que le filtre ne distingue plus, ou qui se déplacent ensemble."
+    },
+    "cluster_eps_xy_m": {
+      "group": "cluster",
+      "unit": "m",
+      "doc": "Distance maximale entre deux échos d'un même dwell pour les regrouper. À dimensionner sur la longueur de la cible."
+    },
+    "cluster_eps_vr_mps": {
+      "group": "cluster",
+      "unit": "m/s",
+      "doc": "Écart de vitesse radiale toléré à l'intérieur d'un groupe."
+    },
+    "target_extent_m": {
+      "group": "cluster",
+      "unit": "m",
+      "doc": "Étendue supposée de la cible. Une piste absorbe les mesures orphelines qui y tombent et interdit une naissance à l'intérieur. 0 = cible ponctuelle."
+    },
+    "extent_from_cluster": {
+      "group": "cluster",
+      "unit": "bool",
+      "doc": "Laisser l'étalement mesuré des groupes élargir l'étendue de la piste."
+    },
+    "extent_max_m": {
+      "group": "cluster",
+      "unit": "m",
+      "doc": "Plafond de l'étendue déduite, garde-fou contre l'emballement."
+    },
+    "extent_blocks_tentative": {
+      "group": "cluster",
+      "unit": "bool",
+      "doc": "Une piste encore faible interdit-elle une naissance dans son étendue ?"
+    },
+    "sigma_range_m": {
+      "group": "mesure",
+      "unit": "m",
+      "doc": "Erreur en distance par défaut, employée seulement si le flux ne l'annonce pas."
+    },
+    "sigma_cross_m": {
+      "group": "mesure",
+      "unit": "m",
+      "doc": "Erreur transverse par défaut, employée seulement si le flux ne l'annonce pas."
+    },
+    "sigma_cross_deg": {
+      "group": "mesure",
+      "unit": "°",
+      "doc": "Erreur transverse exprimée en ANGLE : σ = portée × tan(angle). L'erreur transverse d'un radar croît avec la distance. 0 = valeur fixe en mètres."
+    },
+    "sigma_vr_mps": {
+      "group": "mesure",
+      "unit": "m/s",
+      "doc": "Erreur de vitesse radiale par défaut."
+    },
+    "sigma_vr_floor_mps": {
+      "group": "mesure",
+      "unit": "m/s",
+      "doc": "Plancher sur l'erreur de vitesse radiale, quoi qu'annonce le flux. Sur un navire, le Doppler mesure l'agitation des diffuseurs et non la translation de la coque : le prendre au mot fait diverger le filtre."
+    },
+    "sigma_min_m": {
+      "group": "mesure",
+      "unit": "m",
+      "doc": "Borne basse de garde sur les erreurs annoncées par le flux."
+    },
+    "sigma_max_m": {
+      "group": "mesure",
+      "unit": "m",
+      "doc": "Borne haute de garde sur les erreurs annoncées par le flux."
+    },
+    "sigma_range_scale": {
+      "group": "mesure",
+      "unit": "",
+      "doc": "Facteur appliqué à l'erreur en distance venue du flux. 1 = prendre le flux au mot."
+    },
+    "q_accel_mps2": {
+      "group": "dynamique",
+      "unit": "m/s²",
+      "doc": "Accélération supposée de la cible entre deux mesures. Monter → le filtre suit les manœuvres mais devient nerveux."
+    },
+    "v_init_cross_std_mps": {
+      "group": "dynamique",
+      "unit": "m/s",
+      "doc": "Incertitude initiale sur la composante de vitesse que le Doppler ne donne pas (perpendiculaire à la ligne de vue)."
+    },
+    "gate_chi2": {
+      "group": "gate",
+      "unit": "χ²",
+      "doc": "Seuil d'association à 3 degrés de liberté (x, y, v_LOS) : 11,34 ≈ 99 %."
+    },
+    "gate_chi2_pos": {
+      "group": "gate",
+      "unit": "χ²",
+      "doc": "Seuil d'association à 2 degrés de liberté, quand la vitesse radiale n'est pas exploitable."
+    },
+    "gate_max_m": {
+      "group": "gate",
+      "unit": "m",
+      "doc": "Plafond de la fenêtre d'association autour de la position prédite."
+    },
+    "gate_speed_margin_mps": {
+      "group": "gate",
+      "unit": "m/s",
+      "doc": "Ouverture de la fenêtre proportionnelle au temps écoulé depuis la dernière mise à jour : plafond + (vitesse estimée + cette marge) × durée. Indispensable quand la revisite est lente. 0 = fenêtre fixe."
+    },
+    "gate_hard_max_m": {
+      "group": "gate",
+      "unit": "m",
+      "doc": "Plafond absolu de la fenêtre, quelle que soit la durée du trou."
+    },
+    "mdv_margin_mps": {
+      "group": "mdv",
+      "unit": "m/s",
+      "doc": "Marge ajoutée à la vitesse minimale détectable pour juger qu'une cible est invisible."
+    },
+    "mdv_floor_mps": {
+      "group": "mdv",
+      "unit": "m/s",
+      "doc": "Vitesse minimale détectable supposée quand le flux annonce zéro."
+    },
+    "confirm_m": {
+      "group": "vie",
+      "unit": "",
+      "doc": "Nombre de détections requises pour confirmer une piste."
+    },
+    "confirm_n": {
+      "group": "vie",
+      "unit": "",
+      "doc": "Fenêtre dans laquelle ces détections sont comptées (en dwells facturés à la piste)."
+    },
+    "solid_hits": {
+      "group": "vie",
+      "unit": "",
+      "doc": "Nombre de détections à partir duquel la piste est déclarée solide."
+    },
+    "coast_after_sec": {
+      "group": "vie",
+      "unit": "s",
+      "doc": "Délai sans mise à jour au bout duquel la piste passe en extrapolation."
+    },
+    "miss_delete_n": {
+      "group": "vie",
+      "unit": "",
+      "doc": "Nombre de manques consécutifs OBSERVABLES qui supprime la piste."
+    },
+    "delete_sec": {
+      "group": "vie",
+      "unit": "s",
+      "doc": "Âge maximal sans mise à jour d'une piste confirmée."
+    },
+    "tentative_delete_sec": {
+      "group": "vie",
+      "unit": "s",
+      "doc": "Âge maximal sans mise à jour d'une piste encore faible."
+    },
+    "merge_chi2": {
+      "group": "fusion",
+      "unit": "χ²",
+      "doc": "Seuil statistique de fusion : deux pistes que le filtre ne distingue plus."
+    },
+    "merge_dv_mps": {
+      "group": "fusion",
+      "unit": "m/s",
+      "doc": "Écart de vitesse toléré pour fusionner."
+    },
+    "merge_k": {
+      "group": "fusion",
+      "unit": "",
+      "doc": "Nombre de dwells de confirmation avant de fusionner. Évite de fusionner sur un hasard."
+    },
+    "merge_max_dist_m": {
+      "group": "fusion",
+      "unit": "m",
+      "doc": "Fusion sur CO-MOBILITÉ : deux pistes proches, de même vitesse et de même cap. 0 = désactivé."
+    },
+    "merge_hdg_deg": {
+      "group": "fusion",
+      "unit": "°",
+      "doc": "Écart de cap toléré pour la co-mobilité."
+    },
+    "merge_slow_mps": {
+      "group": "fusion",
+      "unit": "m/s",
+      "doc": "Sous cette vitesse le cap n'est pas significatif et n'est plus exigé."
+    },
+    "merge_cross_m": {
+      "group": "fusion",
+      "unit": "m",
+      "doc": "Fusion sur RAPPROCHEMENT observé : deux estimations posées sur la même cible se croisent, deux cibles distinctes gardent leur écart. 0 = désactivé."
+    },
+    "contact_dist_m": {
+      "group": "contact",
+      "unit": "m",
+      "doc": "Regroupement d'affichage : distance sous laquelle plusieurs pistes ne forment qu'un contact. 0 = étage désactivé."
+    },
+    "contact_dv_mps": {
+      "group": "contact",
+      "unit": "m/s",
+      "doc": "Écart de vitesse toléré au sein d'un contact."
+    },
+    "contact_hdg_deg": {
+      "group": "contact",
+      "unit": "°",
+      "doc": "Écart de cap toléré au sein d'un contact."
+    },
+    "contact_slow_mps": {
+      "group": "contact",
+      "unit": "m/s",
+      "doc": "Sous cette vitesse le cap n'est plus exigé pour regrouper."
+    },
+    "contact_memory_sec": {
+      "group": "contact",
+      "unit": "s",
+      "doc": "Durée pendant laquelle un contact absent garde son identité."
+    },
+    "air_speed_mps": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "Vitesse sol au-delà de laquelle la piste est jugée aérienne."
+    },
+    "air_vlos_mps": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "Vitesse radiale au-delà de laquelle la piste est jugée aérienne."
+    },
+    "air_confirm": {
+      "group": "aerien",
+      "unit": "",
+      "doc": "Nombre d'indices concordants avant de verrouiller le caractère aérien."
+    },
+    "air_q_accel": {
+      "group": "aerien",
+      "unit": "m/s²",
+      "doc": "Accélération supposée d'une piste aérienne."
+    },
+    "air_gate_max_m": {
+      "group": "aerien",
+      "unit": "m",
+      "doc": "Fenêtre d'association d'une piste aérienne."
+    },
+    "air_min_ground": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "Vitesse sol minimale exigée pour retenir l'indice aérien tiré du Doppler."
+    },
+    "rot_max_ground": {
+      "group": "aerien",
+      "unit": "m/s",
+      "doc": "Au-dessous de cette vitesse sol, un fort Doppler trahit un rotateur fixe (éolienne, artefact)."
+    },
+    "sign_vlos": {
+      "group": "filtre",
+      "unit": "",
+      "doc": "Convention de signe de la vitesse radiale du flux : +1 = positif quand la cible s'éloigne."
+    },
+    "min_snr_db": {
+      "group": "filtre",
+      "unit": "dB",
+      "doc": "Rapport signal sur bruit minimal des échos retenus. 0 = aucun filtrage."
+    },
+    "class_filter": {
+      "group": "filtre",
+      "unit": "liste",
+      "doc": "Classifications 4607 conservées. Vide = toutes."
+    }
+  },
+  "_doc_v9": "Section « v9 » : surcharges de profils pour le tracker v9, avec SES noms de champs (voir v9_params). Vide = chaque profil garde les valeurs du module. La section « profiles » ci-dessus reste celle du tracker v8.1 et du processor Java : les deux générations ne partagent pas leurs noms de réglages."
 }

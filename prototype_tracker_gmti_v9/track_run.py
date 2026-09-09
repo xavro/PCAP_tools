@@ -132,6 +132,78 @@ def load_profiles(path=None):
     return data
 
 
+# Section du fichier de profils que CETTE génération lit et écrit. Les noms de réglages du v9 ne sont
+# pas ceux du v8/Java : les deux générations ne peuvent pas partager la même section sans se corrompre.
+PROFILE_SECTION = "v9"
+
+
+def profiles_view(data=None):
+    """Profils tels que l'éditeur de la console doit les présenter, dans les noms de CETTE génération.
+
+    Sans cela, la console édite les noms Java du v8 pendant que le v9 lit sa propre section : les
+    modifications n'ont aucun effet et rien ne le signale. C'était le cas jusqu'ici — `gateMaxM` porté à
+    999 laissait `gate_max_m` à 200.
+
+    `defaults` = valeurs du module ; `profiles` = pour chaque profil, ses seuls ÉCARTS aux defaults (même
+    convention que la section v8, pour que l'éditeur puisse marquer ce qui est modifié) ; `params` = la
+    description des champs (groupe, unité, explication), lue dans `v9_params`.
+    """
+    data = data if data is not None else load_profiles()
+    base = config_dict(T.Profile())
+    profils = OrderedDict()
+    for name, prof in PROFILES.items():
+        d = config_dict(prof)
+        profils[name] = {k: v for k, v in d.items() if k != "name" and v != base.get(k)}
+    base.pop("name", None)
+    params = dict((data or {}).get("v9_params") or {})
+    # Les réglages d'AFFICHAGE (projectSec…) ne sont pas des réglages de tracker : ils ne changent pas
+    # avec la génération et vivent dans la section commune. Les omettre ici couperait la projection de
+    # trajectoire dans la console sans que rien ne l'explique.
+    for k, meta in ((data or {}).get("params") or {}).items():
+        if meta.get("group") == "affichage":
+            params[k] = meta
+            base.setdefault(k, ((data or {}).get("defaults") or {}).get(k))
+    return {"defaults": base, "profiles": profils, "params": params,
+            "names": list(PROFILES.keys()), "section": PROFILE_SECTION, "generation": "v9"}
+
+
+def save_profile(data, name, params):
+    """Écrit un profil dans la section de cette génération. `params=None` supprime le profil.
+
+    Renvoie le document complet à réécrire. On n'y met que les écarts aux valeurs du module : un profil
+    qui recopierait tous les réglages figerait des valeurs par défaut au moment de l'enregistrement et
+    ne suivrait plus les évolutions du tracker.
+    """
+    data = data if data is not None else {}
+    section = data.setdefault(PROFILE_SECTION, {})
+    if params is None:
+        section.pop(name, None)
+        return data
+    base = config_dict(T.Profile())
+    champs = T.Profile.__dataclass_fields__
+    affichage = {k for k, m in (data.get("params") or {}).items() if m.get("group") == "affichage"}
+    garde = {}
+    for k, v in (params or {}).items():
+        if k in affichage:                       # réglage d'affichage : commun aux deux générations
+            data.setdefault("defaults", {})[k] = v
+            continue
+        if k not in champs or k == "name":
+            continue
+        ref = base.get(k)
+        if isinstance(ref, bool):
+            v = bool(v)
+        elif isinstance(ref, tuple):
+            v = [int(x) for x in (v or ())]
+        elif isinstance(ref, int):
+            v = int(v)
+        elif isinstance(ref, float):
+            v = float(v)
+        if v != ref:
+            garde[k] = v
+    section[name] = garde
+    return data
+
+
 def java_config(name, overrides=None):
     """Configuration effective d'un profil, telle que l'affiche la console. Le v9 n'a pas les mêmes
     leviers que le v8 : on renvoie ses propres noms, ce qui vaut mieux qu'une traduction approximative."""

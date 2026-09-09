@@ -470,15 +470,19 @@
     ab.value = gs.prof.names.includes(curB) ? curB : "";
     renderEditor();
   }
-  const GROUPS = { gate: "Gate & cinématique", vie: "Confirmation & suppression", aerien: "Aérien / rotateur", cluster: "Pré-clustering des plots (cibles étendues)", fusion: "Fusion de pistes (1 contact = 1 piste)", filtre: "Filtres processor", affichage: "Affichage" };
+  // Titres des groupes de réglages. Les deux générations de tracker n'ont pas les mêmes : ce tableau
+  // les couvre toutes, et tout groupe inconnu est rendu quand même (sous son propre nom) — un réglage
+  // qu'on n'affiche pas est un réglage que personne ne peut corriger.
+  const GROUPS = { briques: "Briques du tracker", gate: "Association & cinématique", dynamique: "Dynamique de la cible", mesure: "Bruit de mesure", mdv: "Zone aveugle Doppler", vie: "Confirmation & suppression", aerien: "Aérien / rotateur", cluster: "Pré-clustering des plots (cibles étendues)", fusion: "Fusion de pistes (1 contact = 1 piste)", contact: "Regroupement en contacts (vue opérateur)", filtre: "Filtres processor", affichage: "Affichage" };
   function effective(profile) { return Object.assign({}, gs.prof.defaults, (gs.prof.effective || {})[profile] || {}); }
   function renderEditor() {
     if (!gs.prof) return;
     const profile = $("gmti-profile").value || "defaut"; $("ed-prof").textContent = profile;
     const eff = effective(profile), params = gs.prof.params || {}; const box = $("ed-groups"); box.innerHTML = "";
     const byGroup = {}; Object.keys(params).forEach(k => { (byGroup[params[k].group] = byGroup[params[k].group] || []).push(k); });
-    Object.entries(GROUPS).forEach(([g, title]) => {
-      const keys = byGroup[g]; if (!keys) return;
+    const ordre = Object.keys(GROUPS).filter(g => byGroup[g]).concat(Object.keys(byGroup).filter(g => !(g in GROUPS)));
+    ordre.forEach(g => {
+      const title = GROUPS[g] || g, keys = byGroup[g]; if (!keys) return;
       const div = document.createElement("div"); div.className = "grp"; div.innerHTML = `<h4>${title}</h4>`;
       const grid = document.createElement("div"); grid.className = "prm";
       keys.forEach(k => {
