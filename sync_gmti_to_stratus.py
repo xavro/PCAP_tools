@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
-"""sync_gmti_to_stratus.py — copie les modules GMTI (source unique = ce dépôt) dans le paquet
-`docker/app/gmti/` de StratusServer, avec les seules adaptations nécessaires (imports relatifs,
-chemin du fichier de profils, lecteur pcap optionnel).
+"""sync_gmti_to_stratus.py — copie les modules GMTI dans le paquet `docker/app/gmti/` de
+StratusServer **v1**.
+
+    OBSOLÈTE DEPUIS LE 2026-09-09 : l'exploitation est passée entièrement sur StratusServer-V2, où le
+    tracker vit dans le conteneur `stratus2-replay` (il exécute `pcap_web.py` depuis `docker/replay/src`,
+    rempli par le `docker/sync-src.sh` de la V2). Il n'y a plus rien à synchroniser par ici : la V2 prend
+    le dépôt PCAP_tools entier, et `pcap_web.py` y retient seul le tracker de version la plus élevée.
+    Ce script n'est conservé que pour une éventuelle remise en service de la v1.
 
     python sync_gmti_to_stratus.py [chemin/vers/StratusServer] [--tracker prototype_tracker_gmti_vX]
 

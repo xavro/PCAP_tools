@@ -2,7 +2,7 @@
 """gmti_live.py — pistage GMTI TEMPS RÉEL sur dwells décodés + géométrie des dwells.
 
 Partagé par la console web (`pcap_web.py` : rejeu et écoute réseau) et par le service GMTI de
-StratusServer (`docker/app/gmti/live.py`, copie synchronisée par `sync_gmti_to_stratus.py`).
+StratusServer-V2, conteneur `stratus2-replay`, qui exécute ce dépôt tel quel (`docker/replay/src`, rempli par le `sync-src.sh` de la V2). La v1 en gardait une copie synchronisée, elle n'est plus déployée.
 Ne dépend que de `tracker` / `track_run` (passés en paramètres : ils peuvent être chargés depuis
 un dossier versionné) et d'un décodeur 4607 exposant `looks_like_4607` / `decode_packet_dwells`.
 """

@@ -76,10 +76,16 @@ Non pas parce qu'il piste mieux une cible isolee — sur ce point les deux se va
 que sur le flux reel le v8.1 ne confirme presque aucune piste en environnement maritime, et que ce n'est
 pas rattrapable proprement par reglage.
 
-Prealables avant bascule : (1) la section « v9 » de `gmti_profiles.json` est VIDE, donc le v9 tournerait
-sur les defauts du module et la console — qui edite les noms v8 — ne piloterait plus le tracker ;
-(2) verifier la marge de calcul sur le materiel du CR ; (3) `sync_gmti_to_stratus.py --tracker
-prototype_tracker_gmti_v9` puis rebuild.
+MISE A JOUR DU 2026-09-09 (soir) : l'exploitation tourne entierement sur **StratusServer-V2**, ou le
+tracker vit dans le conteneur `stratus2-replay` (`pcap_web.py` depuis `docker/replay/src`, rempli par le
+`sync-src.sh` de la V2). `pcap_web.py` retient seul le tracker de version la plus elevee : la bascule en
+v9 s'y fait donc a la synchro des sources, sans option a passer. La v1 (`docker/app/gmti/`, service
+FastAPI) n'est plus deployee.
+
+Prealables traites le meme jour : la section « v9 » de `gmti_profiles.json` et sa description
+`v9_params` (sans quoi la console editait des noms v8 que le v9 ne relit pas), l'amorcage du depot
+`/data/gmti/gmti_profiles.json` cote V2 (sans quoi l'editeur recevait zero parametre), et scipy dans
+l'image de relecture (resultats identiques, environ deux fois plus rapide).
 
 ## v8.1 contre v9 sur deux missions reelles : aucune generation ne domine — 2026-09-09
 
