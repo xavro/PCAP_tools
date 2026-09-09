@@ -861,7 +861,7 @@
     });
     player.on(mpegts.Events.MEDIA_INFO, mi => status(`${live ? "LIVE (tap du rejeu)" : "lecture fichier"} — ${mi.videoCodec || ""} ${mi.width || ""}×${mi.height || ""} ${mi.fps ? mi.fps.toFixed(1) + " fps" : ""}`));
     player.load(); player.play().catch(() => {});
-    state.player = player; state.sets = []; state.applied = -1; trace.setLatLngs([]);
+    state.player = player; state.sets = []; state.applied = -1; state.ptsOff = null; trace.setLatLngs([]);
     if (!live && !pb.on) state.retries = 0;
     $("mode-badge").textContent = live ? "● LIVE — flux tapé sur le moteur de rejeu" : "FICHIER";
     $("mode-badge").className = "overlay" + (live ? " live" : "");
@@ -1133,7 +1133,18 @@
 
   function onKlv(ev) {
     const r = KLV0601.decode(ev.data); if (!r) return;
-    const pts = ev.pts != null ? ev.pts : video.currentTime * 1000;
+    // Le PTS remonté par mpegts.js est le PTS BRUT du flux (`pts = timestamp / timescale`), pas un temps
+    // ramené au début de la lecture. Or les captures sont découpées en segments et l'horloge d'encodage
+    // court sur toute la mission : le premier PTS d'un segment vaut couramment plusieurs milliers de
+    // secondes (638 à 19 284 s mesurés sur la mission du 2 septembre), jamais zéro. Le comparer plus bas
+    // à `video.currentTime` revient à confronter deux origines différentes, et la position plateforme
+    // affichée cesse d'être celle de l'image — c'est ce qui écartait le point bleu du point vert.
+    //
+    // On CALIBRE l'écart sur le premier set reçu, au lieu de supposer une origine : le décalage retenu
+    // est celui qui existe réellement entre le PTS du flux et l'horloge du lecteur à cet instant. Cela
+    // reste juste quelle que soit la façon dont mpegts.js pose sa propre base, ce qu'on n'a pas à savoir.
+    if (ev.pts != null && state.ptsOff == null) state.ptsOff = ev.pts - video.currentTime * 1000;
+    const pts = ev.pts != null ? (ev.pts - state.ptsOff) : video.currentTime * 1000;
     state.sets.push({ pts, num: r.num, fields: r.fields });
     if (state.sets.length > 20000) { state.sets.splice(0, 5000); state.applied = Math.max(-1, state.applied - 5000); }
     $("tl-n").textContent = state.sets.length;
