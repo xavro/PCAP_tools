@@ -49,6 +49,7 @@
     "maritime": {
       "gateChi2": 7,
       "gateMaxM": 500,
+      "gateGrowMps": 25.0,
       "confirmM": 4,
       "confirmN": 6,
       "deleteMisses": 12,

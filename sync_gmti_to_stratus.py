@@ -3,7 +3,11 @@
 `docker/app/gmti/` de StratusServer, avec les seules adaptations nécessaires (imports relatifs,
 chemin du fichier de profils, lecteur pcap optionnel).
 
-    python sync_gmti_to_stratus.py [chemin/vers/StratusServer]
+    python sync_gmti_to_stratus.py [chemin/vers/StratusServer] [--tracker prototype_tracker_gmti_vX]
+
+Le dossier de tracker retenu est le PLUS RECENT present ici. Comme cela peut faire changer de version
+la chaine en service sans qu'on l'ait voulu (le v9 a ete cree bien apres la derniere synchro, qui avait
+depose du v8.1), la synchro REFUSE de changer de version sans `--tracker` explicite.
 
 Fichiers synchronisés :
   gmti_pcap_to_csv.py                      -> gmti/decode4607.py   (décodage 4607, filtre plausibilité)
@@ -27,13 +31,43 @@ def _tracker_dir():
     return os.path.join(HERE, dirs[-1])
 
 
+def _version_deployee(dst):
+    """Version du tracker actuellement deposee, lue dans l'en-tete genere. None si rien n'est depose."""
+    try:
+        tete = open(os.path.join(dst, "tracker.py"), encoding="utf-8").readline()
+    except OSError:
+        return None
+    m = re.search(r"source : (prototype_tracker_gmti_v[\d.]+)/", tete)
+    return m.group(1) if m else None
+
+
 def main(argv):
-    root = argv[1] if len(argv) > 1 else DEFAULT
+    args = [a for a in argv[1:] if not a.startswith("--")]
+    choisi = None
+    for a in argv[1:]:
+        if a.startswith("--tracker="):
+            choisi = a.split("=", 1)[1]
+        elif a == "--tracker":
+            choisi = argv[argv.index(a) + 1]
+            args = [x for x in args if x != choisi]
+    root = args[0] if args else DEFAULT
     dst = os.path.join(root, "docker", "app", "gmti")
     if not os.path.isdir(os.path.join(root, "docker", "app")):
         print("StratusServer introuvable :", root); return 2
     os.makedirs(dst, exist_ok=True)
-    tdir = _tracker_dir()
+    tdir = os.path.join(HERE, choisi) if choisi else _tracker_dir()
+    if not os.path.isdir(tdir):
+        print("dossier de tracker introuvable :", tdir); return 2
+    # Garde-fou : deposer une AUTRE version que celle en service est une decision, pas un effet de bord
+    # d'un `sync` de routine. On l'exige explicite.
+    en_service = _version_deployee(dst)
+    if choisi is None and en_service and en_service != os.path.basename(tdir):
+        print("REFUS : la chaine en service utilise %s, la synchro deposerait %s."
+              % (en_service, os.path.basename(tdir)))
+        print("        Changer de version est une decision separee. Relancer avec :")
+        print("          --tracker %s   (garder la version en service)" % en_service)
+        print("          --tracker %s   (passer a la nouvelle version)" % os.path.basename(tdir))
+        return 3
     hdr = "# GÉNÉRÉ par PCAP_tools/sync_gmti_to_stratus.py — NE PAS ÉDITER (source : %s)\n"
 
     s = open(os.path.join(HERE, "gmti_pcap_to_csv.py"), encoding="utf-8").read()
