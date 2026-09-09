@@ -426,6 +426,36 @@ _TRACK_RUN = [None]
 _EXTRACT = [None]
 
 
+def _amorcer_profils(tr):
+    """Crée le dépôt de profils désigné par GMTI_PROFILES s'il n'existe pas encore.
+
+    En conteneur, `GMTI_PROFILES` pointe un fichier sur volume (`/data/gmti/gmti_profiles.json`) pour
+    que les réglages survivent aux reconstructions d'image. Au premier démarrage ce fichier n'existe
+    pas : le tracker repart alors sur ses valeurs par défaut — c'est correct — mais l'éditeur de la
+    console se retrouve SANS AUCUN paramètre, puisque leur description (`params`, `v9_params`) vit dans
+    ce fichier. On l'amorce donc depuis la copie livrée avec le code. Un dépôt existant n'est jamais
+    écrasé : il porte les réglages de l'exploitant.
+    """
+    cible = getattr(tr, "PROFILES_JSON", None)
+    livree = os.path.join(HERE, "gmti_profiles.json")
+    if not cible or os.path.isfile(cible) or not os.path.isfile(livree):
+        return
+    if os.path.abspath(cible) == os.path.abspath(livree):
+        return
+    try:
+        d = os.path.dirname(cible)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(livree, encoding="utf-8") as f:
+            contenu = f.read()
+        with open(cible, "w", encoding="utf-8") as f:
+            f.write(contenu)
+        print("[gmti] profils : dépôt amorcé depuis la copie livrée → %s" % cible)
+        tr.load_profiles(cible)
+    except OSError as e:
+        print("[gmti] profils : amorçage impossible (%s) : %s — valeurs par défaut du module" % (cible, e))
+
+
 def load_track_run():
     if _TRACK_RUN[0] is None:
         d = _tracker_dir()
@@ -435,6 +465,7 @@ def load_track_run():
             sys.path.remove(q)
         _load_module_from(os.path.join(d, "tracker.py"), "tracker")
         _TRACK_RUN[0] = _load_module_from(os.path.join(d, "track_run.py"), "track_run")
+        _amorcer_profils(_TRACK_RUN[0])
     return _TRACK_RUN[0]
 
 
