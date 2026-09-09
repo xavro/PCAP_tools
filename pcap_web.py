@@ -4103,7 +4103,11 @@ def _commit_git():
 
 
 def version_status():
-    """Ce qui identifie la version en service, pour certifier deux plateformes l'une contre l'autre."""
+    """Ce qui identifie la version en service, pour certifier deux plateformes l'une contre l'autre.
+
+    Publié dans `/api/health` (bloc `version`) et affiché sur la page Health : la recette regarde là où
+    elle regarde déjà l'état des services, sans route supplémentaire à connaître ni requête à composer.
+    """
     if _VERSION[0] is not None:
         return dict(_VERSION[0], ts=time.time())
     empreinte, n_fichiers = _empreinte_sources()
@@ -4142,7 +4146,8 @@ def version_status():
 
 def health_status():
     """État des services v2 pour la page Health : démon de capture, suivis, MediaMTX, disque, télémétrie."""
-    out = {"ts": time.time(), "capture": {"ok": False}, "replay": {"ok": True}, "mediamtx": {"ok": False}, "disk": None, "klv": {}}
+    out = {"ts": time.time(), "capture": {"ok": False}, "replay": {"ok": True}, "mediamtx": {"ok": False},
+           "disk": None, "klv": {}, "version": version_status()}
     try:
         with urllib.request.urlopen(CAPTURE_STATUS_URL + "/api/capture/status", timeout=3) as r:
             st = json.load(r)
@@ -4971,7 +4976,7 @@ AUTH_OPEN_PREFIXES = (
     "/ws/",                                                # KLV, GMTI, vidéo, événements, détection
     "/static/", "/login", "/favicon.ico",
     "/api/login", "/api/logout", "/api/session", "/api/ui",
-    "/api/health", "/api/version",                         # supervision (docker healthcheck, sondes)
+    "/api/health",                                         # supervision (docker healthcheck, sondes)
     "/api/follow/", "/api/streams/", "/api/missions", "/api/mission/resolve",
     "/api/clips/", "/api/captures/", "/api/thumbnails/", "/api/hls/",
     "/api/detect/", "/api/playback/", "/api/gmti/ports", "/api/gmti/profiles",
@@ -5236,8 +5241,6 @@ class Handler(BaseHTTPRequestHandler):
                                    "source": (auth_config() or {}).get("source")})
             if u.path == "/api/health":
                 return self._json(health_status())
-            if u.path == "/api/version":                          # certifier la version en service
-                return self._json(version_status())
             if u.path == "/api/env":                              # paramètres d'environnement (lecture)
                 return self._json(env_state())
             if u.path == "/api/archive":                          # travaux en cours + destination
