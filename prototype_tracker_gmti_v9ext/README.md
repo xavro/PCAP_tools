@@ -58,6 +58,13 @@ coûter à la cinématique.
 100 %, et la piste principale porte 101 détections contre 60 au v9. La position est meilleure (68 m
 contre 80). **Le cap, lui, se dégrade nettement** : σ 3,9° → 7,5° et erreur 7° → 24°.
 
+> **Avertissement de methode (2026-09-09).** Les chiffres « mission complete » ci-dessous ont ete
+> obtenus avec une reference de trajectoire non verifiee — une droite ajustee sur 5 a 16 minutes de
+> positions seules, que ni les positions (residus 141-431 m) ni la vitesse radiale (desaccord de 8 a
+> 80 km/h) ne confirmaient. Ils ne doivent pas etre cites. Voir la correction en tete de
+> `../prototype_tracker_gmti_v9/CHANGELOG_v9.md` et l'outil `cas_verifies.py`, qui ne retient un cas que
+> si un meme mouvement rectiligne explique les DEUX canaux de mesure.
+
 ## Mesure sur une mission complète (2 septembre, CR1, 7 h 42, 84 000 plots, 8 navires isolés)
 
 Cette mission change la conclusion tirée du seul cargo, pour une raison simple : **le radar y revisite

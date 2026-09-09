@@ -6,6 +6,81 @@ automatiquement par `pcap_web` / `pcap_console` (version la plus élevée conten
 
 Banc : `python compare_tracker_versions.py <plots.csv> --profile maritime --ladder`.
 
+## CORRECTION de l'entree ci-dessous, et decision v8.1 / v9 — 2026-09-09 (soir)
+
+**L'entree suivante est fausse et ne doit pas etre utilisee.** Sa reference de trajectoire — une droite
+ajustee sur 5 a 16 minutes de POSITIONS seules — n'etait confirmee par rien : residus de 141 a 431 m, et
+desaccord de 8 a 80 km/h avec la vitesse radiale du radar sur le meme jeu de plots. Sur 17 cas, UN SEUL
+s'expliquait par un mouvement rectiligne coherent avec les deux canaux de mesure. Ce qu'elle classait,
+c'etait le bruit de sa propre reference.
+
+Deux affirmations sont explicitement refutees : (a) « le v8.1 tient mieux les navires, 79 % contre
+59 % » ; (b) « l'EKF Doppler est la brique qui fait perdre les navires ». Le « biais Doppler de 9,3 m/s »
+qui fondait (b) etait un artefact : sur les cas verifies, l'ecart entre v_LOS annonce et v_LOS implique
+par la trajectoire tombe a 0,04-0,58 m/s. Le radar dit vrai ; c'etait la reference qui mentait.
+
+### Methode corrigee
+
+Fenetres de 90 s a 5 min, et un cas n'est retenu que si UN meme mouvement rectiligne explique les
+positions a moins de 120 m ET la vitesse radiale a moins de 3 m/s — deux canaux physiquement
+independants. Retenus : 194 cas maritimes a 90 s, 90 a 3 min, 56 a 5 min, 45 cas routiers a 90 s.
+Outil : `prototype_tracker_gmti_v9ext/isoler_navires.py` pour le decoupage, ajustement conjoint pour la
+validation.
+
+### Ce que disent les cas verifies
+
+| | couverture | ecart | err cap | err vitesse | identites |
+|---|---|---|---|---|---|
+| maritime 5 min — v8.1 | 100 % | 102 m | 7,9° | 3,5 km/h | 1,0 |
+| maritime 5 min — v9 | 100 % | 100 m | 8,4° | 3,5 km/h | 1,0 |
+| routier 90 s — v8.1 | 85 % | 53 m | 20,2° | 6,6 km/h | **2,0** |
+| routier 90 s — v9 | **100 %** | **47 m** | 21,9° | 6,6 km/h | **1,0** |
+
+Sur cible isolee, les deux generations se valent en mer et le v9 est meilleur sur route. L'EKF Doppler
+n'est nuisible nulle part : l'eteindre coute 3 points de couverture sur route et ameliore legerement le
+cap en mer. Il n'y a donc PAS de chantier « ponderer le Doppler par la cadence » a mener.
+
+### Ce qui decide, et qui ne depend d'aucune reference
+
+Nombre de pistes CONFIRMEES sur le flux maritime reel, entier, profil maritime :
+
+| segment | plots | v8.1 en service | v9 |
+|---|---|---|---|
+| m1_002 | 7 836 | 12 | 236 |
+| m1_003 | 4 406 | 3 | 171 |
+| m1_004 | 22 287 | **0** | 634 |
+| m1_006 | 15 587 | 2 | — |
+| m1_007 | 15 821 | **0** | — |
+
+Sur cette mission, le tracker en service ne montrerait quasiment rien a l'operateur. La cause est la
+brique d'OBSERVABILITE, absente du v8.1 : le radar entrelace des milliers de dwells pointes ailleurs, et
+chacun compte comme un manque. Les cas extraits ne le voyaient pas — un tube autour d'une cible ne
+contient qu'une poignee de dwells.
+
+Le v8.1 peut etre partiellement rattrape par le reglage : `deleteMisses` porte de 12 a 500 fait passer
+m1_003 de 3 a 83 pistes. Mais cela plafonne a la moitie du v9, et « ne jamais supprimer sur manques » est
+un contournement, pas une reponse — sur route il laisse 2 identites par vehicule la ou le v9 en tient 1.
+
+Sur route, le v8.1 fonctionne (289 pistes contre 198 au v9) mais fragmente : duree moyenne 8,9 s contre
+33,8 s.
+
+### Cout
+
+Debit mesure : v8.1 1 968 a 2 367 plots/s, v9 122 a 759 plots/s. Sur le segment maritime le plus dense
+(22 287 plots, 4 365 dwells, ~35 min de mission), le v9 met 183 s — soit onze fois le temps reel, marge
+confortable mais bien plus mince que celle du v8.1.
+
+### Decision proposee : passer au v9
+
+Non pas parce qu'il piste mieux une cible isolee — sur ce point les deux se valent en mer — mais parce
+que sur le flux reel le v8.1 ne confirme presque aucune piste en environnement maritime, et que ce n'est
+pas rattrapable proprement par reglage.
+
+Prealables avant bascule : (1) la section « v9 » de `gmti_profiles.json` est VIDE, donc le v9 tournerait
+sur les defauts du module et la console — qui edite les noms v8 — ne piloterait plus le tracker ;
+(2) verifier la marge de calcul sur le materiel du CR ; (3) `sync_gmti_to_stratus.py --tracker
+prototype_tracker_gmti_v9` puis rebuild.
+
 ## v8.1 contre v9 sur deux missions reelles : aucune generation ne domine — 2026-09-09
 
 Materiel : mission maritime du 2 septembre (CR1, 7 h 42, 84 000 plots, 8 navires isoles) et mission
