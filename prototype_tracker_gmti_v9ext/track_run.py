@@ -29,6 +29,12 @@ EXT_TUNING = {
     # Cargo : coque de ~250 m, 1 à 3 échos par dwell. L'ellipse doit pouvoir grandir jusqu'à la coque
     # entière sans jamais couvrir deux navires distincts (600 m dans le scénario synthétique).
     "maritime": dict(ext_init_m=150.0, ext_min_m=60.0, ext_max_m=400.0, ext_tau_s=60.0),
+    # Routier : l'ellipse n'a pas de sens sur un vehicule de 5 m — l'estimateur y mesure l'erreur du
+    # radar et sort 150 m de « coque ». On la plafonne pour qu'elle ne serve qu'a amortir le bruit, sans
+    # jamais devenir un rayon d'absorption capable de reunir deux vehicules voisins.
+    "routier": dict(ext_max_m=120.0),
+    "routier_zone": dict(ext_max_m=120.0),
+    "convoi": dict(ext_max_m=200.0),
 }
 
 

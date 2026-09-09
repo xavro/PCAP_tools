@@ -58,24 +58,61 @@ coûter à la cinématique.
 100 %, et la piste principale porte 101 détections contre 60 au v9. La position est meilleure (68 m
 contre 80). **Le cap, lui, se dégrade nettement** : σ 3,9° → 7,5° et erreur 7° → 24°.
 
-## Les trois limites mesurées, à connaître avant de décider du lot B
+## Mesure sur une mission complète (2 septembre, CR1, 7 h 42, 84 000 plots, 8 navires isolés)
+
+Cette mission change la conclusion tirée du seul cargo, pour une raison simple : **le radar y revisite
+toutes les 6 à 10 s**, contre 1,35 s sur le cargo. Or le profil maritime avait été réglé sur le cargo.
+
+Les navires sont pourtant bien détectés (écart médian entre détections 6 à 10 s, 90e centile 14 à 27 s,
+presque aucun trou de plus d'une minute). Ce n'est donc pas un problème de détection : c'est la **porte
+d'association**, fixée à 200 m, qui rejette une cible ayant légitimement parcouru 225 m pendant un trou
+de 27 s. La piste se dédouble alors à chaque trou.
+
+Indicateur : part de la fenêtre tenue par **une seule et même identité** (médiane sur les 8 navires).
+
+| | porte fixe 200 m | porte + 40 m/s écoulés |
+|---|---|---|
+| cible ponctuelle (≈ v9) | 17 % | 43 % |
+| **avec l'ellipse** | 24 % | **82 %** |
+
+Les deux mécanismes se multiplient : ni l'un ni l'autre seul ne suffit. C'est le résultat principal du
+lot A, et il n'était pas visible sur la capture cargo.
+
+**La porte doit être proportionnelle au temps écoulé, pas fixe.** Ouvrir la porte fixe à 800 m donne
+bien 47 % sur cette mission, mais ruine le cargo (erreur de cap 7° → 51°, 2 identités → 4). La grandeur
+physique n'est pas une distance mais une vitesse : `porte = fixe + 40 m/s × Δt depuis la dernière mise à
+jour`. Ce réglage unique sert les deux cadences — sur le cargo à 1,35 s il n'ouvre que de 54 m, et les
+indicateurs y sont **inchangés au chiffre près**.
+
+Contrôle de nuisance en trafic dense (capture routière, 1 500 plots) : 119 → 115 pistes, durée moyenne
+26,8 → 27,2 s. La porte large ne vole pas les détections des voisins.
+
+## Les limites mesurées, à connaître avant de décider du lot B
+
 
 1. **L'estimateur ne distingue pas une grande cible d'une mesure bruitée.** Sur la capture routière
    (extrait de 1 500 plots, profil `routier`), il attribue à des véhicules de 5 m une coque médiane de
    **148 m**, et dépasse 200 m sur 10 pistes. Ce qu'il mesure alors, c'est l'erreur du radar, pas un
    objet. Sur le cargo, la coque sort à 259 × **209 m** : la longueur est crédible, la largeur n'est que
    du bruit — et l'allongement (1,24) reste sous le seuil de publication du cap de coque, qui n'est donc
-   jamais fourni sur cette capture. **La plus-value « cap de coque » n'est pas démontrée sur du réel.**
+   jamais fourni sur cette capture. Sur la mission complète, même constat : l'allongement médian de
+   l'ellipse est de **1,00**, il dépasse 1,6 sur un seul cas sur cinq, et la longueur est collée à une
+   borne (60 ou 400 m) dans 3 cas sur 5. **La plus-value « cap de coque » et « longueur de navire »
+   n'est démontrée sur aucune capture réelle** — seulement sur le scénario synthétique.
+   L'ellipse est donc utile comme *amortisseur d'association*, pas comme *mesure de la cible*.
 2. **La signature de coque est faible dans cette géométrie.** Le nuage d'échos autour de la route de
    référence n'a un allongement que de **1,27** (σ 139 m le long, 110 m en travers). La ligne de vue du
    capteur est à **72°** de la route : l'erreur en distance annoncée par le radar (101 m, la plus grande)
    tombe en travers de la coque et masque sa forme, tandis que l'erreur transverse (50 m) tombe le long.
    Sur les paires d'échos simultanés, **36 % seulement** sont alignées à moins de 30° de la route.
-3. **Le gain sur les identités ne vient pas entièrement de la forme.** Décomposition mesurée : avec
-   l'ellipse dégonflée jusqu'à la cible ponctuelle, le prototype atteint déjà 1 identité — c'est la
-   boucle d'association (« une piste peut prendre plusieurs groupes d'échos », au lieu du un-pour-un du
-   v9) qui fait l'essentiel. L'ellipse ajoute la précision de position (86 → 68 m) et la forme.
-   Il existe donc une option intermédiaire, bien moins coûteuse que le lot B complet.
+3. **Sur le cargo seul, l'ellipse n'était pas nécessaire ; sur la mission, elle l'est.** Décomposition
+   mesurée : sur le cargo, l'ellipse dégonflée jusqu'à la cible ponctuelle atteint déjà 1 identité —
+   c'est la boucle d'association qui fait tout. Sur les 8 navires de la mission au contraire, la cible
+   ponctuelle plafonne à 43 % de couverture quand l'ellipse en donne 82 %. Une seule capture ne pouvait
+   pas trancher, et aurait conduit à la mauvaise décision.
+4. **Le cap reste le point faible.** Sur le cargo, erreur de cap 7° (v9) contre 24° (v9ext) : absorber
+   tous les échos de la coque stabilise l'identité mais fait errer le centroïde le long du navire. C'est
+   le prix à payer, et il n'a pas été réduit.
 
 Contrôle complémentaire : l'étendue **scalaire** que le v9 possède déjà (`target_extent_m`), essayée de
 200 à 500 m, ne change strictement rien — parce que la seconde identité naît alors que les deux pistes
@@ -109,13 +146,27 @@ produit `z·X` — la dispersion réellement observée — est invariant : `z` n
 seulement la longueur **publiée**. C'est une hypothèse assumée sur la répartition des échos, pas une
 mesure ; elle restitue les 220 m du scénario synthétique.
 
-## Suite
+## Suite — ce que disent les mesures
 
-Une seule capture de navire ne décide pas d'un lot B. Pour en ajouter : déposer les pcap dans
-`StratusServer-v2/docker/data/captures`, extraire avec
-`python gmti_pcap_to_csv.py <pcap> -o <csv>`, puis
-`python compare_tracker_versions.py <csv> --profile maritime --ext`.
+**Ce qui est acquis.** Deux corrections valent indépendamment de toute refonte, et se portent au v9 en
+peu de lignes :
 
-Ce qu'il faudra regarder sur chaque nouvelle capture : le nombre d'identités sur la cible (le critère),
-l'erreur de cap (le coût), et l'allongement de l'ellipse (si elle reste sous 1,6 comme ici, la forme
-n'apporte rien d'exploitable).
+1. **Porte d'association proportionnelle au temps écoulé** (`porte = fixe + 40 m/s × Δt`). Sans elle, le
+   profil maritime ne tient pas une mission à 6-10 s de revisite — ce qui est le cas réel. Gain mesuré
+   même sans ellipse : 17 % → 43 % de couverture par une seule identité. Aucun effet négatif mesuré
+   ailleurs.
+2. **Fenêtre de confirmation en temps** (`15 s`), qui ferme le trou décrit ci-dessous.
+
+**Ce qui reste à décider (lot B).** L'ellipse elle-même double encore la couverture (43 % → 82 %) mais
+touche le cœur du filtre, coûte 30 % de temps de calcul, et n'apporte **aucune mesure de forme
+exploitable** sur du réel — sa valeur est celle d'un amortisseur d'association, pas d'un capteur de
+dimensions. Le cap reste dégradé d'un facteur trois.
+
+**Pour ajouter des captures :** déposer les pcap, extraire avec
+`python gmti_pcap_to_csv.py <pcap> --port 5454 -o <csv>`, puis
+`python compare_tracker_versions.py <csv> --profile maritime --ext`. Pour une mission longue, isoler
+d'abord les navires : la référence de trajectoire du banc est quadratique et n'a de sens que sur une
+cible unique.
+
+Ce qu'il faut regarder sur chaque nouvelle capture : la **revisite réelle** (elle conditionne tout), la
+couverture par une seule identité, l'erreur de cap, et l'allongement de l'ellipse.

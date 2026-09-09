@@ -94,6 +94,18 @@ class ExtProfile(T.Profile):
     ext_max_m: float = 500.0
     ext_gate_chi2: float = 9.21           # 99 % à 2 ddl sur S = P + z·X + R
     ext_gate_margin_m: float = 150.0      # marge dure au-delà du demi-grand axe (borne le coût)
+    # PORTE PROPORTIONNELLE AU TEMPS ÉCOULÉ. `gate_max_m` est une distance fixe, réglée sur une capture
+    # dont le radar revisitait toutes les 1,35 s. Sur une mission à 8 s de revisite (trous de 27 s au
+    # 90e centile), un navire à 30 km/h a parcouru 225 m : la porte de 200 m le rejette et la piste se
+    # dédouble. Ouvrir la porte à 800 m réglerait ce cas mais ruinerait le premier (erreur de cap 7° →
+    # 51°). La grandeur physique n'est pas une distance, c'est une VITESSE : porte = fixe + v × Δt
+    # depuis la dernière mise à jour. Une seule valeur peut alors servir les deux cadences.
+    # 40 m/s (144 km/h) est une BORNE de deplacement plausible, pas une vitesse attendue : le test de
+    # Mahalanobis filtre ensuite. Mesure sur 8 navires a 8 s de revisite : couverture mediane par une
+    # seule identite 24 % -> 82 %, sans rien changer a la capture cargo a 1,35 s (l'ouverture n'y vaut
+    # que 54 m) et sans degat en trafic routier dense (119 -> 115 pistes). 0 = porte fixe, comme le v9.
+    ext_gate_speed_mps: float = 40.0
+    ext_gate_hard_max_m: float = 1200.0   # plafond absolu, quelle que soit la durée du trou
     ext_birth_k: float = 1.0              # un écho à d²_X ≤ k² dans l'ellipse ne fonde pas de piste
     # FENÊTRE DE CONFIRMATION EN TEMPS. Le v9 confirme sur « m détections parmi les n derniers dwells
     # FACTURÉS » ; or un dwell où la piste n'est pas observable n'est pas facturé, à juste titre. Une
@@ -222,7 +234,12 @@ class ExtTrack(T.Track):
         eps = m.z[:2] - self.x[:2]
         dist = float(math.hypot(eps[0], eps[1]))
         semi = extent_axes(self.X)[0] / 2.0
-        if dist > self.gate_max + semi + prof.ext_gate_margin_m:
+        # La porte s'ouvre avec le temps écoulé depuis la dernière mise à jour : après un trou de 27 s,
+        # la cible peut légitimement être bien plus loin qu'après 1,5 s. C'est ce qui permet à un même
+        # réglage de servir une revisite de 1,35 s et une revisite de 8 s.
+        dur = max(0.0, self.t - self.t_last_update)
+        porte = min(self.gate_max + prof.ext_gate_speed_mps * dur, prof.ext_gate_hard_max_m)
+        if dist > porte + semi + prof.ext_gate_margin_m:
             return None
         S = self.P[:2, :2] + prof.ext_z * self.X + m.R[:2, :2]
         try:
