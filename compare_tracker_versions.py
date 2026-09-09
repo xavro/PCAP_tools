@@ -288,6 +288,9 @@ def main(argv=None):
     ap.add_argument("csv")
     ap.add_argument("--profile", default="maritime")
     ap.add_argument("--ladder", action="store_true", help="activer les briques v9 une par une (brief §7)")
+    ap.add_argument("--ext", action="store_true",
+                    help="ajouter le prototype à cible étendue (prototype_tracker_gmti_v9ext, lot A)")
+    ap.add_argument("--ext-overrides", default="", help="surcharges du prototype étendu, ex. ext_z=0.2")
     ap.add_argument("--tol", type=float, default=120.0, help="tolérance d'alignement de la référence (m)")
     ap.add_argument("--near", type=float, default=500.0, help="distance « sur la cible » (m)")
     ap.add_argument("--overrides", default="", help="surcharges v9, ex. sigma_vr_floor_mps=4,gate_max_m=500")
@@ -321,10 +324,14 @@ def main(argv=None):
     else:
         lines += ["Aucun mobile rectiligne dominant — indicateurs « sur cible » indisponibles.", ""]
 
-    over = {}
-    for kv in filter(None, a.overrides.split(",")):
-        k, _, v = kv.partition("=")
-        over[k.strip()] = float(v) if v.replace(".", "", 1).replace("-", "", 1).isdigit() else v
+    def parse_over(s):
+        out = {}
+        for kv in filter(None, s.split(",")):
+            k, _, v = kv.partition("=")
+            out[k.strip()] = float(v) if v.replace(".", "", 1).replace("-", "", 1).isdigit() else v
+        return out
+
+    over = parse_over(a.overrides)
 
     rows = []
     v8 = load_tracker("8.1")
@@ -336,6 +343,14 @@ def main(argv=None):
     for label, switches in runs:
         r9 = v9.run_tracking(a.csv, a.profile if a.profile in v9.PROFILES else "defaut", {**switches, **over})
         rows.append((label, evaluate(r9, ref, a.near), r9))
+
+    if a.ext:
+        # Prototype de cible étendue (lot A) : chargé comme une version de plus, sans traitement à part
+        # — c'est la seule façon de le juger sur les MÊMES indicateurs que le v9 qu'il prétend remplacer.
+        vx = load_tracker("9ext")
+        rx = vx.run_tracking(a.csv, a.profile if a.profile in vx.PROFILES else "defaut",
+                             {**over, **parse_over(a.ext_overrides)})
+        rows.append(("v9ext — cible étendue", evaluate(rx, ref, a.near), rx))
 
     lines += ["## Indicateurs", "",
               "| variante | %s |" % " | ".join(c[1] for c in COLS),
@@ -355,10 +370,15 @@ def main(argv=None):
             lines.append("  Briques : %s." % ", ".join("%s = %s" % (k, m[k]) for k in extra))
         top = sorted(res["tracks"], key=lambda x: -x["hits"])[:5]
         for tk in top:
-            lines.append("  - piste %d : %d hits, %.0f s, %.1f km/h, cap %.1f°%s"
+            ext = ""
+            if "extent_len_m" in tk:                     # variante à cible étendue : forme estimée
+                ext = " | coque %.0f × %.0f m, axe %.0f°%s" % (
+                    tk["extent_len_m"], tk["extent_wid_m"], tk["extent_hdg_deg"],
+                    "" if tk["hull_heading_deg"] is None else " → cap coque %.0f°" % tk["hull_heading_deg"])
+            lines.append("  - piste %d : %d hits, %.0f s, %.1f km/h, cap %.1f°%s%s"
                          % (tk["id"], tk["hits"], tk["t1"] - tk["t0"], math.hypot(*tk["vel"]) * 3.6,
                             (math.degrees(math.atan2(tk["vel"][0], tk["vel"][1])) + 360) % 360,
-                            (" ± %.1f" % tk["heading_std_deg"]) if "heading_std_deg" in tk else ""))
+                            (" ± %.1f" % tk["heading_std_deg"]) if "heading_std_deg" in tk else "", ext))
         lines.append("")
 
     report = "\n".join(lines)
