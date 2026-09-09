@@ -6,6 +6,54 @@ automatiquement par `pcap_web` / `pcap_console` (version la plus élevée conten
 
 Banc : `python compare_tracker_versions.py <plots.csv> --profile maritime --ladder`.
 
+## Porte d'association proportionnelle au temps ecoule — 2026-09-09
+
+**Le probleme.** `gate_max_m` est une distance fixe : elle suppose implicitement une cadence de revisite.
+Le profil maritime a ete regle sur la capture cargo, ou le radar revisitait toutes les 1,35 s. Sur une
+mission reelle du 2 septembre (CR1, 7 h 42, 84 000 plots), le meme radar revisite toutes les 6 a 10 s,
+avec des trous de 27 s au 90e centile. Un navire a 30 km/h y parcourt alors 225 m : la porte de 200 m le
+rejette, et la piste se dedouble a chaque trou.
+
+Les navires sont pourtant bien detectes (ecart median entre detections 6 a 10 s, presque aucun trou de
+plus d'une minute) et ils sont OBSERVABLES pendant ces trous — la brique d'observabilite ne les couvre
+donc pas : c'est un defaut de detection, pas de couverture.
+
+**Le correctif.** La grandeur physique n'est pas une distance mais une vitesse :
+
+    porte = gate_max_m + (|v| estime + gate_speed_margin_mps) x (temps depuis la derniere mise a jour)
+
+La vitesse employee est celle de LA PISTE, pas un maximum global : une porte ouverte pareillement pour
+tous entretient les echos de fouillis rapides. Plafond absolu `gate_hard_max_m` = 1200 m.
+
+**Mesures.** Huit navires isoles de la mission, indicateur = part de la fenetre tenue par UNE SEULE
+identite (mediane) :
+
+| marge | couverture | ecart a la reference |
+|---|---|---|
+| 0 (porte fixe, avant) | 20 % | 145 m |
+| 10 m/s | 21 % | 129 m |
+| 20 m/s | 25 % | 163 m |
+| **40 m/s (retenu)** | **59 %** | **130 m** |
+| 60 m/s | 63 % | 154 m |
+
+L'ecart a la reference est la garde-fou : il reste a 130 m, donc la piste suit bien SON navire et ne
+saute pas sur le voisin — ce qu'une porte trop large produirait, et ce que la seule couverture ne
+detecterait pas. Au-dela de 40 m/s cet ecart commence a se degrader.
+
+Non-regression : capture cargo (revisite 1,35 s) — contact principal inchange, memes pistes, ecart 64 →
+71 m, sigma cap 3,9 degres inchange ; une piste de fouillis de plus se confirme, a 610 m de la cible.
+Trafic routier dense — 128 → 129 pistes, duree moyenne inchangee. Scenarios synthetiques — inchanges.
+
+**Mecanisme mesure puis REJETE : la fenetre de confirmation bornee.** Une piste jamais observable (echo
+de fouillis a Doppler constant sous la MDV) n'est jamais comptee en manqué et peut se confirmer sur trois
+detections etalees sur 21 s. Le v9 n'y echappe que par accident (son estimation de vitesse s'emballe sur
+ce type d'echo et finit par le rendre observable). Trois formulations ont ete essayees, aucune ne tient :
+en secondes, la valeur depend de la cadence de revisite ; en nombre de dwells recus, le trafic routier
+s'effondre (128 → 20 pistes confirmees, un vehicule vu une fois par balayage etalant ses trois detections
+sur trente dwells) ; en exigeant une fenetre M/N pleine, tout se degrade (cargo : ecart 80 → 113 m,
+jitter 15 → 38 m). Le correctif reste donc dans le prototype de cible etendue, qui en a besoin, et le v9
+garde le comportement d'avant.
+
 ## Sigmas de mesure : deux hypotheses mesurees, deux hypotheses refutees — 2026-09-08
 
 La documentation du capteur (manuel de l'application d'exploitation, chapitre performances) donne la

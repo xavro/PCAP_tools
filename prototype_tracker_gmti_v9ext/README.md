@@ -148,14 +148,18 @@ mesure ; elle restitue les 220 m du scénario synthétique.
 
 ## Suite — ce que disent les mesures
 
-**Ce qui est acquis.** Deux corrections valent indépendamment de toute refonte, et se portent au v9 en
-peu de lignes :
+**Ce qui est acquis et déjà porté au v9** (2026-09-09) : la **porte d'association proportionnelle au
+temps écoulé**, `porte = gate_max_m + (|v| estimé + 40 m/s) × Δt`. Sans elle, le profil maritime ne tient
+pas une mission à 6-10 s de revisite. Mesuré sur le v9 lui-même, sans aucune ellipse : couverture par une
+seule identité **20 % → 59 %**, écart à la référence inchangé (130 m), aucun effet en trafic routier
+dense, contact principal du cargo inchangé. Détail et contre-mesures dans `../prototype_tracker_gmti_v9/
+CHANGELOG_v9.md`.
 
-1. **Porte d'association proportionnelle au temps écoulé** (`porte = fixe + 40 m/s × Δt`). Sans elle, le
-   profil maritime ne tient pas une mission à 6-10 s de revisite — ce qui est le cas réel. Gain mesuré
-   même sans ellipse : 17 % → 43 % de couverture par une seule identité. Aucun effet négatif mesuré
-   ailleurs.
-2. **Fenêtre de confirmation en temps** (`15 s`), qui ferme le trou décrit ci-dessous.
+**Ce qui a été mesuré puis REFUSÉ au v9** : la fenêtre de confirmation bornée. Aucune de ses trois
+formulations ne tient sur les trois jeux de données — en secondes elle dépend de la cadence, en dwells
+reçus elle anéantit le trafic routier (128 → 20 pistes confirmées), en fenêtre M/N pleine elle dégrade
+tout. Elle reste dans ce prototype, qui en a besoin parce qu'il estime trop bien la vitesse des échos de
+fouillis à Doppler constant.
 
 **Ce qui reste à décider (lot B).** L'ellipse elle-même double encore la couverture (43 % → 82 %) mais
 touche le cœur du filtre, coûte 30 % de temps de calcul, et n'apporte **aucune mesure de forme

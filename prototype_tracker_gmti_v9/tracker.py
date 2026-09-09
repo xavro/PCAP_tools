@@ -100,6 +100,26 @@ class Profile:
     gate_chi2: float = 11.34              # 99 % à 3 ddl (x, y, v_LOS) ; 9,21 à 2 ddl sans Doppler
     gate_chi2_pos: float = 9.21
     gate_max_m: float = 400.0
+    # PORTE PROPORTIONNELLE AU TEMPS ÉCOULÉ. `gate_max_m` seul est une distance fixe : elle suppose une
+    # cadence de revisite donnée. Le profil maritime a été réglé sur une capture où le radar revisitait
+    # toutes les 1,35 s ; sur une mission réelle à 6-10 s de revisite (trous de 27 s au 90e centile), un
+    # navire à 30 km/h a légitimement parcouru 225 m et la porte de 200 m le rejette — la piste se
+    # dédouble à chaque trou. La grandeur physique en jeu n'est pas une distance mais une VITESSE :
+    # porte = gate_max_m + (|v| estimé + gate_speed_margin_mps) × (temps depuis la dernière mise à jour).
+    # Mesuré sur 8 navires d'une mission de 7 h à 6-10 s de revisite : la part de la fenêtre tenue par
+    # UNE SEULE identité passe de 20 % à 59 %, l'écart à la trajectoire de référence restant à 130 m —
+    # la piste suit donc bien son navire, elle ne saute pas sur le voisin, ce qu'une porte trop large
+    # aurait produit. Sur la capture cargo (revisite 1,35 s) le contact principal est inchangé (mêmes
+    # pistes, 64 → 71 m d'écart) ; une piste de fouillis de plus se confirme, à 610 m de la cible. Aucun
+    # effet en trafic routier dense (128 → 129 pistes).
+    # La vitesse employée est celle de LA PISTE plus une allocation de manœuvre, et non un maximum
+    # global : une porte ouverte pareillement pour tous entretiendrait les échos de fouillis rapides.
+    # 0 = porte fixe, comportement d'avant.
+    # 40 m/s : valeur mesurée. En dessous (10, 20) le gain sur la mission s'effondre (21-25 % au lieu
+    # de 59 %) ; au-dessus (60) l'écart à la référence commence à se dégrader (130 → 154 m), signe que
+    # la porte attrape autre chose que la cible.
+    gate_speed_margin_mps: float = 40.0   # 0 = porte fixe ; sinon marge de manœuvre ajoutée à |v| estimé
+    gate_hard_max_m: float = 1200.0       # plafond absolu, quelle que soit la durée du trou
     # --- zone aveugle Doppler ---
     mdv_margin_mps: float = 1.0
     mdv_floor_mps: float = 0.0            # plancher si le flux annonce MDV = 0 (cas de la capture cargo)
@@ -629,7 +649,11 @@ class Tracker:
                 H = np.zeros((2, 4))
                 H[0, 0] = H[1, 1] = 1.0
             PHt = tr.P @ H.T
-            gate_m = tr.gate_max
+            # La porte s'ouvre avec le temps ecoule : apres un trou de 27 s la cible peut legitimement
+            # etre bien plus loin qu'apres 1,5 s. C'est ce qui permet a un meme reglage de servir une
+            # revisite de 1,35 s et une revisite de 8 s.
+            v_plaus = (tr.speed() + prof.gate_speed_margin_mps) if prof.gate_speed_margin_mps > 0 else 0.0
+            gate_m = min(tr.gate_max + v_plaus * max(0.0, dwell.t - tr.t_last_update), prof.gate_hard_max_m)
             for j, m in enumerate(meas):
                 if math.hypot(m.z[0] - zhat[0], m.z[1] - zhat[1]) > gate_m:
                     continue
